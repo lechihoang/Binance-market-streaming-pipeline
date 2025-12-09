@@ -11,12 +11,12 @@ from pathlib import Path
 
 
 class TestStreamingPipelineDAGSyntax:
-    """Test streaming_pipeline_dag.py syntax and structure."""
+    """Test streaming_processing_dag.py syntax and structure."""
     
     @pytest.fixture
     def dag_file_path(self):
-        """Get path to streaming_pipeline_dag.py."""
-        return Path(__file__).parent.parent.parent / 'dags' / 'streaming_pipeline_dag.py'
+        """Get path to streaming_processing_dag.py."""
+        return Path(__file__).parent.parent.parent / 'dags' / 'streaming_processing_dag.py'
     
     @pytest.fixture
     def dag_ast(self, dag_file_path):
@@ -26,8 +26,8 @@ class TestStreamingPipelineDAGSyntax:
         return ast.parse(content)
     
     def test_dag_file_exists(self, dag_file_path):
-        """Test that streaming_pipeline_dag.py exists."""
-        assert dag_file_path.exists(), "streaming_pipeline_dag.py not found"
+        """Test that streaming_processing_dag.py exists."""
+        assert dag_file_path.exists(), "streaming_processing_dag.py not found"
     
     def test_dag_file_has_valid_syntax(self, dag_file_path):
         """Test DAG file has valid Python syntax."""
@@ -66,61 +66,56 @@ class TestStreamingPipelineDAGSyntax:
         
         assert has_default_args, "DAG must define default_args"
     
-    def test_dag_has_task_groups(self, dag_file_path):
-        """Test DAG file contains TaskGroup definitions."""
+    def test_dag_has_health_checks(self, dag_file_path):
+        """Test DAG file contains health check tasks for 3-tier storage."""
         with open(dag_file_path, 'r') as f:
             content = f.read()
         
-        # Check for TaskGroup usage
-        assert 'TaskGroup' in content, "DAG must use TaskGroup"
-        assert 'data_ingestion' in content, "DAG must have data_ingestion TaskGroup"
-        assert 'trade_aggregation' in content, "DAG must have trade_aggregation TaskGroup"
-        assert 'technical_indicators' in content, "DAG must have technical_indicators TaskGroup"
+        # Check for health check tasks (3-tier storage architecture)
+        assert 'test_redis_health' in content, "DAG must have test_redis_health task (Hot Path)"
+        assert 'test_postgres_health' in content, "DAG must have test_postgres_health task (Warm Path)"
+        assert 'test_minio_health' in content, "DAG must have test_minio_health task (Cold Path)"
     
     def test_dag_has_run_tasks(self, dag_file_path):
-        """Test DAG has run tasks for each TaskGroup."""
+        """Test DAG has run tasks for streaming jobs."""
         with open(dag_file_path, 'r') as f:
             content = f.read()
         
         # Check for run tasks
-        assert 'run_binance_connector' in content, "data_ingestion must have run task"
-        assert 'run_trade_aggregation' in content, "trade_aggregation must have run task"
-        assert 'run_technical_indicators' in content, "technical_indicators must have run task"
+        assert 'run_trade_aggregation_job' in content, "DAG must have run_trade_aggregation_job task"
+        assert 'run_technical_indicators_job' in content, "DAG must have run_technical_indicators_job task"
+        assert 'run_anomaly_detection_job' in content, "DAG must have run_anomaly_detection_job task"
     
     def test_dag_sets_dependencies(self, dag_file_path):
-        """Test DAG sets dependencies between TaskGroups."""
+        """Test DAG sets dependencies between tasks."""
         with open(dag_file_path, 'r') as f:
             content = f.read()
         
         # Check for dependency operators
         assert '>>' in content, "DAG must set dependencies using >> operator"
         
-        # Check for specific dependency chain (may be on multiple lines)
-        has_ingestion_to_aggregation = 'data_ingestion_group' in content and 'trade_aggregation_group' in content
-        has_aggregation_to_downstream = 'trade_aggregation_group' in content and (
-            'technical_indicators_group' in content or 'anomaly_detection_group' in content
-        )
+        # Check for health checks to aggregation dependency
+        assert 'test_redis_health' in content and 'run_trade_aggregation_job' in content
         
-        assert has_ingestion_to_aggregation, \
-            "DAG must set dependency: data_ingestion_group >> trade_aggregation_group"
-        assert has_aggregation_to_downstream, \
-            "DAG must set dependency from trade_aggregation_group to downstream groups"
+        # Check for sequential job dependencies
+        assert 'run_trade_aggregation_job' in content and 'run_technical_indicators_job' in content
+        assert 'run_technical_indicators_job' in content and 'run_anomaly_detection_job' in content
     
     def test_dag_has_correct_dag_id(self, dag_file_path):
         """Test DAG has correct dag_id."""
         with open(dag_file_path, 'r') as f:
             content = f.read()
         
-        assert "dag_id='streaming_pipeline'" in content or 'dag_id="streaming_pipeline"' in content, \
-            "DAG must have dag_id='streaming_pipeline'"
+        assert "dag_id='streaming_processing_dag'" in content or 'dag_id="streaming_processing_dag"' in content, \
+            "DAG must have dag_id='streaming_processing_dag'"
     
-    def test_dag_has_manual_schedule(self, dag_file_path):
-        """Test DAG is configured for manual triggering."""
+    def test_dag_has_schedule(self, dag_file_path):
+        """Test DAG is configured with schedule interval."""
         with open(dag_file_path, 'r') as f:
             content = f.read()
         
-        assert 'schedule_interval=None' in content, \
-            "DAG must have schedule_interval=None for manual triggering"
+        assert 'schedule_interval=' in content, \
+            "DAG must have schedule_interval configured"
     
     def test_dag_has_tags(self, dag_file_path):
         """Test DAG has appropriate tags."""

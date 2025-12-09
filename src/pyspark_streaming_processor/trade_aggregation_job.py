@@ -28,6 +28,7 @@ from pyspark.sql.types import (
 
 from .config import Config
 from .connectors import RedisConnector
+from .graceful_shutdown import GracefulShutdown
 
 # Import storage tier classes for StorageWriter integration
 from src.storage.redis_storage import RedisStorage
@@ -91,9 +92,16 @@ class TradeAggregationJob:
         
         # Micro-batch auto-stop attributes
         self.empty_batch_count: int = 0
-        self.empty_batch_threshold: int = 3
-        self.max_runtime_seconds: int = 30  # 30 seconds
+        self.empty_batch_threshold: int = 2  # Stop quickly when no new data
+        self.max_runtime_seconds: int = 60  # 1 minute per job
         self.start_time: Optional[float] = None
+        
+        # Initialize GracefulShutdown for controlled shutdown behavior
+        self.graceful_shutdown = GracefulShutdown(
+            graceful_shutdown_timeout=30,
+            shutdown_progress_interval=5,
+            logger=self.logger
+        )
         
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -126,9 +134,13 @@ class TradeAggregationJob:
         return logger
     
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals."""
-        self.logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        """Handle shutdown signals with graceful shutdown support."""
+        # Delegate to GracefulShutdown for proper shutdown handling
+        self.graceful_shutdown.request_shutdown(signum)
         self.shutdown_requested = True
+        
+        # Stop the query to trigger shutdown sequence
+        # The actual termination will wait for batch completion in run()
         if self.query:
             self.query.stop()
     
@@ -184,6 +196,7 @@ class TradeAggregationJob:
         spark = (SparkSession.builder
                  .appName(self.config.spark.app_name)
                  .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0")
+                 .config("spark.sql.caseSensitive", "true")  # Enable case-sensitive field names (e vs E, t vs T)
                  .config("spark.executor.memory", executor_memory)
                  .config("spark.driver.memory", driver_memory)
                  .config("spark.executor.cores", str(self.config.spark.executor_cores))
@@ -194,6 +207,12 @@ class TradeAggregationJob:
                         str(self.config.spark.backpressure_enabled).lower())
                  .config("spark.sql.streaming.checkpointLocation", 
                         self.config.spark.checkpoint_location)
+                 # State store reliability settings
+                 .config("spark.sql.streaming.minBatchesToRetain", 
+                        str(self.config.spark.state_store_min_batches_to_retain))
+                 .config("spark.sql.streaming.stateStore.maintenanceInterval",
+                        self.config.spark.state_store_maintenance_interval)
+                 .config("spark.sql.streaming.stateStore.stateSchemaCheck", "false")
                  .getOrCreate())
         
         # Set log level
@@ -383,11 +402,14 @@ class TradeAggregationJob:
         self.logger.info(f"Kafka bootstrap servers: {self.config.kafka.bootstrap_servers}")
         
         try:
+            # Use "earliest" so checkpoint can track progress
+            # When job restarts, it continues from last checkpoint offset (not from beginning)
+            # This ensures no data is lost when job is temporarily stopped
             df = (self.spark.readStream
                   .format("kafka")
                   .option("kafka.bootstrap.servers", self.config.kafka.bootstrap_servers)
                   .option("subscribe", self.config.kafka.topic_raw_trades)
-                  .option("startingOffsets", self.config.kafka.starting_offsets)
+                  .option("startingOffsets", "earliest")
                   .option("maxOffsetsPerTrigger", 
                          str(self.config.kafka.max_rate_per_partition * 10))
                   .load())
@@ -411,20 +433,29 @@ class TradeAggregationJob:
         Returns:
             DataFrame with parsed trade fields and watermark
         """
-        # Define schema for Binance connector format
+        # Define schema for Binance connector EnrichedMessage format
+        # Must match fields from EnrichedMessage in binance_kafka_connector/models.py
+        # Note: spark.sql.caseSensitive=true is enabled to distinguish e/E and t/T fields
         original_data_schema = StructType([
-            StructField("E", LongType(), False),  # Event time
-            StructField("s", StringType(), False),  # Symbol
-            StructField("p", StringType(), False),  # Price
-            StructField("q", StringType(), False),  # Quantity
-            StructField("m", BooleanType(), False),  # Is buyer maker
-            StructField("t", LongType(), True)  # Trade ID
+            StructField("e", StringType(), True),   # Event type ("trade")
+            StructField("E", LongType(), True),     # Event time (milliseconds)
+            StructField("s", StringType(), True),   # Symbol
+            StructField("t", LongType(), True),     # Trade ID
+            StructField("p", StringType(), True),   # Price
+            StructField("q", StringType(), True),   # Quantity
+            StructField("T", LongType(), True),     # Trade time (milliseconds)
+            StructField("m", BooleanType(), True),  # Is buyer maker
         ])
         
+        # Full EnrichedMessage schema matching binance_kafka_connector/models.py
         trade_schema = StructType([
-            StructField("original_data", original_data_schema, False),
-            StructField("symbol", StringType(), False),
-            StructField("ingestion_timestamp", LongType(), False)
+            StructField("original_data", original_data_schema, True),
+            StructField("ingestion_timestamp", LongType(), True),
+            StructField("source", StringType(), True),
+            StructField("data_version", StringType(), True),
+            StructField("symbol", StringType(), True),
+            StructField("stream_type", StringType(), True),
+            StructField("topic", StringType(), True)
         ])
         
         self.logger.info("Parsing trade messages with Binance connector schema")
@@ -440,13 +471,15 @@ class TradeAggregationJob:
             )
             
             # Extract fields and convert event_time to timestamp
+            # Use getField() to avoid case-insensitive ambiguity between 'E' and 'e'
+            original_data_col = col("trade").getField("original_data")
             extracted_df = parsed_df.select(
-                (col("trade.original_data.E") / 1000).cast(TimestampType()).alias("event_time"),
-                col("trade.symbol").alias("symbol"),
-                col("trade.original_data.p").cast(DoubleType()).alias("price"),
-                col("trade.original_data.q").cast(DoubleType()).alias("quantity"),
-                col("trade.original_data.m").alias("is_buyer_maker"),
-                col("trade.original_data.t").alias("trade_id"),
+                (original_data_col.getField("E") / 1000).cast(TimestampType()).alias("event_time"),
+                col("trade").getField("symbol").alias("symbol"),
+                original_data_col.getField("p").cast(DoubleType()).alias("price"),
+                original_data_col.getField("q").cast(DoubleType()).alias("quantity"),
+                original_data_col.getField("m").alias("is_buyer_maker"),
+                original_data_col.getField("t").alias("trade_id"),
                 col("topic"),
                 col("partition"),
                 col("offset")
@@ -574,11 +607,21 @@ class TradeAggregationJob:
         - Kafka (for downstream consumers)
         - Redis, DuckDB, Parquet (via StorageWriter for 3-tier storage)
         
+        Supports graceful shutdown:
+        - Checks should_skip_batch() at start to skip if shutdown requested
+        - Marks batch start/end for tracking
+        - Completes all writes even if shutdown requested mid-batch
+        
         Args:
             batch_df: Batch DataFrame to write
             batch_id: Batch identifier
         """
         try:
+            # Check if batch should be skipped due to shutdown request (Requirement 5.2)
+            if self.graceful_shutdown.should_skip_batch():
+                self.logger.info(f"Batch {batch_id}: Skipping due to shutdown request")
+                return
+            
             start_time = time.time()
             
             self.logger.info(f"write_to_sinks called for batch {batch_id}")
@@ -598,6 +641,9 @@ class TradeAggregationJob:
             if is_empty:
                 self.logger.info(f"Batch {batch_id} is EMPTY, skipping writes")
                 return
+            
+            # Mark batch as started for graceful shutdown tracking (Requirement 5.1)
+            self.graceful_shutdown.mark_batch_start(batch_id)
             
             # Collect data for writing
             records = batch_df.collect()
@@ -689,8 +735,13 @@ class TradeAggregationJob:
                 watermark
             )
             
+            # Mark batch as completed for graceful shutdown tracking (Requirement 5.1)
+            self.graceful_shutdown.mark_batch_end(batch_id)
+            
         except Exception as e:
             self.logger.error(f"Batch {batch_id}: Error in write_to_sinks: {str(e)}", exc_info=True)
+            # Ensure batch is marked as ended even on error (Requirement 5.3)
+            self.graceful_shutdown.mark_batch_end(batch_id)
     
     def run(self) -> None:
         """
@@ -729,6 +780,7 @@ class TradeAggregationJob:
             self.logger.info(f"Reading from topic: {self.config.kafka.topic_raw_trades}")
             self.logger.info("Writing to 3-tier storage: Redis (hot), PostgreSQL (warm), MinIO (cold)")
             self.logger.info(f"Auto-stop config: max_runtime={self.max_runtime_seconds}s, empty_batch_threshold={self.empty_batch_threshold}")
+            self.logger.info(f"Graceful shutdown timeout: {self.graceful_shutdown.graceful_shutdown_timeout}s")
             
             # Write to multiple sinks using foreachBatch
             query = (enriched_df
@@ -745,7 +797,17 @@ class TradeAggregationJob:
             # The query will also stop if should_stop() returns True in write_to_sinks
             query.awaitTermination(timeout=self.max_runtime_seconds)
             
-            self.logger.info("Trade Aggregation Job completed successfully")
+            # Wait for any in-progress batch to complete (Requirement 1.3, 1.4)
+            was_graceful = self.graceful_shutdown.wait_for_batch_completion()
+            
+            # Log whether shutdown was graceful or forced (Requirement 3.3)
+            if self.graceful_shutdown.shutdown_requested:
+                if was_graceful:
+                    self.logger.info("Trade Aggregation Job shutdown completed gracefully")
+                else:
+                    self.logger.warning("Trade Aggregation Job shutdown was forced due to timeout")
+            else:
+                self.logger.info("Trade Aggregation Job completed successfully")
             
         except Exception as e:
             self.logger.error(f"Job failed with error: {str(e)}", 

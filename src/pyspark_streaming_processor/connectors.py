@@ -1,7 +1,7 @@
 """
 Connector utilities for PySpark Streaming Processor.
 
-Provides RedisConnector, DuckDBConnector, KafkaConnector, and ParquetWriter
+Provides RedisConnector, DuckDBConnector, and KafkaConnector
 classes for writing data to various sinks.
 """
 
@@ -65,52 +65,6 @@ class KafkaConnector:
         if self._producer:
             self._producer.close()
             self._producer = None
-
-
-class ParquetWriter:
-    """
-    Parquet writer for writing data to Parquet files.
-    
-    Note: For Spark Structured Streaming, Parquet writes are typically done
-    through the DataFrame API. This class is for non-Spark Parquet operations.
-    """
-    
-    def __init__(self, output_path: str):
-        """
-        Initialize Parquet writer.
-        
-        Args:
-            output_path: Base path for Parquet output
-        """
-        self.output_path = output_path
-    
-    def write(
-        self,
-        data: List[Dict[str, Any]],
-        partition_cols: Optional[List[str]] = None
-    ) -> None:
-        """
-        Write data to Parquet file.
-        
-        Args:
-            data: List of dictionaries to write
-            partition_cols: Optional columns to partition by
-        """
-        if not data:
-            return
-        
-        import pandas as pd
-        
-        df = pd.DataFrame(data)
-        
-        if partition_cols:
-            df.to_parquet(
-                self.output_path,
-                partition_cols=partition_cols,
-                engine='pyarrow'
-            )
-        else:
-            df.to_parquet(self.output_path, engine='pyarrow')
 
 
 class RedisConnector:

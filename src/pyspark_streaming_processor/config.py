@@ -25,8 +25,8 @@ class KafkaConfig:
     topic_alerts: str = "alerts"
     
     # Consumer settings
-    max_rate_per_partition: int = 100
-    starting_offsets: str = "latest"
+    max_rate_per_partition: int = 50000  # High throughput for catching up
+    starting_offsets: str = "latest"  # Start from latest to avoid processing old backlog
     
     # Producer settings
     compression_type: str = "snappy"
@@ -45,7 +45,7 @@ class KafkaConfig:
             topic_processed_aggregations=os.getenv("TOPIC_PROCESSED_AGGREGATIONS", "processed_aggregations"),
             topic_processed_indicators=os.getenv("TOPIC_PROCESSED_INDICATORS", "processed_indicators"),
             topic_alerts=os.getenv("TOPIC_ALERTS", "alerts"),
-            max_rate_per_partition=int(os.getenv("KAFKA_MAX_RATE_PER_PARTITION", "100")),
+            max_rate_per_partition=int(os.getenv("KAFKA_MAX_RATE_PER_PARTITION", "50000")),
             starting_offsets=os.getenv("KAFKA_STARTING_OFFSETS", "latest"),
             compression_type=os.getenv("KAFKA_COMPRESSION_TYPE", "snappy"),
             enable_idempotence=os.getenv("KAFKA_ENABLE_IDEMPOTENCE", "true").lower() == "true",
@@ -64,9 +64,13 @@ class SparkConfig:
     executor_cores: int = 1
     shuffle_partitions: int = 2
     
-    # Streaming settings
-    checkpoint_location: str = "/tmp/spark-checkpoints"
+    # Streaming settings - use persistent location instead of /tmp
+    checkpoint_location: str = "/opt/airflow/data/spark-checkpoints"
     checkpoint_interval: str = "30 seconds"
+    
+    # State store settings for reliability
+    state_store_min_batches_to_retain: int = 10
+    state_store_maintenance_interval: str = "30s"
     
     # Backpressure
     backpressure_enabled: bool = True
@@ -74,14 +78,19 @@ class SparkConfig:
     @classmethod
     def from_env(cls, job_name: str) -> "SparkConfig":
         """Create configuration from environment variables."""
+        # Use persistent checkpoint location (not /tmp which can be cleared)
+        default_checkpoint = f"/opt/airflow/data/spark-checkpoints/{job_name}"
+        
         return cls(
             app_name=os.getenv("SPARK_APP_NAME", job_name),
             executor_memory=os.getenv("SPARK_EXECUTOR_MEMORY", "512m"),
             driver_memory=os.getenv("SPARK_DRIVER_MEMORY", "512m"),
             executor_cores=int(os.getenv("SPARK_EXECUTOR_CORES", "1")),
             shuffle_partitions=int(os.getenv("SPARK_SHUFFLE_PARTITIONS", "2")),
-            checkpoint_location=os.getenv("SPARK_CHECKPOINT_LOCATION", f"/tmp/spark-checkpoints/{job_name}"),
+            checkpoint_location=os.getenv("SPARK_CHECKPOINT_LOCATION", default_checkpoint),
             checkpoint_interval=os.getenv("SPARK_CHECKPOINT_INTERVAL", "30 seconds"),
+            state_store_min_batches_to_retain=int(os.getenv("SPARK_STATE_STORE_MIN_BATCHES", "10")),
+            state_store_maintenance_interval=os.getenv("SPARK_STATE_STORE_MAINTENANCE_INTERVAL", "30s"),
             backpressure_enabled=os.getenv("SPARK_BACKPRESSURE_ENABLED", "true").lower() == "true",
         )
 
@@ -203,38 +212,20 @@ class MinioConfig:
 
 
 @dataclass
-class ParquetConfig:
-    """Parquet output configuration."""
-    
-    output_path: str = "/tmp/parquet_output"
-    compression: str = "snappy"
-    partition_columns: List[str] = None
-    
-    def __post_init__(self):
-        if self.partition_columns is None:
-            self.partition_columns = ["date", "symbol"]
-    
-    @classmethod
-    def from_env(cls) -> "ParquetConfig":
-        """Create configuration from environment variables."""
-        partition_cols = os.getenv("PARQUET_PARTITION_COLUMNS", "date,symbol")
-        return cls(
-            output_path=os.getenv("PARQUET_OUTPUT_PATH", "/tmp/parquet_output"),
-            compression=os.getenv("PARQUET_COMPRESSION", "snappy"),
-            partition_columns=partition_cols.split(",") if partition_cols else ["date", "symbol"],
-        )
-
-
-@dataclass
 class Config:
-    """Main configuration container for streaming jobs."""
+    """Main configuration container for streaming jobs.
+    
+    Storage Architecture:
+    - Hot Path: Redis (real-time queries)
+    - Warm Path: PostgreSQL (90-day analytics)
+    - Cold Path: MinIO (historical archive)
+    """
     
     kafka: KafkaConfig
     spark: SparkConfig
     redis: RedisConfig
     postgres: PostgresConfig
     minio: MinioConfig
-    parquet: ParquetConfig
     
     # Logging
     log_level: str = "INFO"
@@ -251,7 +242,6 @@ class Config:
             redis=RedisConfig.from_env(),
             postgres=PostgresConfig.from_env(),
             minio=MinioConfig.from_env(),
-            parquet=ParquetConfig.from_env(),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             duckdb=DuckDBConfig.from_env(),  # Keep for backward compatibility
         )

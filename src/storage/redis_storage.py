@@ -253,8 +253,8 @@ class RedisStorage:
                 pipe.incrbyfloat("market:total_volume", float(ohlcv.get("volume", 0)))
                 pipe.expire("market:total_volume", self.TTL_1_HOUR)
                 
-                # Update volumes hash for bar chart
-                pipe.hset("market:volumes", symbol, str(ohlcv.get("volume", 0)))
+                # Update accumulated volumes hash for bar chart (per symbol)
+                pipe.hincrbyfloat("market:volumes", symbol, float(ohlcv.get("volume", 0)))
                 pipe.expire("market:volumes", self.TTL_1_HOUR)
         
         pipe.execute()

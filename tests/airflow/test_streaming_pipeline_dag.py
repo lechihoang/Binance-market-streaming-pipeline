@@ -1,11 +1,11 @@
 """
-Unit tests for streaming_pipeline_dag structure.
+Unit tests for streaming_processing_dag structure.
 
 Tests verify:
 - DAG contains expected TaskGroups
-- Each TaskGroup has required run tasks
-- Dependencies are set correctly
-- Optional test tasks work when added
+- Each TaskGroup contains expected tasks
+- Dependencies are set correctly between TaskGroups
+- Health checks precede streaming jobs
 """
 
 import pytest
@@ -42,8 +42,8 @@ except ImportError:
         
         The DAG structure can be verified manually by:
         1. Accessing Airflow UI at http://localhost:8080
-        2. Checking that streaming_pipeline DAG appears
-        3. Verifying TaskGroups in Graph view
+        2. Checking that streaming_processing_dag DAG appears
+        3. Verifying tasks in Graph view
         """
         pytest.skip("Airflow not installed - tests should run in Docker container")
     
@@ -51,7 +51,7 @@ except ImportError:
 
 
 class TestStreamingPipelineDAG:
-    """Test suite for streaming_pipeline DAG structure."""
+    """Test suite for streaming_processing_dag structure."""
     
     @pytest.fixture(scope='class')
     def dagbag(self):
@@ -60,103 +60,173 @@ class TestStreamingPipelineDAG:
     
     @pytest.fixture(scope='class')
     def dag(self, dagbag):
-        """Get streaming_pipeline DAG."""
-        dag_id = 'streaming_pipeline'
+        """Get streaming_processing_dag DAG."""
+        dag_id = 'streaming_processing_dag'
         assert dag_id in dagbag.dags, f"DAG {dag_id} not found in DagBag"
         return dagbag.dags[dag_id]
     
     def test_dag_loaded(self, dagbag):
-        """Test that streaming_pipeline DAG is loaded without errors."""
-        assert 'streaming_pipeline' in dagbag.dags
+        """Test that streaming_processing_dag DAG is loaded without errors."""
+        assert 'streaming_processing_dag' in dagbag.dags
         assert len(dagbag.import_errors) == 0, f"DAG import errors: {dagbag.import_errors}"
     
     def test_dag_has_correct_properties(self, dag):
         """Test DAG has correct configuration."""
-        assert dag.dag_id == 'streaming_pipeline'
-        assert dag.schedule_interval is None  # Manual trigger
+        assert dag.dag_id == 'streaming_processing_dag'
+        assert dag.schedule_interval == '* * * * *'  # Every minute
         assert dag.catchup is False
         assert 'streaming' in dag.tags
-        assert 'production' in dag.tags
+        assert 'spark' in dag.tags
+        assert 'processing' in dag.tags
     
-    def test_dag_contains_task_groups(self, dag):
-        """Test DAG contains expected TaskGroups."""
-        # Get all task groups from the DAG
-        task_groups = []
-        for task in dag.tasks:
-            if task.task_group and task.task_group.group_id != dag.dag_id:
-                if task.task_group.group_id not in task_groups:
-                    task_groups.append(task.task_group.group_id)
-        
-        # Verify expected task groups exist
-        expected_groups = ['data_ingestion', 'trade_aggregation', 'technical_indicators']
-        for group_id in expected_groups:
-            assert group_id in task_groups, f"TaskGroup {group_id} not found in DAG"
+    # ==========================================================================
+    # TaskGroup Structure Tests (Requirements 1.1-1.5)
+    # ==========================================================================
     
-    def test_data_ingestion_group_has_run_task(self, dag):
-        """Test data_ingestion TaskGroup has run task."""
-        # Find tasks in data_ingestion group
-        ingestion_tasks = [
-            task for task in dag.tasks
-            if task.task_group and task.task_group.group_id == 'data_ingestion'
-        ]
+    def test_dag_contains_health_checks_taskgroup(self, dag):
+        """Test DAG contains health_checks TaskGroup with expected tasks."""
+        task_group = dag.task_group_dict.get('health_checks')
+        assert task_group is not None, "health_checks TaskGroup not found"
         
-        assert len(ingestion_tasks) > 0, "data_ingestion TaskGroup has no tasks"
+        # Get task IDs within the TaskGroup (prefixed with group name)
+        task_ids = [task.task_id for task in dag.tasks]
         
-        # Check for run task (task_id includes group prefix like 'data_ingestion.run_binance_connector')
-        task_ids = [task.task_id for task in ingestion_tasks]
-        assert any('run_binance_connector' in tid for tid in task_ids), "run_binance_connector task not found"
+        assert 'health_checks.test_redis_health' in task_ids, "test_redis_health not in health_checks"
+        assert 'health_checks.test_postgres_health' in task_ids, "test_postgres_health not in health_checks"
+        assert 'health_checks.test_minio_health' in task_ids, "test_minio_health not in health_checks"
     
-    def test_trade_aggregation_group_has_run_task(self, dag):
-        """Test trade_aggregation TaskGroup has run task."""
-        # Find tasks in trade_aggregation group
-        aggregation_tasks = [
-            task for task in dag.tasks
-            if task.task_group and task.task_group.group_id == 'trade_aggregation'
-        ]
+    def test_dag_contains_trade_aggregation_taskgroup(self, dag):
+        """Test DAG contains trade_aggregation TaskGroup with expected tasks."""
+        task_group = dag.task_group_dict.get('trade_aggregation')
+        assert task_group is not None, "trade_aggregation TaskGroup not found"
         
-        assert len(aggregation_tasks) > 0, "trade_aggregation TaskGroup has no tasks"
+        task_ids = [task.task_id for task in dag.tasks]
         
-        # Check for run task (task_id includes group prefix like 'trade_aggregation.run_trade_aggregation_job')
-        task_ids = [task.task_id for task in aggregation_tasks]
-        assert any('run_trade_aggregation_job' in tid for tid in task_ids), "run_trade_aggregation_job task not found"
+        assert 'trade_aggregation.run_trade_aggregation_job' in task_ids, \
+            "run_trade_aggregation_job not in trade_aggregation"
+        assert 'trade_aggregation.validate_aggregation_output' in task_ids, \
+            "validate_aggregation_output not in trade_aggregation"
     
-    def test_technical_indicators_group_has_run_task(self, dag):
-        """Test technical_indicators TaskGroup has run task."""
-        # Find tasks in technical_indicators group
-        indicators_tasks = [
-            task for task in dag.tasks
-            if task.task_group and task.task_group.group_id == 'technical_indicators'
-        ]
+    def test_dag_contains_technical_indicators_taskgroup(self, dag):
+        """Test DAG contains technical_indicators TaskGroup with expected tasks."""
+        task_group = dag.task_group_dict.get('technical_indicators')
+        assert task_group is not None, "technical_indicators TaskGroup not found"
         
-        assert len(indicators_tasks) > 0, "technical_indicators TaskGroup has no tasks"
+        task_ids = [task.task_id for task in dag.tasks]
         
-        # Check for run task (task_id includes group prefix like 'technical_indicators.run_technical_indicators_job')
-        task_ids = [task.task_id for task in indicators_tasks]
-        assert any('run_technical_indicators_job' in tid for tid in task_ids), "run_technical_indicators_job task not found"
+        assert 'technical_indicators.run_technical_indicators_job' in task_ids, \
+            "run_technical_indicators_job not in technical_indicators"
+        assert 'technical_indicators.validate_indicators_output' in task_ids, \
+            "validate_indicators_output not in technical_indicators"
     
-    def test_dependencies_are_correct(self, dag):
-        """Test dependencies between TaskGroups are set correctly."""
-        # Get tasks
-        run_connector = dag.get_task('data_ingestion.run_binance_connector')
-        run_aggregation = dag.get_task('trade_aggregation.run_trade_aggregation_job')
-        run_indicators = dag.get_task('technical_indicators.run_technical_indicators_job')
+    def test_dag_contains_anomaly_detection_taskgroup(self, dag):
+        """Test DAG contains anomaly_detection TaskGroup with expected tasks."""
+        task_group = dag.task_group_dict.get('anomaly_detection')
+        assert task_group is not None, "anomaly_detection TaskGroup not found"
         
-        # Check downstream dependencies
-        # data_ingestion should be upstream of trade_aggregation
-        assert run_aggregation in run_connector.get_flat_relatives(upstream=False)
+        task_ids = [task.task_id for task in dag.tasks]
         
-        # trade_aggregation should be upstream of technical_indicators
-        assert run_indicators in run_aggregation.get_flat_relatives(upstream=False)
+        assert 'anomaly_detection.run_anomaly_detection_job' in task_ids, \
+            "run_anomaly_detection_job not in anomaly_detection"
+        assert 'anomaly_detection.validate_anomaly_output' in task_ids, \
+            "validate_anomaly_output not in anomaly_detection"
+    
+    def test_dag_contains_cleanup_taskgroup(self, dag):
+        """Test DAG contains cleanup TaskGroup with expected tasks."""
+        task_group = dag.task_group_dict.get('cleanup')
+        assert task_group is not None, "cleanup TaskGroup not found"
         
-        # Verify full chain: data_ingestion -> trade_aggregation -> technical_indicators
-        all_downstream_from_ingestion = run_connector.get_flat_relatives(upstream=False)
-        assert run_aggregation in all_downstream_from_ingestion
-        assert run_indicators in all_downstream_from_ingestion
+        task_ids = [task.task_id for task in dag.tasks]
+        
+        assert 'cleanup.cleanup_streaming' in task_ids, "cleanup_streaming not in cleanup"
+    
+    def test_all_taskgroups_exist(self, dag):
+        """Test all expected TaskGroups exist in the DAG."""
+        expected_groups = ['health_checks', 'trade_aggregation', 'technical_indicators', 
+                          'anomaly_detection', 'cleanup']
+        
+        for group_name in expected_groups:
+            assert group_name in dag.task_group_dict, f"TaskGroup '{group_name}' not found"
+    
+    # ==========================================================================
+    # TaskGroup Dependency Tests (Requirement 1.5)
+    # ==========================================================================
+    
+    def test_health_checks_upstream_of_trade_aggregation(self, dag):
+        """Test health_checks TaskGroup is upstream of trade_aggregation."""
+        # Get the first task in trade_aggregation group
+        aggregation_job = dag.get_task('trade_aggregation.run_trade_aggregation_job')
+        upstream_ids = [t.task_id for t in aggregation_job.upstream_list]
+        
+        # Health check tasks should be upstream
+        assert 'health_checks.test_redis_health' in upstream_ids, \
+            "Redis health check should be upstream of trade aggregation"
+        assert 'health_checks.test_postgres_health' in upstream_ids, \
+            "PostgreSQL health check should be upstream of trade aggregation"
+        assert 'health_checks.test_minio_health' in upstream_ids, \
+            "MinIO health check should be upstream of trade aggregation"
+    
+    def test_trade_aggregation_upstream_of_technical_indicators(self, dag):
+        """Test trade_aggregation TaskGroup is upstream of technical_indicators."""
+        indicators_job = dag.get_task('technical_indicators.run_technical_indicators_job')
+        upstream_ids = [t.task_id for t in indicators_job.upstream_list]
+        
+        # Validation task from trade_aggregation should be upstream
+        assert 'trade_aggregation.validate_aggregation_output' in upstream_ids, \
+            "trade_aggregation validation should be upstream of technical_indicators"
+    
+    def test_technical_indicators_upstream_of_anomaly_detection(self, dag):
+        """Test technical_indicators TaskGroup is upstream of anomaly_detection."""
+        anomaly_job = dag.get_task('anomaly_detection.run_anomaly_detection_job')
+        upstream_ids = [t.task_id for t in anomaly_job.upstream_list]
+        
+        # Validation task from technical_indicators should be upstream
+        assert 'technical_indicators.validate_indicators_output' in upstream_ids, \
+            "technical_indicators validation should be upstream of anomaly_detection"
+    
+    def test_anomaly_detection_upstream_of_cleanup(self, dag):
+        """Test anomaly_detection TaskGroup is upstream of cleanup."""
+        cleanup_task = dag.get_task('cleanup.cleanup_streaming')
+        upstream_ids = [t.task_id for t in cleanup_task.upstream_list]
+        
+        # Validation task from anomaly_detection should be upstream
+        assert 'anomaly_detection.validate_anomaly_output' in upstream_ids, \
+            "anomaly_detection validation should be upstream of cleanup"
+    
+    # ==========================================================================
+    # Internal TaskGroup Dependency Tests
+    # ==========================================================================
+    
+    def test_trade_aggregation_internal_dependencies(self, dag):
+        """Test internal dependencies within trade_aggregation TaskGroup."""
+        validate_task = dag.get_task('trade_aggregation.validate_aggregation_output')
+        upstream_ids = [t.task_id for t in validate_task.upstream_list]
+        
+        assert 'trade_aggregation.run_trade_aggregation_job' in upstream_ids, \
+            "run_trade_aggregation_job should be upstream of validate_aggregation_output"
+    
+    def test_technical_indicators_internal_dependencies(self, dag):
+        """Test internal dependencies within technical_indicators TaskGroup."""
+        validate_task = dag.get_task('technical_indicators.validate_indicators_output')
+        upstream_ids = [t.task_id for t in validate_task.upstream_list]
+        
+        assert 'technical_indicators.run_technical_indicators_job' in upstream_ids, \
+            "run_technical_indicators_job should be upstream of validate_indicators_output"
+    
+    def test_anomaly_detection_internal_dependencies(self, dag):
+        """Test internal dependencies within anomaly_detection TaskGroup."""
+        validate_task = dag.get_task('anomaly_detection.validate_anomaly_output')
+        upstream_ids = [t.task_id for t in validate_task.upstream_list]
+        
+        assert 'anomaly_detection.run_anomaly_detection_job' in upstream_ids, \
+            "run_anomaly_detection_job should be upstream of validate_anomaly_output"
+    
+    # ==========================================================================
+    # General DAG Tests
+    # ==========================================================================
     
     def test_dag_has_no_cycles(self, dag):
         """Test DAG has no circular dependencies."""
-        # Airflow's DagBag validation should catch cycles
-        # But we can also verify by checking that no task is its own ancestor
         for task in dag.tasks:
             upstream_tasks = task.get_flat_relatives(upstream=True)
             assert task not in upstream_tasks, f"Task {task.task_id} has circular dependency"
@@ -168,3 +238,12 @@ class TestStreamingPipelineDAG:
         assert dag.default_args['owner'] == 'data-engineering'
         assert 'retries' in dag.default_args
         assert dag.default_args['retries'] == 2
+    
+    def test_dag_task_count(self, dag):
+        """Test DAG has expected number of tasks."""
+        # 3 health checks + 2 trade_aggregation + 2 technical_indicators + 
+        # 2 anomaly_detection + 1 cleanup = 10 tasks
+        expected_task_count = 10
+        actual_task_count = len(dag.tasks)
+        assert actual_task_count == expected_task_count, \
+            f"Expected {expected_task_count} tasks, found {actual_task_count}"

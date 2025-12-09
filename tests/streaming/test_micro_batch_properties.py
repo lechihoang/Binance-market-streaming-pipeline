@@ -552,89 +552,73 @@ class TestSequentialExecutionWithCorrectDependencies:
 
 
 @pytest.mark.skipif(not AIRFLOW_AVAILABLE, reason="Airflow not installed")
-class TestRetriggerIsFinalTask:
+class TestCleanupIsFinalTask:
     """
-    **Feature: micro-batch-processing, Property 5: Retrigger is final task**
+    **Feature: micro-batch-processing, Property 5: Cleanup is final task**
     
-    Property 5: Retrigger is final task
-    *For any* DAG configuration, the retrigger_dag task SHALL have no downstream 
-    dependencies and SHALL have wait_before_retrigger as its only upstream dependency.
+    Property 5: Cleanup is final task
+    *For any* DAG configuration, the cleanup_streaming task SHALL have no downstream 
+    dependencies and SHALL have run_anomaly_detection_job as its upstream dependency.
     **Validates: Requirements 3.3, 3.4**
+    
+    Note: The DAG uses schedule_interval for continuous processing instead of 
+    manual retriggering, so cleanup_streaming is the final task.
     """
     
-    def test_retrigger_has_no_downstream_dependencies(self):
+    def test_cleanup_has_no_downstream_dependencies(self):
         """
-        **Feature: micro-batch-processing, Property 5: Retrigger is final task**
+        **Feature: micro-batch-processing, Property 5: Cleanup is final task**
         
-        The retrigger_dag task should have no downstream dependencies.
+        The cleanup_streaming task should have no downstream dependencies.
         """
         dag = get_streaming_processing_dag()
         if dag is None:
             pytest.skip("DAG not available")
         
-        retrigger_task = dag.get_task('retrigger_dag')
-        if retrigger_task is None:
-            pytest.fail("retrigger_dag task not found in DAG")
+        cleanup_task = dag.get_task('cleanup_streaming')
+        if cleanup_task is None:
+            pytest.fail("cleanup_streaming task not found in DAG")
         
-        downstream_ids = get_direct_downstream_task_ids(retrigger_task)
+        downstream_ids = get_direct_downstream_task_ids(cleanup_task)
         
         assert len(downstream_ids) == 0, \
-            f"retrigger_dag should have no downstream dependencies, but has: {downstream_ids}"
+            f"cleanup_streaming should have no downstream dependencies, but has: {downstream_ids}"
 
-    def test_retrigger_has_wait_as_only_upstream(self):
+    def test_cleanup_has_anomaly_detection_as_upstream(self):
         """
-        **Feature: micro-batch-processing, Property 5: Retrigger is final task**
+        **Feature: micro-batch-processing, Property 5: Cleanup is final task**
         
-        The retrigger_dag task should have wait_before_retrigger as its only upstream dependency.
+        The cleanup_streaming task should have run_anomaly_detection_job as its upstream dependency.
         """
         dag = get_streaming_processing_dag()
         if dag is None:
             pytest.skip("DAG not available")
         
-        retrigger_task = dag.get_task('retrigger_dag')
-        if retrigger_task is None:
-            pytest.fail("retrigger_dag task not found in DAG")
+        cleanup_task = dag.get_task('cleanup_streaming')
+        if cleanup_task is None:
+            pytest.fail("cleanup_streaming task not found in DAG")
         
-        upstream_ids = get_direct_upstream_task_ids(retrigger_task)
+        upstream_ids = get_direct_upstream_task_ids(cleanup_task)
         
-        assert upstream_ids == {'wait_before_retrigger'}, \
-            f"retrigger_dag should have only 'wait_before_retrigger' as upstream, but has: {upstream_ids}"
-
-    def test_wait_task_has_cleanup_as_upstream(self):
-        """
-        **Feature: micro-batch-processing, Property 5: Retrigger is final task**
-        
-        The wait_before_retrigger task should have cleanup_streaming as its upstream dependency.
-        """
-        dag = get_streaming_processing_dag()
-        if dag is None:
-            pytest.skip("DAG not available")
-        
-        wait_task = dag.get_task('wait_before_retrigger')
-        if wait_task is None:
-            pytest.fail("wait_before_retrigger task not found in DAG")
-        
-        upstream_ids = get_direct_upstream_task_ids(wait_task)
-        
-        assert 'cleanup_streaming' in upstream_ids, \
-            f"wait_before_retrigger should have 'cleanup_streaming' as upstream, but has: {upstream_ids}"
+        assert 'run_anomaly_detection_job' in upstream_ids, \
+            f"cleanup_streaming should have 'run_anomaly_detection_job' as upstream, but has: {upstream_ids}"
 
     @settings(max_examples=100, deadline=None)
     @given(
         task_id=st.sampled_from([
             'test_redis_health', 'test_duckdb_health', 'test_parquet_path',
             'run_trade_aggregation_job', 'run_technical_indicators_job',
-            'run_anomaly_detection_job', 'cleanup_streaming', 'wait_before_retrigger'
+            'run_anomaly_detection_job'
         ]),
     )
-    def test_retrigger_is_downstream_of_all_other_tasks(
+    def test_cleanup_is_downstream_of_all_other_tasks(
         self,
         task_id: str,
     ):
         """
-        **Feature: micro-batch-processing, Property 5: Retrigger is final task**
+        **Feature: micro-batch-processing, Property 5: Cleanup is final task**
         
-        For any task in the DAG (except retrigger_dag itself), retrigger_dag 
+        For any task in the DAG (except cleanup_streaming itself), cleanup_streaming 
         should be in its downstream dependency chain.
         """
         dag = get_streaming_processing_dag()
@@ -653,20 +637,20 @@ class TestRetriggerIsFinalTask:
         
         downstream_ids = get_all_downstream_task_ids(task)
         
-        assert 'retrigger_dag' in downstream_ids, \
-            f"retrigger_dag should be downstream of '{task_id}', " \
+        assert 'cleanup_streaming' in downstream_ids, \
+            f"cleanup_streaming should be downstream of '{task_id}', " \
             f"but downstream tasks are: {downstream_ids}"
 
 
 @pytest.mark.skipif(not AIRFLOW_AVAILABLE, reason="Airflow not installed")
 class TestDAGConfiguration:
     """
-    Additional tests for DAG configuration related to self-trigger mechanism.
+    Additional tests for DAG configuration related to continuous processing.
     """
     
     def test_dag_has_max_active_runs_set_to_one(self):
         """
-        **Feature: micro-batch-processing, Property 5: Retrigger is final task**
+        **Feature: micro-batch-processing, Property 5: Cleanup is final task**
         
         The DAG should have max_active_runs=1 to prevent overlapping runs.
         **Validates: Requirements 2.3**
@@ -678,24 +662,18 @@ class TestDAGConfiguration:
         assert dag.max_active_runs == 1, \
             f"DAG should have max_active_runs=1, but has: {dag.max_active_runs}"
 
-    def test_retrigger_task_triggers_same_dag(self):
+    def test_dag_has_schedule_interval(self):
         """
-        **Feature: micro-batch-processing, Property 5: Retrigger is final task**
+        **Feature: micro-batch-processing, Property 5: Cleanup is final task**
         
-        The retrigger_dag task should trigger the same DAG (streaming_processing_dag).
+        The DAG should have a schedule_interval for continuous processing.
         **Validates: Requirements 2.4**
         """
         dag = get_streaming_processing_dag()
         if dag is None:
             pytest.skip("DAG not available")
         
-        retrigger_task = dag.get_task('retrigger_dag')
-        if retrigger_task is None:
-            pytest.fail("retrigger_dag task not found in DAG")
-        
-        # TriggerDagRunOperator has trigger_dag_id attribute
-        assert hasattr(retrigger_task, 'trigger_dag_id'), \
-            "retrigger_dag task should be a TriggerDagRunOperator"
-        assert retrigger_task.trigger_dag_id == 'streaming_processing_dag', \
-            f"retrigger_dag should trigger 'streaming_processing_dag', " \
-            f"but triggers: {retrigger_task.trigger_dag_id}"
+        assert dag.schedule_interval is not None, \
+            "DAG should have a schedule_interval for continuous processing"
+        assert dag.schedule_interval == '* * * * *', \
+            f"DAG should run every minute, but has schedule_interval: {dag.schedule_interval}"

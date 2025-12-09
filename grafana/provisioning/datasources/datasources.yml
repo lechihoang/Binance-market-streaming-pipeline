@@ -41,6 +41,7 @@ datasources:
     secureJsonData:
       password: crypto
     jsonData:
+      database: crypto_data
       sslmode: disable
       maxOpenConns: 10
       maxIdleConns: 5

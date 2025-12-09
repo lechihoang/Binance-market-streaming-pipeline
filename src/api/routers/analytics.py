@@ -220,6 +220,54 @@ def query_indicators_with_fallback(
     return [], "none"
 
 
+@router.get("/indicators/latest/{symbol}", response_model=List[IndicatorResponse])
+async def get_indicators_latest(
+    symbol: str,
+    response: Response,
+    limit: int = Query(default=100, ge=1, le=1000, description="Number of records"),
+    postgres: PostgresStorage = Depends(get_postgres),
+) -> List[IndicatorResponse]:
+    """Get latest technical indicators available in the system.
+    
+    Returns the most recent indicators regardless of time range.
+    
+    Args:
+        symbol: Trading pair symbol (e.g., BTCUSDT)
+        limit: Maximum number of records to return
+        
+    Returns:
+        List of IndicatorResponse with indicator data
+    """
+    try:
+        now = datetime.now()
+        start = now - timedelta(days=90)
+        data = postgres.query_indicators(symbol, start, now)
+        
+        if data:
+            data = data[-limit:]
+            response.headers["X-Data-Source"] = "postgres"
+            return [
+                IndicatorResponse(
+                    timestamp=record.get("timestamp"),
+                    rsi=record.get("rsi"),
+                    macd=record.get("macd"),
+                    macd_signal=record.get("macd_signal"),
+                    sma_20=record.get("sma_20"),
+                    ema_12=record.get("ema_12"),
+                    ema_26=record.get("ema_26"),
+                    bb_upper=record.get("bb_upper"),
+                    bb_lower=record.get("bb_lower"),
+                    atr=record.get("atr"),
+                )
+                for record in data
+            ]
+    except Exception as e:
+        logger.warning(f"PostgreSQL query failed: {e}")
+    
+    response.headers["X-Data-Source"] = "none"
+    return []
+
+
 @router.get("/indicators/{symbol}", response_model=List[IndicatorResponse])
 async def get_indicators(
     symbol: str,
@@ -554,6 +602,62 @@ class VolumeHeatmapResponse(BaseModel):
     volume: float
 
 
+@router.get("/ohlc/latest", response_model=List[OHLCResponse])
+async def get_ohlc_latest(
+    response: Response,
+    symbol: str = Query(description="Trading pair symbol"),
+    interval: str = Query(default="1m", description="Candle interval (1m, 5m, 15m, 1h)"),
+    limit: int = Query(default=100, ge=1, le=1000, description="Number of records"),
+    postgres: PostgresStorage = Depends(get_postgres),
+) -> List[OHLCResponse]:
+    """Get latest OHLC candlestick data available in the system.
+    
+    Returns the most recent candles regardless of time range.
+    Useful when real-time data may not be available.
+    
+    Args:
+        symbol: Trading pair symbol (e.g., BTCUSDT)
+        interval: Candle interval (1m, 5m, 15m, 1h)
+        limit: Maximum number of records to return
+        
+    Returns:
+        List of OHLCResponse with candlestick data
+    """
+    # Validate interval
+    if interval not in VALID_INTERVALS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_INTERVALS))}"
+        )
+    
+    # Query latest candles directly from PostgreSQL
+    try:
+        # Query last 90 days to get any available data
+        now = datetime.now()
+        start = now - timedelta(days=90)
+        candles = postgres.query_candles(symbol, start, now, interval=interval)
+        
+        if candles:
+            # Return latest records up to limit
+            candles = candles[-limit:]
+            response.headers["X-Data-Source"] = "postgres"
+            return [
+                OHLCResponse(
+                    timestamp=record.get("timestamp", datetime.now()),
+                    open=record.get("open", 0.0),
+                    high=record.get("high", 0.0),
+                    low=record.get("low", 0.0),
+                    close=record.get("close", 0.0),
+                )
+                for record in candles
+            ]
+    except Exception as e:
+        logger.warning(f"PostgreSQL query failed: {e}")
+    
+    response.headers["X-Data-Source"] = "none"
+    return []
+
+
 @router.get("/ohlc", response_model=List[OHLCResponse])
 async def get_ohlc(
     response: Response,
@@ -561,7 +665,7 @@ async def get_ohlc(
     interval: str = Query(default="1m", description="Candle interval"),
     start: Optional[datetime] = Query(default=None, description="Start time"),
     end: Optional[datetime] = Query(default=None, description="End time"),
-    postgres: PostgresStorage = Depends(get_postgres),
+    query_router: QueryRouter = Depends(get_query_router),
     minio: MinioStorage = Depends(get_minio),
 ) -> List[OHLCResponse]:
     """Get OHLC candlestick data for charting.
@@ -592,9 +696,9 @@ async def get_ohlc(
     # Validate time range
     validate_time_range(start, end)
     
-    # Query candles with fallback
-    candles, data_source = query_candles_with_fallback(
-        postgres, minio, symbol, start, end
+    # Query candles using QueryRouter (same as /klines)
+    candles, data_source = query_klines_with_fallback(
+        query_router, minio, symbol, start, end
     )
     
     # Add X-Data-Source header

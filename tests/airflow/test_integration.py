@@ -26,64 +26,67 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 
 # Import DAGs
-from streaming_pipeline_dag import dag as streaming_dag
+from streaming_processing_dag import dag as streaming_dag
 
 
 class TestFullPipelineExecution:
     """Integration tests for full pipeline execution."""
     
     def test_streaming_pipeline_structure(self):
-        """Test that streaming pipeline DAG has correct structure."""
+        """Test that streaming processing DAG has correct structure."""
         # Verify DAG exists and is valid
         assert streaming_dag is not None
-        assert streaming_dag.dag_id == 'streaming_pipeline'
+        assert streaming_dag.dag_id == 'streaming_processing_dag'
         
-        # Verify task groups exist
-        task_group_ids = [tg.group_id for tg in streaming_dag.task_group_dict.values() if isinstance(tg, TaskGroup)]
-        assert 'data_ingestion' in task_group_ids
-        assert 'trade_aggregation' in task_group_ids
-        assert 'technical_indicators' in task_group_ids
-        assert 'anomaly_detection' in task_group_ids
-        
-        # Verify each task group has run tasks
+        # Verify tasks exist (this DAG uses flat structure, not task groups)
         tasks = streaming_dag.tasks
         task_ids = [t.task_id for t in tasks]
         
-        # Check for run tasks in each group
-        assert any('run_binance_connector' in tid for tid in task_ids)
-        assert any('run_trade_aggregation' in tid for tid in task_ids)
-        assert any('run_technical_indicators' in tid for tid in task_ids)
-        assert any('run_anomaly_detection' in tid for tid in task_ids)
+        # Check for health check tasks (3-tier storage)
+        assert 'test_redis_health' in task_ids
+        assert 'test_postgres_health' in task_ids
+        assert 'test_minio_health' in task_ids
+        
+        # Check for run tasks
+        assert 'run_trade_aggregation_job' in task_ids
+        assert 'run_technical_indicators_job' in task_ids
+        assert 'run_anomaly_detection_job' in task_ids
+        
+        # Check for cleanup task
+        assert 'cleanup_streaming' in task_ids
     
     def test_streaming_pipeline_dependencies(self):
         """Test that streaming pipeline has correct task dependencies."""
         # Get all tasks
         tasks = {t.task_id: t for t in streaming_dag.tasks}
         
-        # Find tasks in each group
-        ingestion_task = None
-        aggregation_task = None
-        indicators_task = None
+        # Get specific tasks
+        aggregation_task = tasks.get('run_trade_aggregation_job')
+        indicators_task = tasks.get('run_technical_indicators_job')
+        anomaly_task = tasks.get('run_anomaly_detection_job')
+        cleanup_task = tasks.get('cleanup_streaming')
         
-        for task_id, task in tasks.items():
-            if 'data_ingestion' in task_id and 'run_binance_connector' in task_id:
-                ingestion_task = task
-            elif 'trade_aggregation' in task_id and 'run_trade_aggregation' in task_id:
-                aggregation_task = task
-            elif 'technical_indicators' in task_id and 'run_technical_indicators' in task_id:
-                indicators_task = task
-        
-        # Verify dependencies exist
-        # aggregation_task should have ingestion_task as upstream (possibly through health check tasks)
-        if aggregation_task and ingestion_task:
+        # Verify aggregation task has all 3 storage health checks as upstream
+        if aggregation_task:
             upstream_ids = [t.task_id for t in aggregation_task.upstream_list]
-            # Check direct upstream or through health check tasks in the same group
-            assert ingestion_task.task_id in upstream_ids or any('trade_aggregation' in uid for uid in upstream_ids)
+            assert 'test_redis_health' in upstream_ids
+            assert 'test_postgres_health' in upstream_ids
+            assert 'test_minio_health' in upstream_ids
         
-        # indicators_task should have aggregation_task as upstream
-        if indicators_task and aggregation_task:
+        # Verify indicators task has aggregation as upstream
+        if indicators_task:
             upstream_ids = [t.task_id for t in indicators_task.upstream_list]
-            assert aggregation_task.task_id in upstream_ids or any('trade_aggregation' in uid for uid in upstream_ids)
+            assert 'run_trade_aggregation_job' in upstream_ids
+        
+        # Verify anomaly task has indicators as upstream
+        if anomaly_task:
+            upstream_ids = [t.task_id for t in anomaly_task.upstream_list]
+            assert 'run_technical_indicators_job' in upstream_ids
+        
+        # Verify cleanup task has anomaly as upstream
+        if cleanup_task:
+            upstream_ids = [t.task_id for t in cleanup_task.upstream_list]
+            assert 'run_anomaly_detection_job' in upstream_ids
 
 
 class TestFailurePropagation:
@@ -209,7 +212,7 @@ class TestAutoDiscovery:
         
         # Verify our DAGs are loaded
         dag_ids = list(dagbag.dag_ids)
-        assert 'streaming_pipeline' in dag_ids
+        assert 'streaming_processing_dag' in dag_ids
     
     def test_new_dag_can_be_discovered(self):
         """Test that a new DAG file can be discovered by DagBag."""
@@ -331,12 +334,13 @@ class TestDAGConfiguration:
     """Integration tests for DAG configuration."""
     
     def test_streaming_dag_has_correct_config(self):
-        """Test that streaming pipeline DAG has correct configuration."""
-        assert streaming_dag.dag_id == 'streaming_pipeline'
-        assert streaming_dag.schedule_interval is None  # Manual trigger
+        """Test that streaming processing DAG has correct configuration."""
+        assert streaming_dag.dag_id == 'streaming_processing_dag'
+        assert streaming_dag.schedule_interval == '* * * * *'  # Every minute
         assert streaming_dag.catchup is False
         assert 'streaming' in streaming_dag.tags
-        assert 'production' in streaming_dag.tags
+        assert 'spark' in streaming_dag.tags
+        assert 'processing' in streaming_dag.tags
         
         # Verify default args
         assert streaming_dag.default_args['owner'] == 'data-engineering'

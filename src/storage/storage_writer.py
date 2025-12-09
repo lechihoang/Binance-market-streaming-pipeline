@@ -1,17 +1,16 @@
 """
 StorageWriter - Multi-tier write coordinator.
 
-Writes data to all 3 storage tiers (Redis, PostgreSQL/DuckDB, MinIO/Parquet)
+Writes data to all 3 storage tiers (Redis, PostgreSQL/DuckDB, MinIO)
 with partial failure resilience.
 """
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Union
 
 from .redis_storage import RedisStorage
 from .duckdb_storage import DuckDBStorage
-from .parquet_storage import ParquetStorage
 from .postgres_storage import PostgresStorage
 from .minio_storage import MinioStorage
 
@@ -24,57 +23,48 @@ class StorageWriter:
     Implements multi-tier write strategy:
     - Redis: overwrite latest values (hot path)
     - PostgreSQL/DuckDB: upsert on (symbol, timestamp) (warm path)
-    - MinIO/Parquet: append partitioned files (cold path)
+    - MinIO: append partitioned files (cold path)
     
     Handles partial failures by logging errors and continuing
     to write to other sinks.
-    
-    Supports both legacy (DuckDB + Parquet) and new (PostgreSQL + MinIO)
-    storage backends for backward compatibility.
     """
     
     def __init__(
         self,
         redis: RedisStorage,
         duckdb: Optional[DuckDBStorage] = None,
-        parquet: Optional[ParquetStorage] = None,
         postgres: Optional[PostgresStorage] = None,
         minio: Optional[MinioStorage] = None,
     ):
         """Initialize StorageWriter with storage tier instances.
         
-        Supports both legacy and new storage backends. If both are provided,
-        the new backends (PostgreSQL, MinIO) take precedence.
-        
         Args:
             redis: RedisStorage instance for hot path
             duckdb: DuckDBStorage instance for warm path (legacy)
-            parquet: ParquetStorage instance for cold path (legacy)
-            postgres: PostgresStorage instance for warm path (new)
-            minio: MinioStorage instance for cold path (new)
+            postgres: PostgresStorage instance for warm path (preferred)
+            minio: MinioStorage instance for cold path
         """
         self.redis = redis
         self.duckdb = duckdb
-        self.parquet = parquet
         self.postgres = postgres
         self.minio = minio
         
         # Determine which warm path storage to use (prefer postgres)
         self._warm_storage: Optional[Union[PostgresStorage, DuckDBStorage]] = postgres or duckdb
-        # Determine which cold path storage to use (prefer minio)
-        self._cold_storage: Optional[Union[MinioStorage, ParquetStorage]] = minio or parquet
+        # Cold path storage (MinIO)
+        self._cold_storage: Optional[MinioStorage] = minio
         
         if self._warm_storage is None:
             logger.warning("No warm path storage configured (postgres or duckdb)")
         if self._cold_storage is None:
-            logger.warning("No cold path storage configured (minio or parquet)")
+            logger.warning("No cold path storage configured (minio)")
     
     def write_aggregation(self, data: Dict[str, Any]) -> Dict[str, bool]:
         """Write aggregation data to all 3 tiers.
         
         Redis: overwrite aggregations:{symbol}:{interval} hash
         PostgreSQL/DuckDB: upsert into trades_1m table
-        MinIO/Parquet: append to klines partition
+        MinIO: append to klines partition
         
         Args:
             data: Dict with keys: timestamp, symbol, interval, open, high, low,
@@ -123,7 +113,7 @@ class StorageWriter:
             storage_name = "PostgreSQL" if self.postgres else "DuckDB"
             logger.error(f"{storage_name} write_aggregation failed for {symbol}: {e}")
         
-        # Write to cold path (MinIO or Parquet)
+        # Write to cold path (MinIO)
         try:
             kline = {
                 'timestamp': data.get('timestamp'),
@@ -137,17 +127,11 @@ class StorageWriter:
                 'trades_count': data.get('trades_count', 0),
             }
             if self._cold_storage is not None:
-                if isinstance(self._cold_storage, MinioStorage):
-                    # MinIO requires symbol, data list, and date
-                    write_date = timestamp_dt or datetime.now()
-                    self._cold_storage.write_klines(symbol, [kline], write_date)
-                else:
-                    # ParquetStorage takes list of klines
-                    self._cold_storage.write_klines([kline])
+                write_date = timestamp_dt or datetime.now()
+                self._cold_storage.write_klines(symbol, [kline], write_date)
                 results['cold'] = True
         except Exception as e:
-            storage_name = "MinIO" if self.minio else "Parquet"
-            logger.error(f"{storage_name} write_aggregation failed for {symbol}: {e}")
+            logger.error(f"MinIO write_aggregation failed for {symbol}: {e}")
         
         self._log_write_result('aggregation', symbol, results)
         return results
@@ -157,7 +141,7 @@ class StorageWriter:
         
         Redis: overwrite indicators:{symbol} hash
         PostgreSQL/DuckDB: upsert into indicators table
-        MinIO/Parquet: append to indicators partition
+        MinIO: append to indicators partition
         
         Args:
             data: Dict with keys: timestamp, symbol, rsi, macd, macd_signal,
@@ -218,7 +202,7 @@ class StorageWriter:
             storage_name = "PostgreSQL" if self.postgres else "DuckDB"
             logger.error(f"{storage_name} write_indicators failed for {symbol}: {e}")
         
-        # Write to cold path (MinIO or Parquet)
+        # Write to cold path (MinIO)
         try:
             indicator_record = {
                 'timestamp': data.get('timestamp'),
@@ -234,17 +218,11 @@ class StorageWriter:
                 'atr': data.get('atr', 0),
             }
             if self._cold_storage is not None:
-                if isinstance(self._cold_storage, MinioStorage):
-                    # MinIO requires symbol, data list, and date
-                    write_date = timestamp_dt or datetime.now()
-                    self._cold_storage.write_indicators(symbol, [indicator_record], write_date)
-                else:
-                    # ParquetStorage takes list of indicators
-                    self._cold_storage.write_indicators([indicator_record])
+                write_date = timestamp_dt or datetime.now()
+                self._cold_storage.write_indicators(symbol, [indicator_record], write_date)
                 results['cold'] = True
         except Exception as e:
-            storage_name = "MinIO" if self.minio else "Parquet"
-            logger.error(f"{storage_name} write_indicators failed for {symbol}: {e}")
+            logger.error(f"MinIO write_indicators failed for {symbol}: {e}")
         
         self._log_write_result('indicators', symbol, results)
         return results
@@ -254,11 +232,11 @@ class StorageWriter:
         
         Redis: push to alerts:recent list
         PostgreSQL/DuckDB: insert into alerts table
-        MinIO/Parquet: append to alerts partition
+        MinIO: append to alerts partition
         
         Args:
-            data: Dict with keys: timestamp, symbol, alert_type, severity,
-                  message, metadata
+            data: Dict with keys: alert_id, timestamp, symbol, alert_type, 
+                  alert_level, created_at, details
                   
         Returns:
             Dict with success status for each tier
@@ -266,7 +244,7 @@ class StorageWriter:
         results = {'redis': False, 'warm': False, 'cold': False}
         symbol = data.get('symbol', '')
         
-        # Write to Redis (push to list)
+        # Write to Redis (push to list) - keep all fields for AnomalyValidator
         try:
             self.redis.write_alert(data)
             results['redis'] = True
@@ -274,15 +252,16 @@ class StorageWriter:
             logger.error(f"Redis write_alert failed for {symbol}: {e}")
         
         # Write to warm path (PostgreSQL or DuckDB)
+        # Map alert_level to severity for PostgreSQL schema compatibility
         timestamp_dt = self._to_datetime(data.get('timestamp'))
         try:
             alert_record = {
                 'timestamp': timestamp_dt,
                 'symbol': symbol,
                 'alert_type': data.get('alert_type'),
-                'severity': data.get('severity'),
-                'message': data.get('message'),
-                'metadata': data.get('metadata'),
+                'severity': data.get('alert_level'),  # Map alert_level to severity
+                'message': f"{data.get('alert_type')}: {symbol}",
+                'metadata': data.get('details'),
             }
             if self._warm_storage is not None:
                 self._warm_storage.insert_alert(alert_record)
@@ -291,28 +270,22 @@ class StorageWriter:
             storage_name = "PostgreSQL" if self.postgres else "DuckDB"
             logger.error(f"{storage_name} write_alert failed for {symbol}: {e}")
         
-        # Write to cold path (MinIO or Parquet)
+        # Write to cold path (MinIO)
         try:
             alert_record = {
                 'timestamp': data.get('timestamp'),
                 'symbol': symbol,
                 'alert_type': data.get('alert_type'),
-                'severity': data.get('severity'),
-                'message': data.get('message', ''),
-                'metadata': data.get('metadata'),
+                'severity': data.get('alert_level'),  # Map alert_level to severity
+                'message': f"{data.get('alert_type')}: {symbol}",
+                'metadata': data.get('details'),
             }
             if self._cold_storage is not None:
-                if isinstance(self._cold_storage, MinioStorage):
-                    # MinIO requires symbol, data list, and date
-                    write_date = timestamp_dt or datetime.now()
-                    self._cold_storage.write_alerts(symbol, [alert_record], write_date)
-                else:
-                    # ParquetStorage takes list of alerts
-                    self._cold_storage.write_alerts([alert_record])
+                write_date = timestamp_dt or datetime.now()
+                self._cold_storage.write_alerts(symbol, [alert_record], write_date)
                 results['cold'] = True
         except Exception as e:
-            storage_name = "MinIO" if self.minio else "Parquet"
-            logger.error(f"{storage_name} write_alert failed for {symbol}: {e}")
+            logger.error(f"MinIO write_alert failed for {symbol}: {e}")
         
         self._log_write_result('alert', symbol, results)
         return results
@@ -321,7 +294,7 @@ class StorageWriter:
         """Convert timestamp to datetime object.
         
         Args:
-            timestamp: Unix timestamp (seconds or milliseconds) or datetime
+            timestamp: Unix timestamp (seconds or milliseconds), datetime, or ISO string
             
         Returns:
             datetime object or None
@@ -335,6 +308,13 @@ class StorageWriter:
             if timestamp > 1e12:
                 return datetime.fromtimestamp(timestamp / 1000)
             return datetime.fromtimestamp(timestamp)
+        if isinstance(timestamp, str):
+            # Handle ISO format string
+            try:
+                return datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            except ValueError:
+                logger.warning(f"Failed to parse timestamp string: {timestamp}")
+                return None
         return None
     
     def _log_write_result(

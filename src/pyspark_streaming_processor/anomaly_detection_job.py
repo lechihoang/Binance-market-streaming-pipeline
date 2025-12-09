@@ -33,6 +33,7 @@ from pyspark.sql.types import (
 
 from .config import Config
 from .connectors import RedisConnector, DuckDBConnector, KafkaConnector
+from .graceful_shutdown import GracefulShutdown
 
 # Import storage tier classes for StorageWriter integration
 from src.storage.redis_storage import RedisStorage
@@ -110,9 +111,16 @@ class AnomalyDetectionJob:
 
         # Micro-batch auto-stop attributes
         self.empty_batch_count: int = 0
-        self.empty_batch_threshold: int = 3
-        self.max_runtime_seconds: int = 30  # 30 seconds
+        self.empty_batch_threshold: int = 2  # Stop quickly when no new data
+        self.max_runtime_seconds: int = 60  # 1 minute per job
         self.start_time: Optional[float] = None
+
+        # Initialize GracefulShutdown for controlled shutdown behavior
+        self.graceful_shutdown = GracefulShutdown(
+            graceful_shutdown_timeout=30,
+            shutdown_progress_interval=5,
+            logger=self.logger
+        )
 
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -145,9 +153,13 @@ class AnomalyDetectionJob:
         return logger
 
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals."""
-        self.logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        """Handle shutdown signals with graceful shutdown support."""
+        # Delegate to GracefulShutdown for proper shutdown handling
+        self.graceful_shutdown.request_shutdown(signum)
         self.shutdown_requested = True
+        
+        # Stop the query to trigger shutdown sequence
+        # The actual termination will wait for batch completion in run()
         if self.query:
             self.query.stop()
 
@@ -203,6 +215,7 @@ class AnomalyDetectionJob:
         spark = (SparkSession.builder
                  .appName(self.config.spark.app_name)
                  .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0")
+                 .config("spark.sql.caseSensitive", "true")  # Enable case-sensitive field names
                  .config("spark.executor.memory", executor_memory)
                  .config("spark.driver.memory", driver_memory)
                  .config("spark.executor.cores", str(self.config.spark.executor_cores))
@@ -213,6 +226,12 @@ class AnomalyDetectionJob:
                         str(self.config.spark.backpressure_enabled).lower())
                  .config("spark.sql.streaming.checkpointLocation",
                         self.config.spark.checkpoint_location)
+                 # State store reliability settings
+                 .config("spark.sql.streaming.minBatchesToRetain",
+                        str(self.config.spark.state_store_min_batches_to_retain))
+                 .config("spark.sql.streaming.stateStore.maintenanceInterval",
+                        self.config.spark.state_store_maintenance_interval)
+                 .config("spark.sql.streaming.stateStore.stateSchemaCheck", "false")
                  .getOrCreate())
 
         # Set log level
@@ -449,11 +468,15 @@ class AnomalyDetectionJob:
         )
 
         # Extract fields and calculate trade value
+        # Note: is_buyer_maker (m) = true means the buyer is the maker, so the trade is a SELL
+        #       is_buyer_maker (m) = false means the seller is the maker, so the trade is a BUY
         trades_df = parsed_df.select(
             (col("trade.original_data.E") / 1000).cast(TimestampType()).alias("timestamp"),
             col("trade.symbol").alias("symbol"),
             col("trade.original_data.p").cast(DoubleType()).alias("price"),
             col("trade.original_data.q").cast(DoubleType()).alias("quantity"),
+            when(col("trade.original_data.m") == True, lit("SELL"))
+                .otherwise(lit("BUY")).alias("side"),
         ).withColumn(
             "value",
             col("price") * col("quantity")
@@ -474,7 +497,8 @@ class AnomalyDetectionJob:
             to_json(struct(
                 col("price"),
                 col("quantity"),
-                col("value")
+                col("value"),
+                col("side")
             )).alias("details"),
             expr("uuid()").alias("alert_id"),
             current_timestamp().alias("created_at")
@@ -894,13 +918,15 @@ class AnomalyDetectionJob:
         for alert in alerts:
             try:
                 # Convert alert to storage format
+                # Keep required fields for AnomalyValidator: alert_id, alert_level, created_at
                 alert_data = {
+                    'alert_id': alert.get('alert_id'),
                     'timestamp': alert.get('timestamp'),
                     'symbol': alert.get('symbol'),
                     'alert_type': alert.get('alert_type'),
-                    'severity': alert.get('alert_level'),  # Map alert_level to severity
-                    'message': f"{alert.get('alert_type')}: {alert.get('symbol')}",
-                    'metadata': json.dumps(alert.get('details', {})),
+                    'alert_level': alert.get('alert_level'),
+                    'created_at': alert.get('created_at'),
+                    'details': alert.get('details', '{}'),
                 }
 
                 # Write to all 3 tiers via StorageWriter
@@ -928,57 +954,79 @@ class AnomalyDetectionJob:
     def _process_batch(self, batch_df: DataFrame, batch_id: int) -> None:
         """
         Process a batch of alerts and write to sinks.
+        
+        Supports graceful shutdown:
+        - Checks should_skip_batch() at start to skip if shutdown requested
+        - Marks batch start/end for tracking
+        - Completes all writes even if shutdown requested mid-batch
 
         Args:
             batch_df: Batch DataFrame with alerts
             batch_id: Batch identifier
         """
-        start_time = time.time()
+        try:
+            # Check if batch should be skipped due to shutdown request (Requirement 5.2)
+            if self.graceful_shutdown.should_skip_batch():
+                self.logger.info(f"Batch {batch_id}: Skipping due to shutdown request")
+                return
+            
+            start_time = time.time()
 
-        # Log memory usage at start of batch
-        self._log_memory_metrics(batch_id=batch_id, alert_threshold_pct=80.0)
+            # Log memory usage at start of batch
+            self._log_memory_metrics(batch_id=batch_id, alert_threshold_pct=80.0)
 
-        # Check if batch is empty and determine if we should stop
-        is_empty = batch_df.isEmpty()
+            # Check if batch is empty and determine if we should stop
+            is_empty = batch_df.isEmpty()
 
-        if self.should_stop(is_empty):
-            self.logger.info(f"Batch {batch_id}: Stopping query due to auto-stop condition")
-            if self.query:
-                self.query.stop()
-            return
+            if self.should_stop(is_empty):
+                self.logger.info(f"Batch {batch_id}: Stopping query due to auto-stop condition")
+                if self.query:
+                    self.query.stop()
+                return
 
-        if is_empty:
-            self.logger.info(f"Batch {batch_id} is EMPTY, skipping writes")
-            return
+            if is_empty:
+                self.logger.info(f"Batch {batch_id} is EMPTY, skipping writes")
+                return
 
-        # Collect alerts
-        records = batch_df.collect()
-        record_count = len(records)
+            # Mark batch as started for graceful shutdown tracking (Requirement 5.1)
+            self.graceful_shutdown.mark_batch_start(batch_id)
 
-        self.logger.info(f"Batch {batch_id}: Processing {record_count} alerts")
+            # Collect alerts
+            records = batch_df.collect()
+            record_count = len(records)
 
-        # Convert to alert dictionaries
-        alerts = []
-        for row in records:
-            # details is a JSON string from to_json(struct(...)), parse it
-            details_dict = json.loads(row.details) if row.details else {}
+            self.logger.info(f"Batch {batch_id}: Processing {record_count} alerts")
 
-            alert = self._create_alert(
-                timestamp=row.timestamp,
-                symbol=row.symbol,
-                alert_type=row.alert_type,
-                alert_level=row.alert_level,
-                details=details_dict
-            )
-            alerts.append(alert)
+            # Convert to alert dictionaries
+            alerts = []
+            for row in records:
+                # details is a JSON string from to_json(struct(...)), parse it
+                details_dict = json.loads(row.details) if row.details else {}
 
-        # Write to sinks
-        self._write_alerts_to_sinks(alerts, batch_id)
+                alert = self._create_alert(
+                    timestamp=row.timestamp,
+                    symbol=row.symbol,
+                    alert_type=row.alert_type,
+                    alert_level=row.alert_level,
+                    details=details_dict
+                )
+                alerts.append(alert)
 
-        # Log batch metrics
-        duration = time.time() - start_time
-        watermark = str(records[0].timestamp) if records else None
-        self._log_batch_metrics(batch_id, duration, record_count, watermark)
+            # Write to sinks
+            self._write_alerts_to_sinks(alerts, batch_id)
+
+            # Log batch metrics
+            duration = time.time() - start_time
+            watermark = str(records[0].timestamp) if records else None
+            self._log_batch_metrics(batch_id, duration, record_count, watermark)
+            
+            # Mark batch as completed for graceful shutdown tracking (Requirement 5.1)
+            self.graceful_shutdown.mark_batch_end(batch_id)
+            
+        except Exception as e:
+            self.logger.error(f"Batch {batch_id}: Error in _process_batch: {str(e)}", exc_info=True)
+            # Ensure batch is marked as ended even on error (Requirement 5.3)
+            self.graceful_shutdown.mark_batch_end(batch_id)
 
 
     def _create_stream_reader(self, topic: str) -> DataFrame:
@@ -994,11 +1042,13 @@ class AnomalyDetectionJob:
         self.logger.info(f"Creating stream reader for topic: {topic}")
 
         try:
+            # Use "earliest" to read data written by upstream jobs in the same DAG run
+            # Checkpoint will track actual progress, so we won't reprocess old data
             df = (self.spark.readStream
                   .format("kafka")
                   .option("kafka.bootstrap.servers", self.config.kafka.bootstrap_servers)
                   .option("subscribe", topic)
-                  .option("startingOffsets", self.config.kafka.starting_offsets)
+                  .option("startingOffsets", "earliest")
                   .option("maxOffsetsPerTrigger",
                          str(self.config.kafka.max_rate_per_partition * 10))
                   .load())
@@ -1072,6 +1122,7 @@ class AnomalyDetectionJob:
 
             self.logger.info("Anomaly Detection Job started successfully (micro-batch mode)")
             self.logger.info(f"Auto-stop config: max_runtime={self.max_runtime_seconds}s, empty_batch_threshold={self.empty_batch_threshold}")
+            self.logger.info(f"Graceful shutdown timeout: {self.graceful_shutdown.graceful_shutdown_timeout}s")
 
             # Write to multiple sinks using foreachBatch
             query = (all_alerts
@@ -1088,7 +1139,17 @@ class AnomalyDetectionJob:
             # The query will also stop if should_stop() returns True in _process_batch
             query.awaitTermination(timeout=self.max_runtime_seconds)
 
-            self.logger.info("Anomaly Detection Job completed successfully")
+            # Wait for any in-progress batch to complete (Requirement 1.3, 1.4)
+            was_graceful = self.graceful_shutdown.wait_for_batch_completion()
+            
+            # Log whether shutdown was graceful or forced (Requirement 3.3)
+            if self.graceful_shutdown.shutdown_requested:
+                if was_graceful:
+                    self.logger.info("Anomaly Detection Job shutdown completed gracefully")
+                else:
+                    self.logger.warning("Anomaly Detection Job shutdown was forced due to timeout")
+            else:
+                self.logger.info("Anomaly Detection Job completed successfully")
 
         except Exception as e:
             self.logger.error(f"Job failed with error: {str(e)}", exc_info=True)

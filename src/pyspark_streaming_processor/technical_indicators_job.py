@@ -30,6 +30,7 @@ from pyspark.sql.types import (
 
 from .config import Config
 from .connectors import RedisConnector, DuckDBConnector
+from .graceful_shutdown import GracefulShutdown
 
 # Import storage tier classes for StorageWriter integration
 from src.storage.redis_storage import RedisStorage
@@ -142,7 +143,10 @@ class IndicatorCalculator:
     @staticmethod
     def rsi(prices: List[float], period: int = 14) -> Optional[float]:
         """
-        Calculate Relative Strength Index.
+        Calculate Relative Strength Index using Wilder's Smoothed Moving Average.
+        
+        This is the standard RSI calculation used by most trading platforms.
+        Uses SMMA (Smoothed Moving Average) for avg_gain and avg_loss.
         
         Args:
             prices: List of closing prices
@@ -154,20 +158,24 @@ class IndicatorCalculator:
         if len(prices) < period + 1:
             return None
         
-        gains = []
-        losses = []
-        
+        # Calculate price changes
+        changes = []
         for i in range(1, len(prices)):
-            change = prices[i] - prices[i-1]
-            if change > 0:
-                gains.append(change)
-                losses.append(0)
-            else:
-                gains.append(0)
-                losses.append(abs(change))
+            changes.append(prices[i] - prices[i-1])
         
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
+        # Separate gains and losses
+        gains = [max(0, c) for c in changes]
+        losses = [abs(min(0, c)) for c in changes]
+        
+        # First avg_gain/avg_loss: use SMA for initial period
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
+        
+        # Apply Wilder's Smoothed Moving Average for remaining periods
+        # Formula: SMMA = (prev_SMMA * (period - 1) + current_value) / period
+        for i in range(period, len(gains)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
         
         if avg_loss == 0:
             return 100.0
@@ -310,9 +318,16 @@ class TechnicalIndicatorsJob:
         
         # Micro-batch auto-stop attributes
         self.empty_batch_count: int = 0
-        self.empty_batch_threshold: int = 3
-        self.max_runtime_seconds: int = 30  # 30 seconds
+        self.empty_batch_threshold: int = 2  # Stop quickly when no new data
+        self.max_runtime_seconds: int = 60  # 1 minute per job
         self.start_time: Optional[float] = None
+        
+        # Initialize GracefulShutdown for controlled shutdown behavior
+        self.graceful_shutdown = GracefulShutdown(
+            graceful_shutdown_timeout=30,
+            shutdown_progress_interval=5,
+            logger=self.logger
+        )
         
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -345,9 +360,13 @@ class TechnicalIndicatorsJob:
         return logger
     
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals."""
-        self.logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        """Handle shutdown signals with graceful shutdown support."""
+        # Delegate to GracefulShutdown for proper shutdown handling
+        self.graceful_shutdown.request_shutdown(signum)
         self.shutdown_requested = True
+        
+        # Stop the query to trigger shutdown sequence
+        # The actual termination will wait for batch completion in run()
         if self.query:
             self.query.stop()
     
@@ -403,6 +422,7 @@ class TechnicalIndicatorsJob:
         spark = (SparkSession.builder
                  .appName(self.config.spark.app_name)
                  .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0")
+                 .config("spark.sql.caseSensitive", "true")  # Enable case-sensitive field names
                  .config("spark.executor.memory", executor_memory)
                  .config("spark.driver.memory", driver_memory)
                  .config("spark.executor.cores", str(self.config.spark.executor_cores))
@@ -415,6 +435,12 @@ class TechnicalIndicatorsJob:
                         self.config.spark.checkpoint_location)
                  .config("spark.sql.streaming.stateStore.providerClass",
                         "org.apache.spark.sql.execution.streaming.state.HDFSBackedStateStoreProvider")
+                 # State store reliability settings
+                 .config("spark.sql.streaming.minBatchesToRetain", 
+                        str(self.config.spark.state_store_min_batches_to_retain))
+                 .config("spark.sql.streaming.stateStore.maintenanceInterval",
+                        self.config.spark.state_store_maintenance_interval)
+                 .config("spark.sql.streaming.stateStore.stateSchemaCheck", "false")
                  .getOrCreate())
         
         # Set log level
@@ -607,11 +633,13 @@ class TechnicalIndicatorsJob:
         
         try:
             # Read from Kafka
+            # Use "earliest" to read candles written by TradeAggregationJob in the same DAG run
+            # Checkpoint will track actual progress, so we won't reprocess old data
             df = (self.spark.readStream
                   .format("kafka")
                   .option("kafka.bootstrap.servers", self.config.kafka.bootstrap_servers)
                   .option("subscribe", self.config.kafka.topic_processed_aggregations)
-                  .option("startingOffsets", self.config.kafka.starting_offsets)
+                  .option("startingOffsets", "earliest")
                   .option("maxOffsetsPerTrigger", 
                          str(self.config.kafka.max_rate_per_partition * 10))
                   .load())
@@ -656,6 +684,76 @@ class TechnicalIndicatorsJob:
                                    "error": str(e)})
             raise
     
+    def _load_historical_candles(self) -> None:
+        """
+        Load historical candles from PostgreSQL to bootstrap indicator state.
+        
+        This ensures we have enough data (at least 26 candles for MACD, 15 for RSI)
+        to calculate indicators immediately when the job starts.
+        
+        Loads the last 50 candles per symbol from the warm storage tier.
+        """
+        from datetime import timedelta
+        
+        self.logger.info("Loading historical candles from PostgreSQL to bootstrap state...")
+        
+        try:
+            # Get PostgreSQL storage from StorageWriter
+            if self.storage_writer is None or self.storage_writer.postgres is None:
+                self.logger.warning("PostgreSQL storage not available, skipping historical load")
+                return
+            
+            postgres = self.storage_writer.postgres
+            
+            # Query last 24 hours of candles for common symbols
+            # Using 24 hours to handle timezone differences and data gaps
+            symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT']
+            now = datetime.now()
+            start = now - timedelta(hours=24)
+            
+            total_loaded = 0
+            
+            for symbol in symbols:
+                try:
+                    candles = postgres.query_candles(symbol, start, now, interval='1m')
+                    
+                    if candles:
+                        # Initialize state for symbol
+                        if symbol not in self.candle_states:
+                            self.candle_states[symbol] = CandleState(symbol=symbol)
+                        
+                        state = self.candle_states[symbol]
+                        
+                        # Add candles to state (sorted by timestamp)
+                        sorted_candles = sorted(candles, key=lambda x: x.get('timestamp', datetime.min))
+                        
+                        for candle in sorted_candles[-50:]:  # Keep last 50 candles
+                            candle_dict = {
+                                'timestamp': candle.get('timestamp'),
+                                'open': float(candle.get('open', 0)),
+                                'high': float(candle.get('high', 0)),
+                                'low': float(candle.get('low', 0)),
+                                'close': float(candle.get('close', 0)),
+                                'volume': float(candle.get('volume', 0))
+                            }
+                            state.add_candle(candle_dict)
+                        
+                        total_loaded += len(state.candles)
+                        self.logger.info(
+                            f"Loaded {len(state.candles)} historical candles for {symbol}"
+                        )
+                        
+                except Exception as e:
+                    self.logger.warning(f"Failed to load historical candles for {symbol}: {e}")
+            
+            self.logger.info(
+                f"Historical candle loading complete: {total_loaded} candles "
+                f"across {len(self.candle_states)} symbols"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load historical candles: {e}")
+    
     def process_with_state(self, df: DataFrame) -> callable:
         """
         Process candles with stateful storage using foreachBatch.
@@ -673,9 +771,18 @@ class TechnicalIndicatorsJob:
         # This is simpler than mapGroupsWithState for this use case
         self.candle_states: Dict[str, CandleState] = {}
         
+        # Load historical candles from PostgreSQL to bootstrap state
+        # This ensures we have enough data to calculate indicators immediately
+        self._load_historical_candles()
+        
         def process_batch(batch_df: DataFrame, batch_id: int):
             """Process each batch and maintain state."""
             try:
+                # Check if batch should be skipped due to shutdown request (Requirement 5.2)
+                if self.graceful_shutdown.should_skip_batch():
+                    self.logger.info(f"Batch {batch_id}: Skipping due to shutdown request")
+                    return
+                
                 start_time = time.time()
                 
                 # Log memory usage at start of batch (inline)
@@ -693,6 +800,9 @@ class TechnicalIndicatorsJob:
                 if is_empty:
                     self.logger.debug(f"Batch {batch_id} is empty, skipping")
                     return
+                
+                # Mark batch as started for graceful shutdown tracking (Requirement 5.1)
+                self.graceful_shutdown.mark_batch_start(batch_id)
                 
                 self.logger.info(f"Processing batch {batch_id}")
                 
@@ -748,10 +858,15 @@ class TechnicalIndicatorsJob:
                 self.logger.info(f"Batch {batch_id} processed: {len(results)} indicators calculated, "
                                f"total state size: {total_state_size} candles across {len(self.candle_states)} symbols")
                 
+                # Mark batch as completed for graceful shutdown tracking (Requirement 5.1)
+                self.graceful_shutdown.mark_batch_end(batch_id)
+                
             except Exception as e:
                 self.logger.error(f"Error processing batch {batch_id}: {str(e)}", 
                                 extra={"batch_id": batch_id, "error": str(e)},
                                 exc_info=True)
+                # Ensure batch is marked as ended even on error (Requirement 5.3)
+                self.graceful_shutdown.mark_batch_end(batch_id)
         
         return process_batch
     
@@ -962,6 +1077,7 @@ class TechnicalIndicatorsJob:
             self.logger.info("Writing to 3-tier storage: Redis (hot), DuckDB (warm), Parquet (cold)")
             self.logger.info("Starting stateful processing with 200 candle limit per symbol")
             self.logger.info(f"Auto-stop config: max_runtime={self.max_runtime_seconds}s, empty_batch_threshold={self.empty_batch_threshold}")
+            self.logger.info(f"Graceful shutdown timeout: {self.graceful_shutdown.graceful_shutdown_timeout}s")
             
             # Start streaming query with foreachBatch
             # Checkpoint interval is set to 1 minute for state persistence
@@ -979,7 +1095,17 @@ class TechnicalIndicatorsJob:
             # The query will also stop if should_stop() returns True in process_batch
             query.awaitTermination(timeout=self.max_runtime_seconds)
             
-            self.logger.info("Technical Indicators Job completed successfully")
+            # Wait for any in-progress batch to complete (Requirement 1.3, 1.4)
+            was_graceful = self.graceful_shutdown.wait_for_batch_completion()
+            
+            # Log whether shutdown was graceful or forced (Requirement 3.3)
+            if self.graceful_shutdown.shutdown_requested:
+                if was_graceful:
+                    self.logger.info("Technical Indicators Job shutdown completed gracefully")
+                else:
+                    self.logger.warning("Technical Indicators Job shutdown was forced due to timeout")
+            else:
+                self.logger.info("Technical Indicators Job completed successfully")
             
         except Exception as e:
             self.logger.error(f"Job failed with error: {str(e)}", 

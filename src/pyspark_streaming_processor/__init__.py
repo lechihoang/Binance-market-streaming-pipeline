@@ -8,8 +8,13 @@ Structure (simplified):
 - trade_aggregation_job.py: Aggregates raw trades into OHLCV candles
 - technical_indicators_job.py: Calculates technical indicators (SMA, EMA, RSI, MACD, BB, ATR)
 - anomaly_detection_job.py: Detects all 6 anomaly types (whale, volume spike, price spike, RSI extreme, BB breakout, MACD crossover)
-- connectors.py: Connector utilities for Kafka, Redis, DuckDB, Parquet
+- connectors.py: Connector utilities for Kafka, Redis, DuckDB
 - config.py: Configuration management
+
+Storage Architecture:
+- Hot Path: Redis (real-time queries)
+- Warm Path: PostgreSQL (90-day analytics)
+- Cold Path: MinIO (historical archive)
 """
 
 __version__ = "0.1.0"
@@ -24,7 +29,6 @@ from .connectors import (
     KafkaConnector,
     RedisConnector,
     DuckDBConnector,
-    ParquetWriter,
 )
 
 # Configuration
@@ -39,7 +43,6 @@ __all__ = [
     "KafkaConnector",
     "RedisConnector",
     "DuckDBConnector",
-    "ParquetWriter",
     # Config
     "Config",
 ]

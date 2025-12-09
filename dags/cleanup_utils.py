@@ -240,9 +240,13 @@ def cleanup_streaming_resources(
     
     Performs cleanup actions:
     1. Flush any pending data to storage (Redis)
-    2. Kill any orphan streaming job processes
-    3. Clear temporary files
-    4. Log cleanup actions
+    2. Clear temporary files (NOT checkpoint files - those are needed for state recovery)
+    3. Log cleanup actions
+    
+    NOTE: We do NOT kill streaming job processes here because:
+    - Jobs have auto-stop mechanism (empty_batch_threshold, max_runtime_seconds)
+    - Killing processes while writing state files causes checkpoint corruption
+    - State file corruption leads to "delta file does not exist" errors
     
     Uses try-except for each step to continue on partial errors.
     
@@ -274,10 +278,14 @@ def cleanup_streaming_resources(
     # Step 1: Flush pending data to storage (Redis)
     _flush_redis_data(redis_host, redis_port, task_instance, logger, cleanup_errors)
     
-    # Step 2: Kill any orphan streaming job processes
-    _kill_processes('pyspark_streaming_processor', task_instance, logger, cleanup_errors)
+    # Step 2: DO NOT kill streaming job processes
+    # Jobs have auto-stop mechanism and killing them causes checkpoint corruption
+    _log_message(
+        task_instance, logger, 'info',
+        "Skipping process kill - jobs have auto-stop mechanism",
+    )
     
-    # Step 3: Clear temporary files
+    # Step 3: Clear temporary files (NOT checkpoint files)
     temp_patterns = [
         '/tmp/spark_streaming_*',
         '/tmp/pyspark_*',

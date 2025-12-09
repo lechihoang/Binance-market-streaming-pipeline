@@ -412,26 +412,84 @@ class PostgresStorage:
         self, 
         symbol: str, 
         start: datetime, 
-        end: datetime
+        end: datetime,
+        interval: str = "1m"
     ) -> List[Dict[str, Any]]:
-        """Query 1-minute candles for a symbol within time range.
+        """Query candles for a symbol within time range, aggregated by interval.
         
         Args:
             symbol: Trading pair symbol (e.g., 'BTCUSDT')
             start: Start datetime
             end: End datetime
+            interval: Candle interval (1m, 5m, 15m, 30m, 1h, 4h, 1d)
             
         Returns:
             List of candle dictionaries
         """
-        query = """
-            SELECT timestamp, symbol, open, high, low, close, 
-                   volume, quote_volume, trades_count
-            FROM trades_1m
-            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
-            ORDER BY timestamp ASC
-        """
-        result = self._execute_with_retry(query, (symbol, start, end), fetch=True)
+        # Map interval to PostgreSQL date_trunc/time bucket
+        interval_minutes = {
+            "1m": 1,
+            "5m": 5,
+            "15m": 15,
+            "30m": 30,
+            "1h": 60,
+            "4h": 240,
+            "1d": 1440
+        }
+        
+        minutes = interval_minutes.get(interval, 1)
+        
+        if minutes == 1:
+            # No aggregation needed for 1m
+            query = """
+                SELECT timestamp, symbol, open, high, low, close, 
+                       volume, quote_volume, trades_count
+                FROM trades_1m
+                WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+                ORDER BY timestamp ASC
+            """
+            result = self._execute_with_retry(query, (symbol, start, end), fetch=True)
+        else:
+            # Aggregate 1m candles into larger intervals
+            # Use date_trunc for standard intervals, or custom bucketing
+            query = """
+                WITH bucketed AS (
+                    SELECT 
+                        date_trunc('hour', timestamp) + 
+                        (EXTRACT(minute FROM timestamp)::int / %s) * INTERVAL '%s minutes' AS bucket,
+                        symbol, open, high, low, close, volume, quote_volume, trades_count,
+                        timestamp,
+                        ROW_NUMBER() OVER (PARTITION BY 
+                            date_trunc('hour', timestamp) + 
+                            (EXTRACT(minute FROM timestamp)::int / %s) * INTERVAL '%s minutes'
+                            ORDER BY timestamp ASC) as rn_first,
+                        ROW_NUMBER() OVER (PARTITION BY 
+                            date_trunc('hour', timestamp) + 
+                            (EXTRACT(minute FROM timestamp)::int / %s) * INTERVAL '%s minutes'
+                            ORDER BY timestamp DESC) as rn_last
+                    FROM trades_1m
+                    WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+                )
+                SELECT 
+                    bucket as timestamp,
+                    %s as symbol,
+                    (SELECT open FROM bucketed b2 WHERE b2.bucket = b.bucket AND b2.rn_first = 1 LIMIT 1) as open,
+                    MAX(high) as high,
+                    MIN(low) as low,
+                    (SELECT close FROM bucketed b3 WHERE b3.bucket = b.bucket AND b3.rn_last = 1 LIMIT 1) as close,
+                    SUM(volume) as volume,
+                    SUM(quote_volume) as quote_volume,
+                    SUM(trades_count) as trades_count
+                FROM bucketed b
+                GROUP BY bucket
+                ORDER BY bucket ASC
+            """
+            result = self._execute_with_retry(
+                query, 
+                (minutes, minutes, minutes, minutes, minutes, minutes, symbol, start, end, symbol), 
+                fetch=True
+            )
+        
         return result or []
 
     def query_indicators(

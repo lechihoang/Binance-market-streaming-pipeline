@@ -30,6 +30,7 @@
           "legendFormat": "Kafka"
         }
       ],
+      "description": "Kafka broker status from kafka-exporter",
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -80,6 +81,7 @@
           "legendFormat": "Redis"
         }
       ],
+      "description": "Redis status from redis-exporter",
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -130,6 +132,7 @@
           "legendFormat": "API"
         }
       ],
+      "description": "FastAPI service status",
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -176,13 +179,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(kafka_server_brokertopicmetrics_messagesin_total[1m])",
-          "legendFormat": "Messages In"
+          "expr": "sum(rate(kafka_topic_partition_current_offset[1m]))",
+          "legendFormat": "Messages In (offset rate)"
         },
         {
           "refId": "B",
-          "expr": "rate(kafka_server_brokertopicmetrics_bytesout_total[1m])",
-          "legendFormat": "Messages Out"
+          "expr": "sum(kafka_consumergroup_lag)",
+          "legendFormat": "Consumer Lag"
         }
       ],
       "fieldConfig": {
@@ -239,7 +242,7 @@
     },
     {
       "id": 5,
-      "title": "Processing Latency",
+      "title": "Redis Command Latency",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -254,30 +257,25 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, rate(processing_latency_seconds_bucket[5m]))",
-          "legendFormat": "p50"
+          "expr": "redis_latency_percentiles_usec{quantile=\"50.0\"} / 1000",
+          "legendFormat": "p50 {{cmd}}"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, rate(processing_latency_seconds_bucket[5m]))",
-          "legendFormat": "p95"
-        },
-        {
-          "refId": "C",
-          "expr": "histogram_quantile(0.99, rate(processing_latency_seconds_bucket[5m]))",
-          "legendFormat": "p99"
+          "expr": "redis_latency_percentiles_usec{quantile=\"99.0\"} / 1000",
+          "legendFormat": "p99 {{cmd}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "ms",
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "Latency",
+            "axisLabel": "Latency (ms)",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -322,7 +320,7 @@
     },
     {
       "id": 6,
-      "title": "CPU Usage",
+      "title": "Redis CPU",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -337,10 +335,11 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "100 - (avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
-          "legendFormat": "CPU Usage %"
+          "expr": "redis_cpu_user_seconds_total + redis_cpu_sys_seconds_total",
+          "legendFormat": "Redis CPU (seconds)"
         }
       ],
+      "description": "Redis CPU usage (requires node-exporter for full system metrics)",
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -405,7 +404,7 @@
     },
     {
       "id": 7,
-      "title": "Memory Usage",
+      "title": "Redis Memory",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -420,10 +419,11 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
-          "legendFormat": "Memory Usage %"
+          "expr": "redis_memory_used_bytes / 1024 / 1024",
+          "legendFormat": "Redis Memory (MB)"
         }
       ],
+      "description": "Redis memory usage",
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -488,7 +488,7 @@
     },
     {
       "id": 8,
-      "title": "Disk I/O",
+      "title": "Service Connections",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -503,15 +503,16 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(node_disk_read_bytes_total[5m])",
-          "legendFormat": "Read"
+          "expr": "redis_connected_clients",
+          "legendFormat": "Redis Clients"
         },
         {
           "refId": "B",
-          "expr": "rate(node_disk_written_bytes_total[5m])",
-          "legendFormat": "Write"
+          "expr": "kafka_brokers",
+          "legendFormat": "Kafka Brokers"
         }
       ],
+      "description": "Service connections",
       "fieldConfig": {
         "defaults": {
           "unit": "Bps",
@@ -569,7 +570,7 @@
       "title": "PostgreSQL Data Status",
       "type": "stat",
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
       "gridPos": {
@@ -582,7 +583,7 @@
         {
           "refId": "A",
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "rawSql": "SELECT COUNT(*) AS \"Total Records\" FROM trades_1m",
@@ -621,7 +622,7 @@
       "title": "Alerts Count (24h)",
       "type": "stat",
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
       "gridPos": {
@@ -634,7 +635,7 @@
         {
           "refId": "A",
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "rawSql": "SELECT COUNT(*) AS \"Alerts\" FROM alerts WHERE timestamp >= NOW() - INTERVAL '24 hours'",
@@ -673,7 +674,7 @@
       "title": "Indicators Count",
       "type": "stat",
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
       "gridPos": {
@@ -686,7 +687,7 @@
         {
           "refId": "A",
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "rawSql": "SELECT COUNT(*) AS \"Indicators\" FROM indicators",

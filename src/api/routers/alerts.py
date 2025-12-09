@@ -152,7 +152,7 @@ async def get_whale_alerts(
     try:
         alerts = redis.get_recent_alerts(limit=effective_limit * 2)
         for alert in alerts:
-            if alert.get("alert_type") == "whale":
+            if alert.get("alert_type", "").upper() in ("WHALE", "WHALE_ALERT"):
                 metadata = alert.get("metadata", {})
                 if isinstance(metadata, str):
                     import json
@@ -190,7 +190,7 @@ async def get_whale_alerts(
             for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]:
                 pg_alerts = postgres.query_alerts(symbol, start, now)
                 for alert in pg_alerts:
-                    if alert.get("alert_type") == "whale":
+                    if alert.get("alert_type", "").upper() in ("WHALE", "WHALE_ALERT"):
                         metadata = alert.get("metadata", {})
                         if isinstance(metadata, str):
                             import json

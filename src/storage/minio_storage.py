@@ -402,13 +402,25 @@ class MinioStorage:
         
         import json
         
+        def parse_timestamp(ts):
+            """Parse timestamp from various formats."""
+            if isinstance(ts, datetime):
+                return ts
+            if isinstance(ts, str):
+                try:
+                    return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                except ValueError:
+                    return datetime.now()
+            if isinstance(ts, (int, float)):
+                if ts > 1e12:
+                    return datetime.fromtimestamp(ts / 1000)
+                return datetime.fromtimestamp(ts)
+            return datetime.now()
+        
         # Convert to PyArrow table
         arrays = {
             'timestamp': pa.array([
-                d["timestamp"] if isinstance(d["timestamp"], datetime)
-                else datetime.fromtimestamp(
-                    d["timestamp"] / 1000 if d["timestamp"] > 1e12 else d["timestamp"]
-                )
+                parse_timestamp(d["timestamp"])
                 for d in data
             ], type=pa.timestamp('ms')),
             'symbol': pa.array([d.get("symbol", symbol) for d in data]),

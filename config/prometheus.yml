@@ -22,8 +22,20 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   # Crypto Data API metrics (FastAPI)
-  - job_name: 'crypto-api'
+  - job_name: 'api'
     static_configs:
       - targets: ['crypto-api:8000']
     metrics_path: '/metrics'
     scrape_interval: 10s
+
+  # Redis metrics via redis-exporter
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+    scrape_interval: 15s
+
+  # Kafka metrics via kafka-exporter
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+    scrape_interval: 15s

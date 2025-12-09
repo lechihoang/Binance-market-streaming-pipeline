@@ -341,6 +341,49 @@ services:
           memory: 512M
 
 
+  # Redis Exporter - Export Redis metrics to Prometheus
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    hostname: redis-exporter
+    container_name: redis-exporter
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "9121:9121"
+    environment:
+      REDIS_ADDR: redis:6379
+    networks:
+      - streaming-network
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 32M
+
+  # Kafka Exporter - Export Kafka metrics to Prometheus
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    hostname: kafka-exporter
+    container_name: kafka-exporter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "9308:9308"
+    command:
+      - '--kafka.server=kafka:29092'
+      - '--web.listen-address=:9308'
+    networks:
+      - streaming-network
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 32M
+
   # Prometheus - Metrics collection and monitoring
   prometheus:
     image: prom/prometheus:latest

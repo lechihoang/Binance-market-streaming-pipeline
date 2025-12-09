@@ -27,7 +27,7 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/ohlc?symbol=${symbol}USDT&interval=${interval}",
+          "urlPath": "/api/v1/analytics/ohlc/latest?symbol=${symbol}USDT&interval=${interval}&limit=100",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].open", "name": "Open" },
@@ -107,7 +107,7 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/indicators/${symbol}USDT?indicators=rsi&period=24h",
+          "urlPath": "/api/v1/analytics/indicators/latest/${symbol}USDT?limit=100",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].rsi", "name": "RSI" }
@@ -194,7 +194,7 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/indicators/${symbol}USDT?indicators=macd,macd_signal&period=24h",
+          "urlPath": "/api/v1/analytics/indicators/latest/${symbol}USDT?limit=100",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].macd", "name": "MACD Line" },
@@ -239,15 +239,7 @@
             }
           }
         },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Histogram" },
-            "properties": [
-              { "id": "custom.drawStyle", "value": "bars" },
-              { "id": "custom.fillOpacity", "value": 50 }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "options": {
         "legend": {
@@ -264,11 +256,11 @@
     },
     {
       "id": 5,
-      "title": "Technical Indicators (PostgreSQL) - $symbol",
+      "title": "Technical Indicators - $symbol",
       "type": "table",
       "datasource": {
-        "type": "postgres",
-        "uid": "postgresql"
+        "type": "marcusolsson-json-datasource",
+        "uid": "fastapi"
       },
       "gridPos": {
         "h": 6,
@@ -279,12 +271,18 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": {
-            "type": "postgres",
-            "uid": "postgresql"
-          },
-          "rawSql": "SELECT timestamp AS \"Time\", rsi AS \"RSI\", macd AS \"MACD\", macd_signal AS \"Signal\", sma_20 AS \"SMA20\", ema_12 AS \"EMA12\", bb_upper AS \"BB Upper\", bb_lower AS \"BB Lower\" FROM indicators WHERE symbol = '${symbol}USDT' AND timestamp >= NOW() - INTERVAL '6 hours' ORDER BY timestamp DESC LIMIT 20",
-          "format": "table"
+          "method": "GET",
+          "urlPath": "/api/v1/analytics/indicators/latest/${symbol}USDT?limit=20",
+          "fields": [
+            { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].rsi", "name": "RSI" },
+            { "jsonPath": "$[*].macd", "name": "MACD" },
+            { "jsonPath": "$[*].macd_signal", "name": "Signal" },
+            { "jsonPath": "$[*].sma_20", "name": "SMA20" },
+            { "jsonPath": "$[*].ema_12", "name": "EMA12" },
+            { "jsonPath": "$[*].bb_upper", "name": "BB Upper" },
+            { "jsonPath": "$[*].bb_lower", "name": "BB Lower" }
+          ]
         }
       ],
       "fieldConfig": {
@@ -331,7 +329,7 @@
     },
     {
       "id": 4,
-      "title": "Recent Trades - $symbol",
+      "title": "Recent Candles - $symbol",
       "type": "table",
       "datasource": {
         "type": "marcusolsson-json-datasource",
@@ -347,12 +345,14 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/market/trades/${symbol}USDT?limit=50",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${interval}",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
-            { "jsonPath": "$[*].price", "name": "Price" },
-            { "jsonPath": "$[*].quantity", "name": "Quantity" },
-            { "jsonPath": "$[*].side", "name": "Side" }
+            { "jsonPath": "$[*].open", "name": "Open" },
+            { "jsonPath": "$[*].high", "name": "High" },
+            { "jsonPath": "$[*].low", "name": "Low" },
+            { "jsonPath": "$[*].close", "name": "Close" },
+            { "jsonPath": "$[*].volume", "name": "Volume" }
           ]
         }
       ],
@@ -372,26 +372,37 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Price" },
+            "matcher": { "id": "byName", "options": "Open" },
             "properties": [
               { "id": "unit", "value": "currencyUSD" },
               { "id": "decimals", "value": 2 }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Quantity" },
+            "matcher": { "id": "byName", "options": "High" },
             "properties": [
-              { "id": "decimals", "value": 6 }
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 2 }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Side" },
+            "matcher": { "id": "byName", "options": "Low" },
             "properties": [
-              { "id": "custom.displayMode", "value": "color-text" },
-              { "id": "mappings", "value": [
-                { "type": "value", "options": { "BUY": { "color": "green", "text": "BUY" } } },
-                { "type": "value", "options": { "SELL": { "color": "red", "text": "SELL" } } }
-              ]}
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Close" },
+            "properties": [
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Volume" },
+            "properties": [
+              { "id": "decimals", "value": 4 }
             ]
           }
         ]
@@ -463,7 +474,7 @@
     ]
   },
   "time": {
-    "from": "now-6h",
+    "from": "now-24h",
     "to": "now"
   },
   "timepicker": {},
