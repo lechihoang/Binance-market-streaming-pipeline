@@ -335,11 +335,21 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "redis_cpu_user_seconds_total + redis_cpu_sys_seconds_total",
-          "legendFormat": "Redis CPU (seconds)"
+          "expr": "rate(redis_cpu_user_seconds_total[1m]) * 100",
+          "legendFormat": "User CPU %"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(redis_cpu_sys_seconds_total[1m]) * 100",
+          "legendFormat": "System CPU %"
+        },
+        {
+          "refId": "C",
+          "expr": "(rate(redis_cpu_user_seconds_total[1m]) + rate(redis_cpu_sys_seconds_total[1m])) * 100",
+          "legendFormat": "Total CPU %"
         }
       ],
-      "description": "Redis CPU usage (requires node-exporter for full system metrics)",
+      "description": "Redis CPU usage percentage (user + system)",
       "fieldConfig": {
         "defaults": {
           "unit": "percent",

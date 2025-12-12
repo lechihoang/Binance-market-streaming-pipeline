@@ -212,7 +212,7 @@ src/
 │       ├── market.py          # Market data endpoints
 │       └── analytics.py       # Analytics endpoints
 │
-└── pyspark_streaming_processor/  # Spark streaming jobs
+└── streaming/                     # Spark streaming jobs
     ├── trade_aggregation_job.py
     ├── technical_indicators_job.py
     └── anomaly_detection_job.py

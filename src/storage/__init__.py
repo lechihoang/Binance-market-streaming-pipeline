@@ -16,15 +16,21 @@ Components:
 """
 
 from .redis import RedisStorage, RedisTickerStorage, check_redis_health
-from .backends import (
-    PostgresStorage,
-    MinioStorage,
-    check_postgres_health,
-    check_minio_health,
-    check_all_storage_health,
-)
+from .postgres import PostgresStorage, check_postgres_health
+from .minio import MinioStorage, check_minio_health
 from .storage_writer import StorageWriter
 from .query_router import QueryRouter
+
+
+def check_all_storage_health(
+    redis_config=None, postgres_config=None, minio_config=None
+):
+    """Check health of all 3 storage tiers."""
+    results = {}
+    results['redis'] = check_redis_health(**(redis_config or {}))
+    results['postgresql'] = check_postgres_health(**(postgres_config or {}))
+    results['minio'] = check_minio_health(**(minio_config or {}))
+    return results
 
 __all__ = [
     # Redis (Hot Path)

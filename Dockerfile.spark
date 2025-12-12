@@ -36,4 +36,4 @@ ENV SPARK_HOME=/usr/local/lib/python3.11/site-packages/pyspark
 ENV PATH="${SPARK_HOME}/bin:${PATH}"
 
 # Default command (can be overridden)
-CMD ["python", "-m", "pyspark_streaming_processor.trade_aggregation_job"]
+CMD ["python", "-m", "streaming.trade_aggregation_job"]

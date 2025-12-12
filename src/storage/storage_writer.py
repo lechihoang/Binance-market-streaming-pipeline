@@ -10,7 +10,8 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from .redis import RedisStorage
-from .backends import PostgresStorage, MinioStorage
+from .postgres import PostgresStorage
+from .minio import MinioStorage
 
 logger = logging.getLogger(__name__)
 
@@ -282,32 +283,11 @@ class StorageWriter:
         self._log_write_result('alert', symbol, results)
         return results
     
-    def _to_datetime(self, timestamp: Any) -> Optional[datetime]:
-        """Convert timestamp to datetime object.
-        
-        Args:
-            timestamp: Unix timestamp (seconds or milliseconds), datetime, or ISO string
-            
-        Returns:
-            datetime object or None
-        """
+    def _to_datetime(self, timestamp: int) -> Optional[datetime]:
+        """Convert Unix timestamp (milliseconds) to datetime."""
         if timestamp is None:
             return None
-        if isinstance(timestamp, datetime):
-            return timestamp
-        if isinstance(timestamp, (int, float)):
-            # Handle milliseconds vs seconds
-            if timestamp > 1e12:
-                return datetime.fromtimestamp(timestamp / 1000)
-            return datetime.fromtimestamp(timestamp)
-        if isinstance(timestamp, str):
-            # Handle ISO format string
-            try:
-                return datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-            except ValueError:
-                logger.warning(f"Failed to parse timestamp string: {timestamp}")
-                return None
-        return None
+        return datetime.fromtimestamp(timestamp / 1000)
     
     def _log_write_result(
         self, 

@@ -6,7 +6,7 @@ Provides:
 - ShutdownState: Dataclass for tracking shutdown state
 - ShutdownEvent: Dataclass for shutdown event logging
 
-This module was extracted from pyspark_streaming_processor/graceful_shutdown.py
+This module was extracted from streaming/graceful_shutdown.py
 to provide reusable shutdown handling across all services.
 """
 

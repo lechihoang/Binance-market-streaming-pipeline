@@ -506,13 +506,13 @@ services:
       LOG_LEVEL: ${TICKER_LOG_LEVEL:-INFO}
     volumes:
       - ./src:/app/src
-    command: python -m src.ticker_consumer.main
+    command: python -c "from src.ticker_consumer import main; main()"
     networks:
       - streaming-network
     # Health check (Requirement 7.2)
     # Checks Redis connectivity and data freshness
     healthcheck:
-      test: ["CMD", "python", "-c", "from src.ticker_consumer.service import health_check_main; exit(health_check_main())"]
+      test: ["CMD", "python", "-c", "from src.ticker_consumer import health_check_main; exit(health_check_main())"]
       interval: 30s
       timeout: 10s
       retries: 5

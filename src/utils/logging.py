@@ -7,6 +7,8 @@ structured JSON output and configurable formatting.
 This module provides:
 - setup_logging(): Configure logging for the application
 - get_logger(): Get a configured logger by name
+- JSONFormatter: JSON-formatted log output
+- StructuredFormatter: Structured text log output with job name
 
 Usage:
 ------
@@ -18,6 +20,11 @@ Usage:
     # Get a logger for your module
     logger = get_logger(__name__)
     logger.info("Application started")
+
+    # Use StructuredFormatter for streaming jobs
+    from src.utils.logging import StructuredFormatter
+    handler = logging.StreamHandler()
+    handler.setFormatter(StructuredFormatter("MyJob"))
 
 Requirements Coverage:
 ---------------------
@@ -67,6 +74,60 @@ class JSONFormatter(logging.Formatter):
             log_data["extra"] = record.extra_fields
         
         return json.dumps(log_data)
+
+
+class StructuredFormatter(logging.Formatter):
+    """
+    Custom formatter for structured logging with job name.
+    
+    Outputs log records in a structured text format:
+    [timestamp] [level] [job_name] [logger_name] message
+    
+    This formatter is designed for streaming jobs that need consistent,
+    parseable log output with job identification.
+    
+    Args:
+        job_name: Name of the job for log identification
+    
+    Example:
+        handler = logging.StreamHandler()
+        handler.setFormatter(StructuredFormatter("TechnicalIndicatorsJob"))
+        logger.addHandler(handler)
+        
+        # Output: [2024-01-15T10:30:00.123456] [INFO] [TechnicalIndicatorsJob] [module] Message
+    """
+
+    def __init__(self, job_name: str):
+        """
+        Initialize formatter with job name.
+        
+        Args:
+            job_name: Name of the job for log identification
+        """
+        super().__init__()
+        self.job_name = job_name
+
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        Format log record with structured information.
+        
+        Returns:
+            Formatted string: [timestamp] [level] [job_name] [logger_name] message
+        """
+        timestamp = datetime.utcnow().isoformat()
+
+        log_parts = [
+            f"[{timestamp}]",
+            f"[{record.levelname}]",
+            f"[{self.job_name}]",
+            f"[{record.name}]",
+            record.getMessage(),
+        ]
+
+        if record.exc_info:
+            log_parts.append("\n" + self.formatException(record.exc_info))
+
+        return " ".join(log_parts)
 
 
 def setup_logging(

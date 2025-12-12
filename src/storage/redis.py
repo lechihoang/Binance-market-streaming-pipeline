@@ -119,27 +119,6 @@ class RedisStorage:
     # Hash Operations - Latest Price, Ticker, Indicators, Aggregations
     # =========================================================================
     
-    def write_latest_price(
-        self, symbol: str, price: float, volume: float, timestamp: int
-    ) -> None:
-        """Write latest price to Redis hash.
-        
-        Key: latest_price:{symbol}
-        Fields: price, volume, timestamp
-        
-        Args:
-            symbol: Trading pair symbol (e.g., BTCUSDT)
-            price: Current price
-            volume: Current volume
-            timestamp: Unix timestamp in milliseconds
-        """
-        key = f"latest_price:{symbol}"
-        self.client.hset(key, mapping={
-            "price": str(price),
-            "volume": str(volume),
-            "timestamp": str(timestamp),
-        })
-    
     def get_latest_price(self, symbol: str) -> Optional[dict]:
         """Get latest price from Redis hash.
         
@@ -158,21 +137,6 @@ class RedisStorage:
             "volume": float(data["volume"]),
             "timestamp": int(data["timestamp"]),
         }
-    
-    def write_latest_ticker(self, symbol: str, stats: dict) -> None:
-        """Write latest ticker (24h stats) to Redis hash.
-        
-        Key: latest_ticker:{symbol}
-        Fields: open, high, low, close, volume, quote_volume
-        
-        Args:
-            symbol: Trading pair symbol
-            stats: Dict with 24h statistics
-        """
-        key = f"latest_ticker:{symbol}"
-        # Convert all values to strings for Redis
-        mapping = {k: str(v) for k, v in stats.items()}
-        self.client.hset(key, mapping=mapping)
     
     def get_latest_ticker(self, symbol: str) -> Optional[dict]:
         """Get latest ticker from Redis hash.
@@ -290,35 +254,6 @@ class RedisStorage:
     # Collection Operations - Recent Trades, Alerts
     # =========================================================================
     
-    def write_recent_trade(
-        self, symbol: str, trade: dict, max_trades: int = MAX_TRADES
-    ) -> None:
-        """Write trade to Redis sorted set with TTL.
-        
-        Key: recent_trades:{symbol}
-        Score: timestamp
-        Member: JSON-encoded trade data
-        TTL: 1 hour
-        Max size: 1000 trades
-        
-        Args:
-            symbol: Trading pair symbol
-            trade: Dict with trade data (must include 'timestamp')
-            max_trades: Maximum number of trades to keep
-        """
-        key = f"recent_trades:{symbol}"
-        timestamp = trade.get("timestamp", int(time.time() * 1000))
-        trade_json = json.dumps(trade)
-        
-        pipe = self.client.pipeline()
-        # Add trade with timestamp as score
-        pipe.zadd(key, {trade_json: timestamp})
-        # Trim to keep only the most recent trades
-        pipe.zremrangebyrank(key, 0, -(max_trades + 1))
-        # Set TTL
-        pipe.expire(key, self.TTL_1_HOUR)
-        pipe.execute()
-    
     def get_recent_trades(self, symbol: str, limit: int = 100) -> list:
         """Get recent trades from Redis sorted set.
         
@@ -369,31 +304,6 @@ class RedisStorage:
         key = "alerts:recent"
         alerts_json = self.client.lrange(key, 0, limit - 1)
         return [json.loads(a) for a in alerts_json]
-    
-    def get_trades_count(self, symbol: str) -> int:
-        """Get count of trades in sorted set.
-        
-        Args:
-            symbol: Trading pair symbol
-            
-        Returns:
-            Number of trades stored
-        """
-        key = f"recent_trades:{symbol}"
-        return self.client.zcard(key)
-    
-    def get_alerts_count(self) -> int:
-        """Get count of alerts in list.
-        
-        Returns:
-            Number of alerts stored
-        """
-        key = "alerts:recent"
-        return self.client.llen(key)
-    
-    def flush_db(self) -> None:
-        """Flush all keys in current database. Use with caution."""
-        self.client.flushdb()
 
 
 # ============================================================================
@@ -568,15 +478,7 @@ class RedisTickerStorage:
         return result
     
     def _transform_from_storage_format(self, data: Dict[str, str]) -> Dict[str, Any]:
-        """
-        Transform storage format back to API response format.
-        
-        Args:
-            data: Raw data from Redis Hash
-            
-        Returns:
-            Dictionary with typed values for API response
-        """
+        """Transform storage format back to API response format."""
         if not data:
             return {}
         
@@ -592,24 +494,11 @@ class RedisTickerStorage:
             if field in data:
                 result[field] = data[field]
         
-        # Integer fields
-        if "trades_count" in data:
-            try:
-                result["trades_count"] = int(data["trades_count"])
-            except (ValueError, TypeError):
-                result["trades_count"] = 0
-        
-        if "updated_at" in data:
-            try:
-                result["updated_at"] = int(data["updated_at"])
-            except (ValueError, TypeError):
-                result["updated_at"] = 0
-        
-        if "event_time" in data:
-            try:
-                result["event_time"] = int(data["event_time"])
-            except (ValueError, TypeError):
-                result["event_time"] = 0
+        # Integer fields - data already validated by DAG
+        int_fields = {"trades_count", "updated_at", "event_time"}
+        for field in int_fields:
+            if field in data:
+                result[field] = int(data[field])
         
         return result
     
@@ -714,74 +603,6 @@ class RedisTickerStorage:
             logger.error(f"Unexpected error getting all tickers: {e}")
             return []
     
-    def delete_ticker(self, symbol: str) -> bool:
-        """
-        Delete ticker data for a symbol.
-        
-        Args:
-            symbol: Trading pair symbol
-            
-        Returns:
-            True if deleted, False otherwise
-        """
-        try:
-            key = self._make_key(symbol)
-            result = self.client.delete(key)
-            return result > 0
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(f"Failed to delete ticker for {symbol}: {e}")
-            return False
-    
-    def get_ttl(self, symbol: str) -> int:
-        """
-        Get remaining TTL for a ticker key.
-        
-        Args:
-            symbol: Trading pair symbol
-            
-        Returns:
-            TTL in seconds, -1 if no TTL, -2 if key doesn't exist
-            
-        Property 3: TTL is always set
-        """
-        try:
-            key = self._make_key(symbol)
-            return self.client.ttl(key)
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(f"Failed to get TTL for {symbol}: {e}")
-            return -2
-    
-    def get_ticker_count(self) -> int:
-        """
-        Get count of stored tickers.
-        
-        Returns:
-            Number of ticker keys in Redis
-        """
-        try:
-            pattern = f"{self.KEY_PREFIX}:*"
-            keys = self.client.keys(pattern)
-            return len(keys)
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(f"Failed to get ticker count: {e}")
-            return 0
-    
-    def flush_tickers(self) -> int:
-        """
-        Delete all ticker keys.
-        
-        Returns:
-            Number of keys deleted
-        """
-        try:
-            pattern = f"{self.KEY_PREFIX}:*"
-            keys = self.client.keys(pattern)
-            if keys:
-                return self.client.delete(*keys)
-            return 0
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(f"Failed to flush tickers: {e}")
-            return 0
 
 
 # ============================================================================

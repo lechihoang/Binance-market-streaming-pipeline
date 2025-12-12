@@ -614,8 +614,8 @@ async def get_ticker_health(
     # Check Redis connection
     redis_connected = storage.ping()
     
-    # Get ticker count
-    ticker_count = storage.get_ticker_count() if redis_connected else 0
+    # Get ticker count by counting all tickers
+    ticker_count = len(storage.get_all_tickers()) if redis_connected else 0
     
     # Calculate latency
     latency_ms = (time.time() - start_time) * 1000

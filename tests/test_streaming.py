@@ -595,7 +595,7 @@ class TestRedisConnector:
     @patch('redis.ConnectionPool')
     def test_redis_write_hash_success(self, mock_pool, mock_redis):
         """Test Redis write with hash type."""
-        from src.pyspark_streaming_processor.core import RedisConnector
+        from src.streaming.core import RedisConnector
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
@@ -619,7 +619,7 @@ class TestRedisConnector:
     @patch('redis.ConnectionPool')
     def test_redis_write_list_success(self, mock_pool, mock_redis):
         """Test Redis write with list type."""
-        from src.pyspark_streaming_processor.core import RedisConnector
+        from src.streaming.core import RedisConnector
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
@@ -640,7 +640,7 @@ class TestRedisConnector:
     @patch('redis.ConnectionPool')
     def test_redis_connection_failure(self, mock_pool, mock_redis):
         """Test Redis connection failure handling."""
-        from src.pyspark_streaming_processor.core import RedisConnector
+        from src.streaming.core import RedisConnector
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
@@ -663,25 +663,25 @@ class TestSMA:
     
     def test_sma_calculation_period_3(self):
         """Test SMA with known inputs, period=3."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [1.0, 2.0, 3.0, 4.0, 5.0]
         assert IndicatorCalculator.sma(prices, 3) == 4.0
     
     def test_sma_calculation_period_5(self):
         """Test SMA with known inputs, period=5."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [1.0, 2.0, 3.0, 4.0, 5.0]
         assert IndicatorCalculator.sma(prices, 5) == 3.0
     
     def test_sma_insufficient_data(self):
         """Test SMA returns None when insufficient data."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [1.0, 2.0]
         assert IndicatorCalculator.sma(prices, 3) is None
     
     def test_sma_constant_prices(self):
         """Test SMA with constant prices."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [50.0] * 10
         assert IndicatorCalculator.sma(prices, 5) == 50.0
 
@@ -691,14 +691,14 @@ class TestEMA:
     
     def test_ema_calculation(self):
         """Test EMA with known inputs."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [10.0, 11.0, 12.0, 13.0, 14.0]
         result = IndicatorCalculator.ema(prices, 3)
         assert abs(result - 13.0) < 0.01
     
     def test_ema_insufficient_data(self):
         """Test EMA returns None when insufficient data."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [10.0, 11.0]
         assert IndicatorCalculator.ema(prices, 3) is None
 
@@ -708,7 +708,7 @@ class TestRSI:
     
     def test_rsi_all_gains(self):
         """Test RSI with all gains returns 100."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 
                  18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0]
         rsi = IndicatorCalculator.rsi(prices, 14)
@@ -716,7 +716,7 @@ class TestRSI:
     
     def test_rsi_all_losses(self):
         """Test RSI with all losses returns 0."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [24.0, 23.0, 22.0, 21.0, 20.0, 19.0, 18.0, 17.0, 
                  16.0, 15.0, 14.0, 13.0, 12.0, 11.0, 10.0]
         rsi = IndicatorCalculator.rsi(prices, 14)
@@ -724,7 +724,7 @@ class TestRSI:
     
     def test_rsi_bounds(self):
         """Test RSI is always between 0 and 100."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [50.0, 51.0, 49.0, 52.0, 48.0, 53.0, 47.0, 54.0, 
                  46.0, 55.0, 45.0, 56.0, 44.0, 57.0, 43.0]
         rsi = IndicatorCalculator.rsi(prices, 14)
@@ -736,7 +736,7 @@ class TestMACD:
     
     def test_macd_calculation(self):
         """Test MACD calculation with sufficient data."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = list(range(50, 80))
         macd_line, signal_line, histogram = IndicatorCalculator.macd(prices)
         
@@ -747,7 +747,7 @@ class TestMACD:
     
     def test_macd_insufficient_data(self):
         """Test MACD returns None when insufficient data."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [50.0, 51.0, 52.0]
         macd_line, signal_line, histogram = IndicatorCalculator.macd(prices)
         assert macd_line is None
@@ -760,7 +760,7 @@ class TestBollingerBands:
     
     def test_bollinger_bands_constant_prices(self):
         """Test Bollinger Bands with zero variance."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [10.0] * 20
         middle, upper, lower = IndicatorCalculator.bollinger_bands(prices, 20)
         
@@ -770,7 +770,7 @@ class TestBollingerBands:
     
     def test_bollinger_bands_insufficient_data(self):
         """Test Bollinger Bands returns None when insufficient data."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         prices = [10.0, 11.0, 12.0]
         middle, upper, lower = IndicatorCalculator.bollinger_bands(prices, 20)
         assert middle is None
@@ -783,7 +783,7 @@ class TestATR:
     
     def test_atr_calculation(self):
         """Test ATR with sample OHLC data."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         highs = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 
                 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0]
         lows = [9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 
@@ -796,7 +796,7 @@ class TestATR:
     
     def test_atr_insufficient_data(self):
         """Test ATR returns None when insufficient data."""
-        from src.pyspark_streaming_processor.analytics_jobs import IndicatorCalculator
+        from src.streaming.technical_indicators_job import IndicatorCalculator
         highs = [11.0, 12.0]
         lows = [9.0, 10.0]
         closes = [10.0, 11.0]

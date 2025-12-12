@@ -7,20 +7,20 @@ import asyncio
 import logging
 import sys
 
-from .connector import BinanceKafkaConnector
-from .core import config, setup_structured_logging
+from .connector import BinanceKafkaConnector, config
+from src.utils.logging import setup_logging
 
 
-def setup_logging():
+def configure_logging():
     """Set up logging configuration."""
     # Use structured JSON logging
-    setup_structured_logging(log_level=config.LOG_LEVEL)
+    setup_logging(level=config.LOG_LEVEL, json_output=True)
 
 
 async def main():
     """Main entry point for the application."""
     # Set up logging
-    setup_logging()
+    configure_logging()
     
     logger = logging.getLogger(__name__)
     logger.info("Starting Binance-Kafka Connector...")

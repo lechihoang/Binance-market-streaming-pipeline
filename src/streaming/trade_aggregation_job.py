@@ -27,7 +27,8 @@ from pyspark.sql.types import (
 )
 
 from .core import Config, RedisConnector
-from .graceful_shutdown import GracefulShutdown
+from src.utils.shutdown import GracefulShutdown
+from src.utils.logging import StructuredFormatter
 
 # Import storage tier classes for StorageWriter integration
 from src.storage import RedisStorage, PostgresStorage, MinioStorage, StorageWriter
@@ -38,31 +39,6 @@ from src.utils.metrics import (
     record_message_processed,
     track_latency,
 )
-
-
-class StructuredFormatter(logging.Formatter):
-    """Custom formatter for structured logging."""
-    
-    def __init__(self, job_name: str):
-        super().__init__()
-        self.job_name = job_name
-    
-    def format(self, record: logging.LogRecord) -> str:
-        """Format log record with structured information."""
-        timestamp = datetime.utcnow().isoformat()
-        
-        log_parts = [
-            f"[{timestamp}]",
-            f"[{record.levelname}]",
-            f"[{self.job_name}]",
-            f"[{record.name}]",
-            record.getMessage(),
-        ]
-        
-        if record.exc_info:
-            log_parts.append("\n" + self.formatException(record.exc_info))
-        
-        return " ".join(log_parts)
 
 
 class TradeAggregationJob:

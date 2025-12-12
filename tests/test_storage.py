@@ -436,10 +436,12 @@ alert_strategy = st.fixed_dictionaries({
 @pytest.fixture
 def redis_storage():
     """Create RedisStorage instance and clean up after test."""
+    import redis as redis_lib
     storage = RedisStorage(host="localhost", port=6379, db=15)
-    storage.flush_db()
+    # Use client.flushdb() directly since flush_db method was removed
+    storage.client.flushdb()
     yield storage
-    storage.flush_db()
+    storage.client.flushdb()
 
 
 # ============================================================================
@@ -449,37 +451,6 @@ def redis_storage():
 @skip_if_no_redis
 class TestRedisHashRoundTrip:
     """Property tests for Redis hash round-trip consistency."""
-    
-    @given(symbol=symbol_strategy, price=price_strategy, volume=volume_strategy, timestamp=timestamp_strategy)
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_latest_price_round_trip(self, redis_storage, symbol, price, volume, timestamp):
-        """
-        Feature: three-tier-storage, Property 1: Redis hash round-trip consistency
-        Validates: Requirements 1.1
-        """
-        redis_storage.write_latest_price(symbol, price, volume, timestamp)
-        
-        result = redis_storage.get_latest_price(symbol)
-        
-        assert result is not None
-        assert abs(result["price"] - price) < 1e-9
-        assert abs(result["volume"] - volume) < 1e-9
-        assert result["timestamp"] == timestamp
-
-    @given(symbol=symbol_strategy, stats=ticker_stats_strategy)
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_latest_ticker_round_trip(self, redis_storage, symbol, stats):
-        """
-        Feature: three-tier-storage, Property 1: Redis hash round-trip consistency
-        Validates: Requirements 1.2
-        """
-        redis_storage.write_latest_ticker(symbol, stats)
-        
-        result = redis_storage.get_latest_ticker(symbol)
-        
-        assert result is not None
-        for key in stats:
-            assert abs(result[key] - stats[key]) < 1e-9
     
     @given(symbol=symbol_strategy, indicators=indicators_strategy)
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
@@ -497,38 +468,7 @@ class TestRedisHashRoundTrip:
             assert abs(result[key] - indicators[key]) < 1e-9
 
 
-@skip_if_no_redis
-class TestRedisCollectionSizeLimit:
-    """Property tests for Redis collection size limits."""
-    
-    @given(
-        symbol=symbol_strategy,
-        trades=st.lists(trade_strategy, min_size=1, max_size=1500)
-    )
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_recent_trades_size_limit(self, redis_storage, symbol, trades):
-        """
-        Feature: three-tier-storage, Property 2: Redis collection size limit invariant
-        Validates: Requirements 1.3
-        """
-        for trade in trades:
-            redis_storage.write_recent_trade(symbol, trade)
-        
-        count = redis_storage.get_trades_count(symbol)
-        assert count <= RedisStorage.MAX_TRADES
-    
-    @given(alerts=st.lists(alert_strategy, min_size=1, max_size=1500))
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_alerts_size_limit(self, redis_storage, alerts):
-        """
-        Feature: three-tier-storage, Property 2: Redis collection size limit invariant
-        Validates: Requirements 1.5
-        """
-        for alert in alerts:
-            redis_storage.write_alert(alert)
-        
-        count = redis_storage.get_alerts_count()
-        assert count <= RedisStorage.MAX_ALERTS
+
 
 
 # ============================================================================
@@ -638,7 +578,7 @@ class TestPartialFailureResilience:
         Validates: Requirements 5.4
         """
         redis_storage = RedisStorage(host="localhost", port=6379, db=15)
-        redis_storage.flush_db()
+        redis_storage.client.flushdb()
         
         try:
             mock_postgres = MagicMock(spec=PostgresStorage)
@@ -666,7 +606,7 @@ class TestPartialFailureResilience:
             redis_data = redis_storage.get_aggregation(symbol, interval)
             assert redis_data is not None, "Data should be in Redis"
         finally:
-            redis_storage.flush_db()
+            redis_storage.client.flushdb()
     
     @given(aggregation=aggregation_strategy, timestamp=recent_timestamp_strategy())
     @settings(max_examples=50, deadline=None)
@@ -676,7 +616,7 @@ class TestPartialFailureResilience:
         Validates: Requirements 5.4
         """
         redis_storage = RedisStorage(host="localhost", port=6379, db=15)
-        redis_storage.flush_db()
+        redis_storage.client.flushdb()
         
         try:
             mock_postgres = MagicMock(spec=PostgresStorage)
@@ -706,4 +646,4 @@ class TestPartialFailureResilience:
             
             mock_postgres.upsert_candle.assert_called_once()
         finally:
-            redis_storage.flush_db()
+            redis_storage.client.flushdb()

@@ -37,7 +37,8 @@ from cleanup_utils import cleanup_streaming_resources
 
 # Import health check functions from storage module
 from src.storage.redis import check_redis_health, RedisStorage
-from src.storage.backends import check_postgres_health, check_minio_health
+from src.storage.postgres import check_postgres_health
+from src.storage.minio import check_minio_health
 
 # Import validation functions
 from src.validators.job_validators import (
@@ -178,7 +179,7 @@ with DAG(
     with TaskGroup("trade_aggregation") as trade_aggregation:
         run_trade_aggregation_job = BashOperator(
             task_id='run_trade_aggregation_job',
-            bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -m pyspark_streaming_processor.trade_aggregation_job',
+            bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -m streaming.trade_aggregation_job',
             cwd='/opt/airflow',
             env=spark_job_env,
         )
@@ -197,7 +198,7 @@ with DAG(
     with TaskGroup("technical_indicators") as technical_indicators:
         run_technical_indicators_job = BashOperator(
             task_id='run_technical_indicators_job',
-            bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -c "from pyspark_streaming_processor.analytics_jobs import run_technical_indicators_job; run_technical_indicators_job()"',
+            bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -c "from streaming.technical_indicators_job import run_technical_indicators_job; run_technical_indicators_job()"',
             cwd='/opt/airflow',
             env=spark_job_env,
         )
@@ -216,7 +217,7 @@ with DAG(
     with TaskGroup("anomaly_detection") as anomaly_detection:
         run_anomaly_detection_job = BashOperator(
             task_id='run_anomaly_detection_job',
-            bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -c "from pyspark_streaming_processor.analytics_jobs import run_anomaly_detection_job; run_anomaly_detection_job()"',
+            bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -c "from streaming.anomaly_detection_job import run_anomaly_detection_job; run_anomaly_detection_job()"',
             cwd='/opt/airflow',
             env=spark_job_env,
         )

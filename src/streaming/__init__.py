@@ -4,11 +4,12 @@ PySpark Streaming Processor
 Real-time data processing pipeline using Apache Spark Structured Streaming
 to process cryptocurrency market data from Kafka.
 
-Structure (consolidated):
+Structure:
 - core.py: Configuration classes and connector utilities
 - trade_aggregation_job.py: Aggregates raw trades into OHLCV candles
-- analytics_jobs.py: Technical indicators and anomaly detection jobs
-- graceful_shutdown.py: Graceful shutdown utility
+- technical_indicators_job.py: Technical indicators calculation (SMA, EMA, RSI, MACD, BB, ATR)
+- anomaly_detection_job.py: Anomaly detection job (whale alerts, volume/price spikes, etc.)
+- Graceful shutdown imported from src.utils.shutdown
 
 Storage Architecture:
 - Hot Path: Redis (real-time queries)
@@ -34,19 +35,17 @@ from .core import (
     RedisConnector,
 )
 
-# Job classes
+# Job classes - each from its own file
 from .trade_aggregation_job import TradeAggregationJob
-from .analytics_jobs import (
+from .technical_indicators_job import (
     TechnicalIndicatorsJob,
-    AnomalyDetectionJob,
     IndicatorCalculator,
     CandleState,
 )
+from .anomaly_detection_job import AnomalyDetectionJob
 
-# Graceful shutdown utility
-# Re-export from utils via graceful_shutdown.py for backward compatibility
-# (Requirement 11.1: Re-export GracefulShutdown from utils)
-from .graceful_shutdown import GracefulShutdown, ShutdownState, ShutdownEvent
+# Graceful shutdown utility (from utils)
+from src.utils.shutdown import GracefulShutdown, ShutdownState, ShutdownEvent
 
 __all__ = [
     # Configuration
