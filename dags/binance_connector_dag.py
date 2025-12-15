@@ -16,12 +16,10 @@ from airflow.operators.bash import BashOperator
 from airflow.utils.trigger_rule import TriggerRule
 from datetime import datetime, timedelta
 import os
-import logging
+import sys
 
-from data_quality import (
-    health_check_service,
-    on_failure_callback,
-)
+sys.path.insert(0, '/opt/airflow')
+
 from cleanup_utils import cleanup_connector_resources
 
 default_args = {
@@ -31,7 +29,6 @@ default_args = {
     'depends_on_past': False,
     'email_on_failure': False,
     'email_on_retry': False,
-    'on_failure_callback': on_failure_callback,
 }
 
 
@@ -46,15 +43,22 @@ with DAG(
 ) as dag:
     
     # Task 1: Test Kafka health before starting connector
+    def check_kafka_health(**context):
+        """Simple Kafka health check using socket connection."""
+        import socket
+        kafka_servers = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')
+        host, port = kafka_servers.split(':')[0], int(kafka_servers.split(':')[1])
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        if result != 0:
+            raise Exception(f"Kafka not reachable at {host}:{port}")
+        return {'status': 'healthy', 'host': host, 'port': port}
+    
     test_kafka_health = PythonOperator(
         task_id='test_kafka_health',
-        python_callable=health_check_service,
-        op_kwargs={
-            'service_name': 'kafka',
-            'host': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092').split(':')[0],
-            'port': int(os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092').split(':')[1]),
-            'max_retries': 3,
-        },
+        python_callable=check_kafka_health,
     )
     
     # Task 2: Run Binance connector
@@ -69,7 +73,7 @@ with DAG(
     
     run_binance_connector = BashOperator(
         task_id='run_binance_connector',
-        bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -m binance_kafka_connector',
+        bash_command='PYTHONPATH=/opt/airflow:$PYTHONPATH /usr/local/bin/python src/binance_kafka_connector/connector.py',
         cwd='/opt/airflow',
         env=connector_env,
     )

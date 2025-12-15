@@ -47,7 +47,6 @@ class KafkaConfig:
     topic_raw_klines: str = "raw_klines"
     topic_raw_tickers: str = "raw_tickers"
     topic_processed_aggregations: str = "processed_aggregations"
-    topic_processed_indicators: str = "processed_indicators"
     topic_alerts: str = "alerts"
     
     # Consumer settings
@@ -69,7 +68,6 @@ class KafkaConfig:
             topic_raw_klines=get_env_str("TOPIC_RAW_KLINES", "raw_klines"),
             topic_raw_tickers=get_env_str("TOPIC_RAW_TICKERS", "raw_tickers"),
             topic_processed_aggregations=get_env_str("TOPIC_PROCESSED_AGGREGATIONS", "processed_aggregations"),
-            topic_processed_indicators=get_env_str("TOPIC_PROCESSED_INDICATORS", "processed_indicators"),
             topic_alerts=get_env_str("TOPIC_ALERTS", "alerts"),
             max_rate_per_partition=get_env_int("KAFKA_MAX_RATE_PER_PARTITION", 50000),
             starting_offsets=get_env_str("KAFKA_STARTING_OFFSETS", "latest"),

@@ -12,7 +12,6 @@ Table of Contents:
 """
 
 import json
-import logging
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -20,7 +19,9 @@ from typing import Any, Dict, List, Optional
 import redis
 from redis.exceptions import ConnectionError, TimeoutError
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================================
@@ -153,6 +154,61 @@ class RedisStorage:
             return None
         # Convert numeric fields back to floats
         return {k: float(v) for k, v in data.items()}
+
+    def write_latest_price(self, symbol: str, price: float, volume: float, timestamp: int) -> None:
+        """Write latest price to Redis hash with TTL.
+        
+        Args:
+            symbol: Trading pair symbol
+            price: Current price
+            volume: Trading volume
+            timestamp: Unix timestamp in milliseconds
+        """
+        key = f"latest_price:{symbol}"
+        mapping = {
+            "price": str(price),
+            "volume": str(volume),
+            "timestamp": str(timestamp),
+        }
+        pipe = self.client.pipeline()
+        pipe.hset(key, mapping=mapping)
+        pipe.expire(key, self.TTL_1_HOUR)
+        pipe.execute()
+
+    def write_latest_ticker(self, symbol: str, stats: dict) -> None:
+        """Write latest ticker stats to Redis hash with TTL.
+        
+        Args:
+            symbol: Trading pair symbol
+            stats: Dict with ticker statistics (open, high, low, close, volume, etc.)
+        """
+        key = f"latest_ticker:{symbol}"
+        # Convert all values to strings for Redis
+        mapping = {k: str(v) for k, v in stats.items()}
+        pipe = self.client.pipeline()
+        pipe.hset(key, mapping=mapping)
+        pipe.expire(key, self.TTL_1_HOUR)
+        pipe.execute()
+
+    def write_recent_trade(self, symbol: str, trade: dict) -> None:
+        """Write a trade to Redis sorted set with TTL.
+        
+        Args:
+            symbol: Trading pair symbol
+            trade: Dict with trade data (price, quantity, timestamp, is_buyer_maker)
+        """
+        key = f"recent_trades:{symbol}"
+        trade_json = json.dumps(trade)
+        timestamp = trade.get("timestamp", int(time.time() * 1000))
+        
+        pipe = self.client.pipeline()
+        # Add to sorted set with timestamp as score
+        pipe.zadd(key, {trade_json: timestamp})
+        # Trim to keep only the most recent trades
+        pipe.zremrangebyrank(key, 0, -(self.MAX_TRADES + 1))
+        # Set TTL
+        pipe.expire(key, self.TTL_1_HOUR)
+        pipe.execute()
 
     def write_indicators(self, symbol: str, indicators: dict) -> None:
         """Write technical indicators to Redis hash.

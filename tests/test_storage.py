@@ -23,17 +23,11 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, MagicMock, patch
 from hypothesis import given, settings, strategies as st, assume, HealthCheck
 
-from src.storage import (
-    check_redis_health,
-    check_postgres_health,
-    check_minio_health,
-    check_all_storage_health,
-    QueryRouter,
-    RedisStorage,
-    PostgresStorage,
-    MinioStorage,
-    StorageWriter,
-)
+from src.storage.redis import RedisStorage, check_redis_health
+from src.storage.postgres import PostgresStorage, check_postgres_health
+from src.storage.minio import MinioStorage, check_minio_health
+from src.storage.query_router import QueryRouter
+from src.storage.storage_writer import StorageWriter
 
 
 # ============================================================================
@@ -187,7 +181,7 @@ class TestPostgresHealthCheck:
 class TestMinioHealthCheck:
     """Tests for MinIO health check (Cold Path)."""
     
-    @patch('src.storage.backends.Minio')
+    @patch('src.storage.minio.Minio')
     def test_minio_health_check_success_bucket_exists(self, mock_minio_class):
         """Test successful MinIO health check when bucket exists."""
         mock_client = Mock()
@@ -213,7 +207,7 @@ class TestMinioHealthCheck:
         mock_client.bucket_exists.assert_called_once_with('crypto-data')
         mock_client.make_bucket.assert_not_called()
     
-    @patch('src.storage.backends.Minio')
+    @patch('src.storage.minio.Minio')
     def test_minio_health_check_creates_bucket_if_not_exists(self, mock_minio_class):
         """Test MinIO health check creates bucket if it doesn't exist."""
         mock_client = Mock()
@@ -229,7 +223,7 @@ class TestMinioHealthCheck:
         assert result['status'] == 'healthy'
         mock_client.make_bucket.assert_called_once_with('new-bucket')
     
-    @patch('src.storage.backends.Minio')
+    @patch('src.storage.minio.Minio')
     def test_minio_health_check_fails_after_max_retries(self, mock_minio_class):
         """Test MinIO health check fails after max retries."""
         mock_client = Mock()
@@ -313,17 +307,21 @@ class TestQueryRoutingCorrectness:
     Validates: Requirements 4.1, 4.2
     """
     
+    # Class constants for tier names
+    TIER_REDIS = "redis"
+    TIER_POSTGRES = "postgres"
+    TIER_MINIO = "minio"
+    
     @given(offset_minutes=redis_offset_minutes)
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_redis_tier_selection_for_recent_queries(self, query_router, offset_minutes):
         """For any query within last 1 hour, the router should select Redis tier."""
         now = datetime.now()
         start = now - timedelta(minutes=offset_minutes)
-        end = now
         
-        selected_tier = query_router._select_tier(start, end)
+        selected_tier = query_router._select_tier(start)
         
-        assert selected_tier == QueryRouter.TIER_REDIS, \
+        assert selected_tier == self.TIER_REDIS, \
             f"Expected Redis for {offset_minutes} minutes ago, got {selected_tier}"
     
     @given(offset_hours=postgres_offset_hours)
@@ -332,11 +330,10 @@ class TestQueryRoutingCorrectness:
         """For any query between 1 hour and 90 days, the router should select PostgreSQL tier."""
         now = datetime.now()
         start = now - timedelta(hours=offset_hours)
-        end = now
         
-        selected_tier = query_router._select_tier(start, end)
+        selected_tier = query_router._select_tier(start)
         
-        assert selected_tier == QueryRouter.TIER_POSTGRES, \
+        assert selected_tier == self.TIER_POSTGRES, \
             f"Expected PostgreSQL for {offset_hours} hours ago, got {selected_tier}"
     
     @given(offset_days=minio_offset_days)
@@ -345,32 +342,29 @@ class TestQueryRoutingCorrectness:
         """For any query >= 90 days, the router should select MinIO tier."""
         now = datetime.now()
         start = now - timedelta(days=offset_days)
-        end = now
         
-        selected_tier = query_router._select_tier(start, end)
+        selected_tier = query_router._select_tier(start)
         
-        assert selected_tier == QueryRouter.TIER_MINIO, \
+        assert selected_tier == self.TIER_MINIO, \
             f"Expected MinIO for {offset_days} days ago, got {selected_tier}"
     
     def test_boundary_exactly_1_hour(self, query_router):
         """Test boundary condition: exactly 1 hour ago should use PostgreSQL."""
         now = datetime.now()
         start = now - timedelta(hours=1)
-        end = now
         
-        selected_tier = query_router._select_tier(start, end)
+        selected_tier = query_router._select_tier(start)
         
-        assert selected_tier == QueryRouter.TIER_POSTGRES
+        assert selected_tier == self.TIER_POSTGRES
     
     def test_boundary_exactly_90_days(self, query_router):
         """Test boundary condition: exactly 90 days ago should use MinIO."""
         now = datetime.now()
         start = now - timedelta(days=90)
-        end = now
         
-        selected_tier = query_router._select_tier(start, end)
+        selected_tier = query_router._select_tier(start)
         
-        assert selected_tier == QueryRouter.TIER_MINIO
+        assert selected_tier == self.TIER_MINIO
 
 
 # ============================================================================

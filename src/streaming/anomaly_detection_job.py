@@ -8,13 +8,11 @@ Anomaly Types Detected:
 - Whale alerts: Trade value > $100,000 (HIGH)
 - Volume spikes: Volume > 3x average (MEDIUM)
 - Price spikes: Price change > 2% (HIGH)
-- RSI extremes: RSI > 70 or < 30 (LOW)
-- BB breakouts: Price outside bands (MEDIUM)
-- MACD crossovers: MACD crosses signal (LOW)
 
 Requirements Coverage:
 ---------------------
     - Requirement 1.2: AnomalyDetectionJob in its own file
+    - Requirement 4.6: Does not depend on processed_indicators topic
 """
 
 import json
@@ -48,12 +46,15 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from .core import Config, KafkaConnector
+from src.streaming.core import Config, KafkaConnector
 from src.utils.logging import StructuredFormatter
 from src.utils.shutdown import GracefulShutdown
 
 # Import storage tier classes for StorageWriter integration
-from src.storage import MinioStorage, PostgresStorage, RedisStorage, StorageWriter
+from src.storage.redis import RedisStorage
+from src.storage.postgres import PostgresStorage
+from src.storage.minio import MinioStorage
+from src.storage.storage_writer import StorageWriter
 
 # Import metrics utilities for production monitoring
 from src.utils.metrics import (
@@ -65,15 +66,15 @@ from src.utils.metrics import (
 
 class AnomalyDetectionJob:
     """
-    Consolidated Spark Structured Streaming job for detecting all anomaly types.
+    Consolidated Spark Structured Streaming job for detecting anomaly types.
 
     Monitors multiple data sources and generates alerts for:
     - Whale alerts: Trade value > $100,000 (HIGH)
     - Volume spikes: Volume > 3x average (MEDIUM)
     - Price spikes: Price change > 2% (HIGH)
-    - RSI extremes: RSI > 70 or < 30 (LOW)
-    - BB breakouts: Price outside bands (MEDIUM)
-    - MACD crossovers: MACD crosses signal (LOW)
+    
+    Note: RSI extremes, BB breakouts, and MACD crossovers have been removed
+    as part of the simplify-indicators feature (Requirement 4.6).
     """
 
     # Thresholds per design spec
@@ -81,8 +82,6 @@ class AnomalyDetectionJob:
     VOLUME_SPIKE_MULTIPLIER = 3.0
     VOLUME_LOOKBACK_PERIODS = 20
     PRICE_SPIKE_THRESHOLD = 2.0  # 2%
-    RSI_OVERBOUGHT = 70.0
-    RSI_OVERSOLD = 30.0
 
     def __init__(self, config: Config):
         """Initialize Anomaly Detection Job."""
@@ -94,13 +93,14 @@ class AnomalyDetectionJob:
         self.storage_writer: Optional[StorageWriter] = None
 
         self.empty_batch_count: int = 0
-        self.empty_batch_threshold: int = 2
-        self.max_runtime_seconds: int = 60
+        self.empty_batch_threshold: int = 3  # Stop after 3 consecutive empty batches
+        self.max_runtime_seconds: int = 180  # 3 minutes per job (accounts for ~60s Spark startup)
         self.start_time: Optional[float] = None
 
+        # Increased timeout to 90s to allow checkpoint completion before forced termination
         self.graceful_shutdown = GracefulShutdown(
-            graceful_shutdown_timeout=30,
-            shutdown_progress_interval=5,
+            graceful_shutdown_timeout=90,
+            shutdown_progress_interval=10,
             logger=self.logger
         )
 
@@ -125,14 +125,31 @@ class AnomalyDetectionJob:
         return logger
 
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals with graceful shutdown support."""
+        """Handle shutdown signals with graceful shutdown support.
+        
+        IMPORTANT: We do NOT call query.stop() here immediately.
+        Instead, we set a flag and let the current batch complete naturally.
+        The query will be stopped after the batch finishes and checkpoint is committed.
+        This prevents offset loss due to incomplete checkpoint writes.
+        """
         self.graceful_shutdown.request_shutdown(signum)
         self.shutdown_requested = True
-        if self.query:
-            self.query.stop()
+        # NOTE: Do NOT call query.stop() here!
+        # Let the current batch complete and checkpoint commit.
+        self.logger.info("Shutdown signal received - will stop after current batch completes and checkpoint commits")
 
     def should_stop(self, is_empty_batch: bool) -> bool:
-        """Check if job should stop based on empty batch count or timeout."""
+        """Check if job should stop based on shutdown signal, empty batch count or timeout.
+        
+        IMPORTANT: This is called INSIDE foreachBatch, so returning True here
+        and calling query.stop() will allow Spark to commit the checkpoint
+        for the current batch before stopping.
+        """
+        # Check if shutdown was requested via signal (SIGTERM/SIGINT)
+        if self.shutdown_requested:
+            self.logger.info("Shutdown signal detected, stopping after this batch completes")
+            return True
+        
         if self.start_time and (time.time() - self.start_time) > self.max_runtime_seconds:
             self.logger.info(f"Max runtime {self.max_runtime_seconds}s exceeded, stopping")
             return True
@@ -289,27 +306,7 @@ class AnomalyDetectionJob:
             StructField("price_stddev", DoubleType(), True)
         ])
 
-    @staticmethod
-    def _get_indicator_schema() -> StructType:
-        """Get schema for indicator messages."""
-        return StructType([
-            StructField("timestamp", TimestampType(), False),
-            StructField("symbol", StringType(), False),
-            StructField("sma_5", DoubleType(), True),
-            StructField("sma_10", DoubleType(), True),
-            StructField("sma_20", DoubleType(), True),
-            StructField("sma_50", DoubleType(), True),
-            StructField("ema_12", DoubleType(), True),
-            StructField("ema_26", DoubleType(), True),
-            StructField("rsi_14", DoubleType(), True),
-            StructField("macd_line", DoubleType(), True),
-            StructField("macd_signal", DoubleType(), True),
-            StructField("macd_histogram", DoubleType(), True),
-            StructField("bb_middle", DoubleType(), True),
-            StructField("bb_upper", DoubleType(), True),
-            StructField("bb_lower", DoubleType(), True),
-            StructField("atr_14", DoubleType(), True)
-        ])
+
 
 
     def detect_whale_alerts(self, df: DataFrame) -> DataFrame:
@@ -380,111 +377,20 @@ class AnomalyDetectionJob:
         self.logger.info("Price spike detection configured")
         return alerts_df
 
-    def detect_rsi_extremes(self, df: DataFrame) -> DataFrame:
-        """Detect RSI extreme conditions from indicators. RSI extreme: RSI > 70 or RSI < 30, level LOW"""
-        self.logger.info(f"Detecting RSI extremes: overbought > {self.RSI_OVERBOUGHT}, oversold < {self.RSI_OVERSOLD}")
-        indicator_schema = self._get_indicator_schema()
-        parsed_df = df.select(from_json(col("value").cast("string"), indicator_schema).alias("ind"))
-        indicators_df = parsed_df.select(
-            col("ind.timestamp").alias("timestamp"), col("ind.symbol").alias("symbol"),
-            col("ind.rsi_14").alias("rsi_14")
-        )
-        indicators_df = indicators_df.withWatermark("timestamp", "1 minute")
-        rsi_extremes = indicators_df.filter(
-            (col("rsi_14").isNotNull()) &
-            ((col("rsi_14") > self.RSI_OVERBOUGHT) | (col("rsi_14") < self.RSI_OVERSOLD))
-        )
-        alerts_df = rsi_extremes.select(
-            col("timestamp"), col("symbol"),
-            lit("RSI_EXTREME").alias("alert_type"), lit("LOW").alias("alert_level"),
-            to_json(struct(col("rsi_14"),
-                when(col("rsi_14") > self.RSI_OVERBOUGHT, "OVERBOUGHT").otherwise("OVERSOLD").alias("condition")
-            )).alias("details"),
-            expr("uuid()").alias("alert_id"), current_timestamp().alias("created_at")
-        )
-        self.logger.info("RSI extreme detection configured")
-        return alerts_df
 
-    def detect_bb_breakouts(self, indicators_df: DataFrame, aggs_df: DataFrame) -> DataFrame:
-        """Detect Bollinger Band breakouts from indicators and aggregations. BB breakout: Price outside bands, level MEDIUM"""
-        self.logger.info("Detecting Bollinger Band breakouts")
-        indicator_schema = self._get_indicator_schema()
-        agg_schema = self._get_aggregation_schema()
-        parsed_indicators = indicators_df.select(
-            from_json(col("value").cast("string"), indicator_schema).alias("ind")
-        ).select(
-            col("ind.timestamp").alias("timestamp"), col("ind.symbol").alias("symbol"),
-            col("ind.bb_upper").alias("bb_upper"), col("ind.bb_lower").alias("bb_lower")
-        )
-        parsed_aggs = aggs_df.select(
-            from_json(col("value").cast("string"), agg_schema).alias("agg")
-        ).select(
-            col("agg.window_start").alias("timestamp"), col("agg.symbol").alias("symbol"),
-            col("agg.close").alias("price"), col("agg.window_duration").alias("window_duration")
-        ).filter(col("window_duration") == "1m")
-        indicators_with_watermark = parsed_indicators.withWatermark("timestamp", "1 minute")
-        aggs_with_watermark = parsed_aggs.withWatermark("timestamp", "1 minute")
-        joined_df = indicators_with_watermark.join(
-            aggs_with_watermark,
-            (indicators_with_watermark.symbol == aggs_with_watermark.symbol) &
-            (indicators_with_watermark.timestamp == aggs_with_watermark.timestamp),
-            "inner"
-        ).select(
-            indicators_with_watermark.timestamp, indicators_with_watermark.symbol,
-            aggs_with_watermark.price, indicators_with_watermark.bb_upper, indicators_with_watermark.bb_lower
-        )
-        breakouts = joined_df.filter(
-            (col("bb_upper").isNotNull()) & (col("bb_lower").isNotNull()) &
-            ((col("price") > col("bb_upper")) | (col("price") < col("bb_lower")))
-        )
-        alerts_df = breakouts.select(
-            col("timestamp"), col("symbol"),
-            lit("BB_BREAKOUT").alias("alert_type"), lit("MEDIUM").alias("alert_level"),
-            to_json(struct(col("price"), col("bb_upper"), col("bb_lower"),
-                when(col("price") > col("bb_upper"), "UPPER").otherwise("LOWER").alias("breakout_direction")
-            )).alias("details"),
-            expr("uuid()").alias("alert_id"), current_timestamp().alias("created_at")
-        )
-        self.logger.info("BB breakout detection configured")
-        return alerts_df
-
-    def detect_macd_crossovers(self, df: DataFrame) -> DataFrame:
-        """Detect MACD crossovers from indicators. MACD crossover: Histogram near zero, level LOW"""
-        self.logger.info("Detecting MACD crossovers using histogram approach")
-        indicator_schema = self._get_indicator_schema()
-        parsed_df = df.select(from_json(col("value").cast("string"), indicator_schema).alias("ind"))
-        indicators_df = parsed_df.select(
-            col("ind.timestamp").alias("timestamp"), col("ind.symbol").alias("symbol"),
-            col("ind.macd_line").alias("macd_line"), col("ind.macd_signal").alias("macd_signal"),
-            col("ind.macd_histogram").alias("macd_histogram")
-        )
-        indicators_df = indicators_df.withWatermark("timestamp", "1 minute")
-        HISTOGRAM_THRESHOLD = 0.0001
-        crossovers = indicators_df.filter(
-            (col("macd_line").isNotNull()) & (col("macd_signal").isNotNull()) &
-            (col("macd_histogram").isNotNull()) &
-            (spark_abs(col("macd_histogram")) < HISTOGRAM_THRESHOLD) &
-            (spark_abs(col("macd_line")) > 0.001)
-        )
-        alerts_df = crossovers.select(
-            col("timestamp"), col("symbol"),
-            lit("MACD_CROSSOVER").alias("alert_type"), lit("LOW").alias("alert_level"),
-            to_json(struct(col("macd_line"), col("macd_signal"), col("macd_histogram"),
-                when(col("macd_line") > col("macd_signal"), "BULLISH").otherwise("BEARISH").alias("direction")
-            )).alias("details"),
-            expr("uuid()").alias("alert_id"), current_timestamp().alias("created_at")
-        )
-        self.logger.info("MACD crossover detection configured")
-        return alerts_df
 
 
     def _create_alert(self, timestamp: datetime, symbol: str, alert_type: str, alert_level: str, details: Dict[str, Any]) -> Dict[str, Any]:
-        """Create an alert dictionary with all required fields."""
+        """Create an alert dictionary with all required fields.
+        
+        Returns datetime objects for timestamp and created_at fields.
+        The storage layer (storage_writer) handles conversion to ISO string for Redis/Kafka.
+        """
         return {
             "alert_id": str(uuid.uuid4()),
-            "timestamp": timestamp.isoformat() if isinstance(timestamp, datetime) else str(timestamp),
+            "timestamp": timestamp,
             "symbol": symbol, "alert_type": alert_type, "alert_level": alert_level,
-            "details": details, "created_at": datetime.utcnow().isoformat()
+            "details": details, "created_at": datetime.utcnow()
         }
 
     def _write_alerts_to_sinks(self, alerts: List[Dict[str, Any]], batch_id: int) -> None:
@@ -601,42 +507,43 @@ class AnomalyDetectionJob:
             self.storage_writer = self._init_storage_writer()
 
             self.logger.info("Anomaly Detection Job starting...")
-            self.logger.info("Detecting 6 anomaly types:")
+            self.logger.info("Detecting 3 anomaly types:")
             self.logger.info(f"  - Whale alerts (threshold: ${self.WHALE_THRESHOLD:,.0f})")
             self.logger.info(f"  - Volume spikes ({self.VOLUME_SPIKE_MULTIPLIER}x average)")
             self.logger.info(f"  - Price spikes ({self.PRICE_SPIKE_THRESHOLD}% change)")
-            self.logger.info(f"  - RSI extremes (>{self.RSI_OVERBOUGHT} or <{self.RSI_OVERSOLD})")
-            self.logger.info("  - BB breakouts (price outside bands)")
-            self.logger.info("  - MACD crossovers (MACD crosses signal)")
             self.logger.info("Writing to 3-tier storage: Redis (hot), PostgreSQL (warm), MinIO (cold)")
 
             raw_trades_stream = self._create_stream_reader(self.config.kafka.topic_raw_trades)
             aggregations_stream = self._create_stream_reader(self.config.kafka.topic_processed_aggregations)
-            indicators_stream = self._create_stream_reader(self.config.kafka.topic_processed_indicators)
-            aggregations_stream_2 = self._create_stream_reader(self.config.kafka.topic_processed_aggregations)
 
             whale_alerts = self.detect_whale_alerts(raw_trades_stream)
             volume_spikes = self.detect_volume_spikes(aggregations_stream)
             price_spikes = self.detect_price_spikes(aggregations_stream)
-            rsi_extremes = self.detect_rsi_extremes(indicators_stream)
-            macd_crossovers = self.detect_macd_crossovers(indicators_stream)
-            bb_breakouts = self.detect_bb_breakouts(indicators_stream, aggregations_stream_2)
 
-            all_alerts = (whale_alerts.union(volume_spikes).union(price_spikes)
-                         .union(rsi_extremes).union(macd_crossovers).union(bb_breakouts))
+            all_alerts = whale_alerts.union(volume_spikes).union(price_spikes)
 
             self.start_time = time.time()
             self.logger.info("Anomaly Detection Job started successfully (micro-batch mode)")
             self.logger.info(f"Auto-stop config: max_runtime={self.max_runtime_seconds}s, empty_batch_threshold={self.empty_batch_threshold}")
             self.logger.info(f"Graceful shutdown timeout: {self.graceful_shutdown.graceful_shutdown_timeout}s")
 
+            # Trigger interval increased to 60s to match actual processing time
             query = (all_alerts.writeStream.foreachBatch(self._process_batch).outputMode("append")
-                    .trigger(processingTime='10 seconds')
+                    .trigger(processingTime='60 seconds')
                     .option("checkpointLocation", self.config.spark.checkpoint_location).start())
             self.query = query
             query.awaitTermination(timeout=self.max_runtime_seconds)
 
             was_graceful = self.graceful_shutdown.wait_for_batch_completion()
+            
+            # CRITICAL: Wait a bit for Spark to commit checkpoint after query stops
+            # Spark commits checkpoint AFTER foreachBatch returns, so we need to
+            # give it time to write the checkpoint before we stop SparkSession
+            if self.query and not self.query.isActive:
+                self.logger.info("Query stopped, waiting for checkpoint commit...")
+                time.sleep(5)  # Give Spark time to commit checkpoint
+                self.logger.info("Checkpoint commit wait completed")
+            
             if self.graceful_shutdown.shutdown_requested:
                 if was_graceful:
                     self.logger.info("Anomaly Detection Job shutdown completed gracefully")
@@ -673,3 +580,7 @@ def run_anomaly_detection_job():
     config = Config.from_env("AnomalyDetectionJob")
     job = AnomalyDetectionJob(config)
     job.run()
+
+
+if __name__ == "__main__":
+    run_anomaly_detection_job()

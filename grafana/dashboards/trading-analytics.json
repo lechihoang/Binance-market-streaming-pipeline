@@ -10,131 +10,9 @@
   "liveNow": false,
   "panels": [
     {
-      "id": 10,
-      "title": "Price History (PostgreSQL)",
-      "type": "timeseries",
-      "datasource": {
-        "type": "postgres",
-        "uid": "postgresql"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "postgres",
-            "uid": "postgresql"
-          },
-          "rawSql": "SELECT timestamp AS time, close AS \"BTCUSDT\" FROM trades_1m WHERE symbol = 'BTCUSDT' AND timestamp >= NOW() - INTERVAL '24 hours' ORDER BY timestamp",
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "Price",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": ["lastNotNull", "mean"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 11,
-      "title": "Volume History (PostgreSQL)",
-      "type": "timeseries",
-      "datasource": {
-        "type": "postgres",
-        "uid": "postgresql"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "postgres",
-            "uid": "postgresql"
-          },
-          "rawSql": "SELECT timestamp AS time, volume AS \"Volume\" FROM trades_1m WHERE symbol = 'BTCUSDT' AND timestamp >= NOW() - INTERVAL '24 hours' ORDER BY timestamp",
-          "format": "time_series"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "Volume",
-            "axisPlacement": "auto",
-            "drawStyle": "bars",
-            "fillOpacity": 50,
-            "gradientMode": "opacity",
-            "lineInterpolation": "smooth",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": ["sum", "mean"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      }
-    },
-    {
       "id": 1,
-      "title": "Volume Heatmap",
-      "type": "heatmap",
+      "title": "Số giao dịch theo thời gian",
+      "type": "barchart",
       "datasource": {
         "type": "marcusolsson-json-datasource",
         "uid": "fastapi"
@@ -143,106 +21,52 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 8
+        "y": 0
       },
       "targets": [
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/volume-heatmap",
+          "urlPath": "/api/v1/analytics/trades-count?symbol=BTCUSDT&interval=${interval}&limit=24",
           "fields": [
-            { "jsonPath": "$[*].hour", "name": "Hour" },
-            { "jsonPath": "$[*].symbol", "name": "Symbol" },
-            { "jsonPath": "$[*].volume", "name": "Volume" }
+            { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].trades_count", "name": "Số giao dịch" }
           ]
         }
       ],
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Số giao dịch",
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
+            "lineWidth": 1,
             "scaleDistribution": {
               "type": "linear"
             }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
           }
         },
         "overrides": []
       },
       "options": {
-        "calculate": false,
-        "cellGap": 1,
-        "cellValues": {},
-        "color": {
-          "exponent": 0.5,
-          "fill": "dark-orange",
-          "mode": "scheme",
-          "reverse": false,
-          "scale": "exponential",
-          "scheme": "Oranges",
-          "steps": 64
-        },
-        "exemplars": {
-          "color": "rgba(255,0,255,0.7)"
-        },
-        "filterValues": {
-          "le": 1e-9
-        },
-        "legend": {
-          "show": true
-        },
-        "rowsFrame": {
-          "layout": "auto"
-        },
-        "tooltip": {
-          "show": true,
-          "yHistogram": false
-        },
-        "yAxis": {
-          "axisPlacement": "left",
-          "reverse": false
-        }
-      }
-    },
-    {
-      "id": 2,
-      "title": "Volatility Comparison",
-      "type": "barchart",
-      "datasource": {
-        "type": "marcusolsson-json-datasource",
-        "uid": "fastapi"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 18
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "method": "GET",
-          "urlPath": "/api/v1/analytics/volatility-comparison?symbols=BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT&period=24h",
-          "fields": [
-            { "jsonPath": "$[*].symbol", "name": "Symbol" },
-            { "jsonPath": "$[*].volatility", "name": "Volatility %" }
-          ]
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "color": {
-            "mode": "palette-classic"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "orientation": "horizontal",
+        "barRadius": 0,
         "barWidth": 0.8,
         "groupWidth": 0.7,
         "legend": {
@@ -250,12 +74,18 @@
           "placement": "bottom",
           "showLegend": true
         },
+        "orientation": "vertical",
+        "showValue": "auto",
+        "stacking": "none",
         "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+          "mode": "single",
+          "sort": "none"
+        },
+        "xTickLabelRotation": -45,
+        "xTickLabelSpacing": 0
       }
     },
+
     {
       "id": 3,
       "title": "Whale Alerts",
@@ -268,7 +98,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 10
       },
       "targets": [
         {
@@ -368,7 +198,42 @@
   "style": "dark",
   "tags": ["crypto", "trading", "analytics", "whale"],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "1h",
+          "value": "1h"
+        },
+        "description": "Khoảng thời gian cho biểu đồ số giao dịch",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Khoảng thời gian",
+        "multi": false,
+        "name": "interval",
+        "options": [
+          {
+            "selected": false,
+            "text": "1 phút",
+            "value": "1m"
+          },
+          {
+            "selected": true,
+            "text": "1 giờ",
+            "value": "1h"
+          },
+          {
+            "selected": false,
+            "text": "1 ngày",
+            "value": "1d"
+          }
+        ],
+        "query": "1m,1h,1d",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      }
+    ]
   },
   "time": {
     "from": "now-24h",

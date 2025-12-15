@@ -7,15 +7,15 @@ Routes queries to appropriate storage tier based on time range:
 - >= 90 days: MinIO (Cold Path)
 """
 
-import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 from .redis import RedisStorage
 from .postgres import PostgresStorage
 from .minio import MinioStorage
+from src.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class QueryRouter:
@@ -24,6 +24,14 @@ class QueryRouter:
     REDIS_THRESHOLD_HOURS = 1
     POSTGRES_THRESHOLD_DAYS = 90
     TIER_ORDER = ["redis", "postgres", "minio"]
+    
+    # Data type constants
+    DATA_TYPE_KLINES = "klines"
+    DATA_TYPE_CANDLES = "candles"
+    DATA_TYPE_INDICATORS = "indicators"
+    DATA_TYPE_ALERTS = "alerts"
+    DATA_TYPE_TRADES = "trades"
+    DATA_TYPE_AGGREGATIONS = "aggregations"
     
     def __init__(self, redis: RedisStorage, postgres: PostgresStorage, minio: MinioStorage):
         self.redis = redis
@@ -70,11 +78,12 @@ class QueryRouter:
         return []
     
     def _select_tier(self, start: datetime) -> str:
-        """Select storage tier based on start time."""
-        now = datetime.now()
-        if start >= now - timedelta(hours=self.REDIS_THRESHOLD_HOURS):
+        """Select storage tier based on start time. Assumes naive UTC datetimes."""
+        now = datetime.utcnow()
+        start_utc = start.replace(tzinfo=None) if start.tzinfo else start
+        if start_utc >= now - timedelta(hours=self.REDIS_THRESHOLD_HOURS):
             return "redis"
-        if start >= now - timedelta(days=self.POSTGRES_THRESHOLD_DAYS):
+        if start_utc >= now - timedelta(days=self.POSTGRES_THRESHOLD_DAYS):
             return "postgres"
         return "minio"
     

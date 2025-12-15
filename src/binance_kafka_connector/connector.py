@@ -469,3 +469,32 @@ class BinanceKafkaConnector:
 
 
 
+
+
+# ============================================================================
+# 8. CLI ENTRYPOINT
+# ============================================================================
+
+def main():
+    """Main entry point for the application."""
+    import sys
+    
+    # Set up logging
+    setup_logging(level=config.LOG_LEVEL, json_output=True)
+    
+    _logger = get_logger(__name__)
+    _logger.info("Starting Binance-Kafka Connector...")
+    
+    try:
+        connector = BinanceKafkaConnector()
+        asyncio.run(connector.run())
+        
+    except KeyboardInterrupt:
+        _logger.info("Received keyboard interrupt")
+    except Exception as e:
+        _logger.error(f"Fatal error: {type(e).__name__}: {e}", exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

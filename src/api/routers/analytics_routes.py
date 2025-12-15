@@ -2,7 +2,7 @@
 Analytics Routes - Consolidated analytics and alerts endpoints.
 
 Contains all analytics-related REST API endpoints:
-- Historical analytics (klines, indicators, volume analysis, volatility)
+- Historical analytics (klines, volume analysis, volatility)
 - Alert notifications (recent alerts, history, whale alerts)
 
 Table of Contents:
@@ -13,7 +13,6 @@ Table of Contents:
 - Alerts Endpoints (line ~600)
 """
 
-import logging
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
@@ -23,24 +22,22 @@ from pydantic import BaseModel
 from src.api.dependencies import get_redis, get_postgres, get_query_router, get_minio
 from src.api.models import (
     KlineResponse,
-    IndicatorResponse,
     VolumeAnalysisResponse,
     VolatilityResponse,
     AlertResponse,
+    TradesCountResponse,
 )
-from src.storage import RedisStorage, PostgresStorage, MinioStorage, QueryRouter
+from src.storage.redis import RedisStorage
+from src.storage.postgres import PostgresStorage
+from src.storage.minio import MinioStorage
+from src.storage.query_router import QueryRouter
+from src.utils.logging import get_logger
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Combined router for all analytics-related endpoints
 router = APIRouter()
-
-# Valid indicator names
-VALID_INDICATORS = {
-    "rsi", "macd", "macd_signal", "sma_20", 
-    "ema_12", "ema_26", "bb_upper", "bb_lower", "atr"
-}
 
 # Valid intervals for klines
 VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
@@ -131,7 +128,7 @@ def query_klines_with_fallback(
         Tuple of (data, data_source)
     """
     # Determine which tier QueryRouter will use
-    now = datetime.now()
+    now = datetime.utcnow()
     redis_cutoff = now - timedelta(hours=1)
     postgres_cutoff = now - timedelta(days=90)
     
@@ -161,44 +158,6 @@ def query_klines_with_fallback(
             return data, "minio"
     except Exception as e:
         logger.warning(f"MinIO fallback failed for klines/{symbol}: {e}")
-    
-    return [], "none"
-
-
-def query_indicators_with_fallback(
-    postgres: PostgresStorage,
-    minio: MinioStorage,
-    symbol: str,
-    start: datetime,
-    end: datetime,
-) -> Tuple[List[dict], str]:
-    """Query indicators with fallback: PostgreSQL -> MinIO.
-    
-    Args:
-        postgres: PostgresStorage instance
-        minio: MinioStorage instance
-        symbol: Trading symbol
-        start: Start datetime
-        end: End datetime
-        
-    Returns:
-        Tuple of (data, data_source)
-    """
-    # Try PostgreSQL first
-    try:
-        data = postgres.query_indicators(symbol, start, end)
-        if data:
-            return data, "postgres"
-    except Exception as e:
-        logger.warning(f"PostgreSQL query failed for indicators/{symbol}: {e}")
-    
-    # Fallback to MinIO
-    try:
-        data = minio.read_indicators(symbol, start, end)
-        if data:
-            return data, "minio"
-    except Exception as e:
-        logger.warning(f"MinIO fallback failed for indicators/{symbol}: {e}")
     
     return [], "none"
 
@@ -282,8 +241,12 @@ async def get_klines(
             detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_INTERVALS))}"
         )
     
+    # Normalize timezone-aware datetimes to naive (UTC)
+    start = (start.replace(tzinfo=None) if start and start.tzinfo else start)
+    end = (end.replace(tzinfo=None) if end and end.tzinfo else end)
+    
     # Default time range: last 24 hours
-    now = datetime.now()
+    now = datetime.utcnow()
     if end is None:
         end = now
     if start is None:
@@ -313,151 +276,6 @@ async def get_klines(
         )
         for record in data
     ]
-
-
-@router.get("/indicators/latest/{symbol}", response_model=List[IndicatorResponse], tags=["analytics"])
-async def get_indicators_latest(
-    symbol: str,
-    response: Response,
-    limit: int = Query(default=100, ge=1, le=1000, description="Number of records"),
-    postgres: PostgresStorage = Depends(get_postgres),
-) -> List[IndicatorResponse]:
-    """Get latest technical indicators available in the system.
-    
-    Returns the most recent indicators regardless of time range.
-    
-    Args:
-        symbol: Trading pair symbol (e.g., BTCUSDT)
-        limit: Maximum number of records to return
-        
-    Returns:
-        List of IndicatorResponse with indicator data
-    """
-    try:
-        now = datetime.now()
-        start = now - timedelta(days=90)
-        data = postgres.query_indicators(symbol, start, now)
-        
-        if data:
-            data = data[-limit:]
-            response.headers["X-Data-Source"] = "postgres"
-            return [
-                IndicatorResponse(
-                    timestamp=record.get("timestamp"),
-                    rsi=record.get("rsi"),
-                    macd=record.get("macd"),
-                    macd_signal=record.get("macd_signal"),
-                    sma_20=record.get("sma_20"),
-                    ema_12=record.get("ema_12"),
-                    ema_26=record.get("ema_26"),
-                    bb_upper=record.get("bb_upper"),
-                    bb_lower=record.get("bb_lower"),
-                    atr=record.get("atr"),
-                )
-                for record in data
-            ]
-    except Exception as e:
-        logger.warning(f"PostgreSQL query failed: {e}")
-    
-    response.headers["X-Data-Source"] = "none"
-    return []
-
-
-@router.get("/indicators/{symbol}", response_model=List[IndicatorResponse], tags=["analytics"])
-async def get_indicators(
-    symbol: str,
-    response: Response,
-    indicators: Optional[str] = Query(
-        default=None, 
-        description="Comma-separated indicator names (rsi,macd,sma_20,etc.)"
-    ),
-    period: str = Query(default="24h", description="Time period (1h, 24h, 7d, 30d)"),
-    postgres: PostgresStorage = Depends(get_postgres),
-    minio: MinioStorage = Depends(get_minio),
-) -> List[IndicatorResponse]:
-    """Get technical indicators for a symbol.
-    
-    Available indicators: rsi, macd, macd_signal, sma_20, ema_12, ema_26,
-    bb_upper, bb_lower, atr
-    
-    Args:
-        symbol: Trading pair symbol (e.g., BTCUSDT)
-        indicators: Comma-separated list of indicator names to return
-        period: Time period (1h, 24h, 7d, 30d)
-        
-    Returns:
-        List of IndicatorResponse with requested indicators
-        
-    Raises:
-        HTTPException 400: Invalid indicator name or period
-        HTTPException 503: All data sources unavailable
-    """
-    # Parse period to time range
-    now = datetime.now()
-    period_map = {
-        "1h": timedelta(hours=1),
-        "24h": timedelta(hours=24),
-        "7d": timedelta(days=7),
-        "30d": timedelta(days=30),
-        "90d": timedelta(days=90),
-    }
-    
-    if period not in period_map:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid period. Valid values: {', '.join(period_map.keys())}"
-        )
-    
-    start = now - period_map[period]
-    end = now
-    
-    # Validate time range
-    validate_time_range(start, end)
-    
-    # Parse requested indicators
-    requested_indicators = None
-    if indicators:
-        requested_indicators = set(ind.strip().lower() for ind in indicators.split(","))
-        invalid = requested_indicators - VALID_INDICATORS
-        if invalid:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid indicators: {', '.join(invalid)}. Valid values: {', '.join(sorted(VALID_INDICATORS))}"
-            )
-    
-    # Query with fallback
-    data, data_source = query_indicators_with_fallback(
-        postgres, minio, symbol, start, end
-    )
-    
-    # Add X-Data-Source header
-    response.headers["X-Data-Source"] = data_source
-    
-    # Filter to requested indicators only
-    results = []
-    for record in data:
-        response_model = IndicatorResponse(timestamp=record.get("timestamp"))
-        
-        # If specific indicators requested, only include those
-        if requested_indicators:
-            for ind in requested_indicators:
-                setattr(response_model, ind, record.get(ind))
-        else:
-            # Include all indicators
-            response_model.rsi = record.get("rsi")
-            response_model.macd = record.get("macd")
-            response_model.macd_signal = record.get("macd_signal")
-            response_model.sma_20 = record.get("sma_20")
-            response_model.ema_12 = record.get("ema_12")
-            response_model.ema_26 = record.get("ema_26")
-            response_model.bb_upper = record.get("bb_upper")
-            response_model.bb_lower = record.get("bb_lower")
-            response_model.atr = record.get("atr")
-        
-        results.append(response_model)
-    
-    return results
-
 
 @router.get("/volume-analysis", response_model=List[VolumeAnalysisResponse], tags=["analytics"])
 async def get_volume_analysis(
@@ -500,8 +318,12 @@ async def get_volume_analysis(
             detail=f"Invalid interval. Valid values: {', '.join(sorted(valid_intervals))}"
         )
     
+    # Normalize timezone-aware datetimes to naive (UTC)
+    start = (start.replace(tzinfo=None) if start and start.tzinfo else start)
+    end = (end.replace(tzinfo=None) if end and end.tzinfo else end)
+    
     # Default time range: last 24 hours
-    now = datetime.now()
+    now = datetime.utcnow()
     if end is None:
         end = now
     if start is None:
@@ -579,7 +401,7 @@ async def get_volatility(
         HTTPException 503: All data sources unavailable
     """
     # Parse period to time range
-    now = datetime.now()
+    now = datetime.utcnow()
     period_map = {
         "1h": timedelta(hours=1),
         "24h": timedelta(hours=24),
@@ -671,7 +493,7 @@ async def get_ohlc_latest(
     # Query latest candles directly from PostgreSQL
     try:
         # Query last 90 days to get any available data
-        now = datetime.now()
+        now = datetime.utcnow()
         start = now - timedelta(days=90)
         candles = postgres.query_candles(symbol, start, now, interval=interval)
         
@@ -681,7 +503,7 @@ async def get_ohlc_latest(
             response.headers["X-Data-Source"] = "postgres"
             return [
                 OHLCResponse(
-                    timestamp=record.get("timestamp", datetime.now()),
+                    timestamp=record.get("timestamp", datetime.utcnow()),
                     open=record.get("open", 0.0),
                     high=record.get("high", 0.0),
                     low=record.get("low", 0.0),
@@ -724,8 +546,12 @@ async def get_ohlc(
             detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_INTERVALS))}"
         )
     
+    # Normalize timezone-aware datetimes to naive (UTC)
+    start = (start.replace(tzinfo=None) if start and start.tzinfo else start)
+    end = (end.replace(tzinfo=None) if end and end.tzinfo else end)
+    
     # Default time range: last 6 hours
-    now = datetime.now()
+    now = datetime.utcnow()
     if end is None:
         end = now
     if start is None:
@@ -744,7 +570,7 @@ async def get_ohlc(
     
     return [
         OHLCResponse(
-            timestamp=record.get("timestamp", datetime.now()),
+            timestamp=record.get("timestamp", datetime.utcnow()),
             open=record.get("open", 0.0),
             high=record.get("high", 0.0),
             low=record.get("low", 0.0),
@@ -777,7 +603,7 @@ async def get_volume_heatmap(
         symbol_list = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
     
     # Get last 24 hours of data
-    now = datetime.now()
+    now = datetime.utcnow()
     start = now - timedelta(hours=24)
     
     results = []
@@ -844,7 +670,7 @@ async def get_volatility_comparison(
         symbol_list = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
     
     # Parse period to time range
-    now = datetime.now()
+    now = datetime.utcnow()
     period_map = {
         "1h": timedelta(hours=1),
         "24h": timedelta(hours=24),
@@ -905,6 +731,80 @@ async def get_volatility_comparison(
 
 
 # ============================================================================
+# TRADES COUNT ENDPOINT
+# ============================================================================
+
+# Valid intervals for trades count
+VALID_TRADES_COUNT_INTERVALS = {"1m", "1h", "1d"}
+
+
+@router.get("/trades-count", response_model=List[TradesCountResponse], tags=["analytics"])
+async def get_trades_count(
+    response: Response,
+    symbol: str = Query(description="Trading pair symbol (e.g., BTCUSDT)"),
+    interval: str = Query(default="1h", description="Time interval (1m, 1h, 1d)"),
+    limit: int = Query(default=24, ge=1, le=1000, description="Number of data points to return"),
+    postgres: PostgresStorage = Depends(get_postgres),
+) -> List[TradesCountResponse]:
+    """Get trades count aggregated by time interval.
+    
+    Returns the number of trades aggregated by the specified time interval.
+    Useful for displaying trading activity over time.
+    
+    Args:
+        symbol: Trading pair symbol (e.g., BTCUSDT)
+        interval: Time interval (1m, 1h, 1d)
+        limit: Number of data points to return (default: 24)
+        
+    Returns:
+        List of TradesCountResponse with trades count per interval
+        
+    Raises:
+        HTTPException 400: Invalid interval parameter
+    """
+    # Validate interval
+    if interval not in VALID_TRADES_COUNT_INTERVALS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_TRADES_COUNT_INTERVALS))}"
+        )
+    
+    # Calculate time range based on interval and limit
+    now = datetime.utcnow()
+    interval_durations = {
+        "1m": timedelta(minutes=1),
+        "1h": timedelta(hours=1),
+        "1d": timedelta(days=1),
+    }
+    
+    duration = interval_durations[interval]
+    start = now - (duration * limit)
+    end = now
+    
+    # Query trades count from PostgreSQL
+    try:
+        data = postgres.query_trades_count(symbol.upper(), start, end, interval)
+        response.headers["X-Data-Source"] = "postgres"
+        
+        # Limit results to requested limit
+        if len(data) > limit:
+            data = data[-limit:]
+        
+        return [
+            TradesCountResponse(
+                timestamp=record["timestamp"],
+                trades_count=record["trades_count"],
+                interval=record["interval"],
+            )
+            for record in data
+        ]
+    except Exception as e:
+        logger.warning(f"Failed to query trades count for {symbol}: {e}")
+        response.headers["X-Data-Source"] = "none"
+        return []
+
+
+# ============================================================================
 # ALERTS ENDPOINTS
 # ============================================================================
 
@@ -934,7 +834,7 @@ async def get_recent_alerts(
             if isinstance(alert.get("timestamp"), (int, float)) and alert.get("timestamp") > 1e10
             else datetime.fromtimestamp(alert.get("timestamp", 0))
             if isinstance(alert.get("timestamp"), (int, float))
-            else alert.get("timestamp", datetime.now()),
+            else alert.get("timestamp", datetime.utcnow()),
             symbol=alert.get("symbol", "UNKNOWN"),
             alert_type=alert.get("alert_type", "unknown"),
             severity=alert.get("severity", "info"),
@@ -1048,9 +948,9 @@ async def get_whale_alerts(
                     try:
                         ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
                     except:
-                        ts = datetime.now()
+                        ts = datetime.utcnow()
                 elif not isinstance(ts, datetime):
-                    ts = datetime.now()
+                    ts = datetime.utcnow()
                 
                 whale_alerts.append(WhaleAlertResponse(
                     timestamp=ts,
@@ -1066,7 +966,7 @@ async def get_whale_alerts(
     # If not enough from Redis, try PostgreSQL
     if len(whale_alerts) < effective_limit:
         try:
-            now = datetime.now()
+            now = datetime.utcnow()
             start = now - timedelta(days=7)
             
             for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]:
@@ -1082,7 +982,7 @@ async def get_whale_alerts(
                                 details = {}
                         
                         whale_alerts.append(WhaleAlertResponse(
-                            timestamp=alert.get("timestamp", datetime.now()),
+                            timestamp=alert.get("timestamp", datetime.utcnow()),
                             symbol=alert.get("symbol", "UNKNOWN"),
                             side=details.get("side", "BUY"),
                             amount=float(details.get("quantity", details.get("amount", 0))),

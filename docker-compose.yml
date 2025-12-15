@@ -91,6 +91,8 @@ services:
     hostname: postgres
     container_name: airflow-postgres
     environment:
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      PGTZ: ${TZ:-Asia/Ho_Chi_Minh}
       POSTGRES_USER: ${AIRFLOW_POSTGRES_USER:-airflow}
       POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD:-airflow}
       POSTGRES_DB: ${AIRFLOW_POSTGRES_DB:-airflow}
@@ -119,6 +121,8 @@ services:
     hostname: postgres-data
     container_name: postgres-data
     environment:
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      PGTZ: ${TZ:-Asia/Ho_Chi_Minh}
       POSTGRES_USER: ${POSTGRES_USER:-crypto}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
       POSTGRES_DB: ${POSTGRES_DB:-crypto_data}
@@ -231,6 +235,9 @@ services:
       airflow-init:
         condition: service_completed_successfully
     environment:
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: ${TIMEZONE:-Asia/Ho_Chi_Minh}
+      AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: ${TIMEZONE:-Asia/Ho_Chi_Minh}
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER:-airflow}:${AIRFLOW_POSTGRES_PASSWORD:-airflow}@postgres/${AIRFLOW_POSTGRES_DB:-airflow}
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg=}
@@ -300,6 +307,8 @@ services:
       airflow-webserver:
         condition: service_healthy
     environment:
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: ${TIMEZONE:-Asia/Ho_Chi_Minh}
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER:-airflow}:${AIRFLOW_POSTGRES_PASSWORD:-airflow}@postgres/${AIRFLOW_POSTGRES_DB:-airflow}
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg=}
@@ -436,6 +445,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
       PARQUET_PATH: /app/data/parquet
@@ -454,7 +464,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./data:/app/data
-    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
     networks:
       - streaming-network
     healthcheck:
@@ -506,13 +516,13 @@ services:
       LOG_LEVEL: ${TICKER_LOG_LEVEL:-INFO}
     volumes:
       - ./src:/app/src
-    command: python -c "from src.ticker_consumer import main; main()"
+    command: python -c "from src.ticker_consumer.consumer import main; main()"
     networks:
       - streaming-network
     # Health check (Requirement 7.2)
     # Checks Redis connectivity and data freshness
     healthcheck:
-      test: ["CMD", "python", "-c", "from src.ticker_consumer import health_check_main; exit(health_check_main())"]
+      test: ["CMD", "python", "-c", "from src.ticker_consumer.consumer import health_check_main; exit(health_check_main())"]
       interval: 30s
       timeout: 10s
       retries: 5

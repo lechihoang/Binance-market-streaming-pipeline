@@ -21,7 +21,6 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.utils.task_group import TaskGroup
 from datetime import datetime, timedelta
-import logging
 import os
 import sys
 import time
@@ -29,10 +28,10 @@ import time
 # Add parent directory to path so 'from src.xxx' imports work
 sys.path.insert(0, '/opt/airflow')
 
-from data_quality import on_failure_callback
 from src.storage.redis import check_redis_health
+from src.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 default_args = {
     'owner': 'data-engineering',
@@ -41,7 +40,6 @@ default_args = {
     'depends_on_past': False,
     'email_on_failure': False,
     'email_on_retry': False,
-    'on_failure_callback': on_failure_callback,
 }
 
 # Configuration from environment

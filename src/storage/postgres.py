@@ -6,7 +6,6 @@ Tables: trades_1m, indicators, alerts
 """
 
 import json
-import logging
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -15,10 +14,11 @@ import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
+from src.utils.logging import get_logger
 from src.utils.retry import RetryConfig, retry_operation
 from src.utils.metrics import track_latency, record_error, record_retry
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class PostgresStorage:
@@ -354,6 +354,55 @@ class PostgresStorage:
                     pass
             alerts.append(alert)
         return alerts
+
+    def query_trades_count(
+        self, symbol: str, start: datetime, end: datetime, interval: str = "1h"
+    ) -> List[Dict[str, Any]]:
+        """Query trades count aggregated by time interval.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., BTCUSDT)
+            start: Start datetime
+            end: End datetime
+            interval: Time interval (1m, 1h, 1d)
+            
+        Returns:
+            List of dicts with timestamp, trades_count, interval
+        """
+        # Map interval to PostgreSQL date_trunc format
+        interval_map = {
+            "1m": "minute",
+            "1h": "hour",
+            "1d": "day",
+        }
+        
+        trunc_interval = interval_map.get(interval, "hour")
+        
+        query = """
+            SELECT 
+                date_trunc(%s, timestamp) AS bucket_timestamp,
+                SUM(trades_count) AS total_trades_count
+            FROM trades_1m
+            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+            GROUP BY bucket_timestamp
+            ORDER BY bucket_timestamp ASC
+        """
+        
+        result = self._execute_with_retry(
+            query, (trunc_interval, symbol, start, end), fetch=True
+        )
+        
+        if not result:
+            return []
+        
+        return [
+            {
+                "timestamp": row["bucket_timestamp"],
+                "trades_count": int(row["total_trades_count"] or 0),
+                "interval": interval,
+            }
+            for row in result
+        ]
 
 
 # ============================================================================

@@ -5,15 +5,15 @@ Writes data to all 3 storage tiers (Redis, PostgreSQL, MinIO)
 with partial failure resilience.
 """
 
-import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 from .redis import RedisStorage
 from .postgres import PostgresStorage
 from .minio import MinioStorage
+from src.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class StorageWriter:
@@ -42,12 +42,7 @@ class StorageWriter:
             minio: MinioStorage instance for cold path
         """
         self.redis = redis
-        self.postgres = postgres
-        self.minio = minio
-        
-        # Warm path storage (PostgreSQL)
         self._warm_storage: Optional[PostgresStorage] = postgres
-        # Cold path storage (MinIO)
         self._cold_storage: Optional[MinioStorage] = minio
         
         if self._warm_storage is None:
@@ -65,6 +60,7 @@ class StorageWriter:
         Args:
             data: Dict with keys: timestamp, symbol, interval, open, high, low,
                   close, volume, quote_volume, trades_count
+                  Timestamp should be a datetime object.
                   
         Returns:
             Dict with success status for each tier: {'redis': bool, 'warm': bool, 'cold': bool}
@@ -73,7 +69,11 @@ class StorageWriter:
         symbol = data.get('symbol', '')
         interval = data.get('interval', '1m')
         
-        # Write to Redis (overwrite)
+        # Get timestamp as datetime, convert to ISO string for Redis
+        timestamp_dt = self._to_datetime(data.get('timestamp'))
+        timestamp_iso = timestamp_dt.isoformat() if timestamp_dt else None
+        
+        # Write to Redis (overwrite) - use ISO string for timestamp
         try:
             ohlcv = {
                 'open': data.get('open'),
@@ -81,15 +81,14 @@ class StorageWriter:
                 'low': data.get('low'),
                 'close': data.get('close'),
                 'volume': data.get('volume'),
-                'timestamp': data.get('timestamp'),
+                'timestamp': timestamp_iso,
             }
             self.redis.write_aggregation(symbol, interval, ohlcv)
             results['redis'] = True
         except Exception as e:
             logger.error(f"Redis write_aggregation failed for {symbol}: {e}")
         
-        # Write to warm path (PostgreSQL)
-        timestamp_dt = self._to_datetime(data.get('timestamp'))
+        # Write to warm path (PostgreSQL) - use datetime object (driver auto-converts)
         try:
             candle = {
                 'timestamp': timestamp_dt,
@@ -108,10 +107,10 @@ class StorageWriter:
         except Exception as e:
             logger.error(f"PostgreSQL write_aggregation failed for {symbol}: {e}")
         
-        # Write to cold path (MinIO)
+        # Write to cold path (MinIO) - use datetime object directly
         try:
             kline = {
-                'timestamp': data.get('timestamp'),
+                'timestamp': timestamp_dt,
                 'symbol': symbol,
                 'open': data.get('open'),
                 'high': data.get('high'),
@@ -131,96 +130,6 @@ class StorageWriter:
         self._log_write_result('aggregation', symbol, results)
         return results
 
-    def write_indicators(self, data: Dict[str, Any]) -> Dict[str, bool]:
-        """Write technical indicators to all 3 tiers.
-        
-        Redis: overwrite indicators:{symbol} hash
-        PostgreSQL: upsert into indicators table
-        MinIO: append to indicators partition
-        
-        Args:
-            data: Dict with keys: timestamp, symbol, rsi, macd, macd_signal,
-                  sma_20, ema_12, ema_26, bb_upper, bb_lower, atr
-                  
-        Returns:
-            Dict with success status for each tier
-        """
-        results = {'redis': False, 'warm': False, 'cold': False}
-        symbol = data.get('symbol', '')
-        
-        # Write to Redis (overwrite)
-        try:
-            indicators = {
-                'rsi': data.get('rsi'),
-                'macd': data.get('macd'),
-                'macd_signal': data.get('macd_signal'),
-                'sma_20': data.get('sma_20'),
-                'ema_12': data.get('ema_12'),
-                'ema_26': data.get('ema_26'),
-                'bb_upper': data.get('bb_upper'),
-                'bb_lower': data.get('bb_lower'),
-                'atr': data.get('atr'),
-            }
-            # Filter out None values
-            indicators = {k: v for k, v in indicators.items() if v is not None}
-            # Only write to Redis if there are non-None indicators
-            if indicators:
-                self.redis.write_indicators(symbol, indicators)
-                results['redis'] = True
-            else:
-                # No indicators to write, consider it a success (no-op)
-                results['redis'] = True
-                logger.debug(f"No non-None indicators to write for {symbol}")
-        except Exception as e:
-            logger.error(f"Redis write_indicators failed for {symbol}: {e}")
-        
-        # Write to warm path (PostgreSQL)
-        timestamp_dt = self._to_datetime(data.get('timestamp'))
-        try:
-            indicators_record = {
-                'timestamp': timestamp_dt,
-                'symbol': symbol,
-                'rsi': data.get('rsi'),
-                'macd': data.get('macd'),
-                'macd_signal': data.get('macd_signal'),
-                'sma_20': data.get('sma_20'),
-                'ema_12': data.get('ema_12'),
-                'ema_26': data.get('ema_26'),
-                'bb_upper': data.get('bb_upper'),
-                'bb_lower': data.get('bb_lower'),
-                'atr': data.get('atr'),
-            }
-            if self._warm_storage is not None:
-                self._warm_storage.upsert_indicators(indicators_record)
-                results['warm'] = True
-        except Exception as e:
-            logger.error(f"PostgreSQL write_indicators failed for {symbol}: {e}")
-        
-        # Write to cold path (MinIO)
-        try:
-            indicator_record = {
-                'timestamp': data.get('timestamp'),
-                'symbol': symbol,
-                'rsi': data.get('rsi', 0),
-                'macd': data.get('macd', 0),
-                'macd_signal': data.get('macd_signal', 0),
-                'sma_20': data.get('sma_20', 0),
-                'ema_12': data.get('ema_12', 0),
-                'ema_26': data.get('ema_26', 0),
-                'bb_upper': data.get('bb_upper', 0),
-                'bb_lower': data.get('bb_lower', 0),
-                'atr': data.get('atr', 0),
-            }
-            if self._cold_storage is not None:
-                write_date = timestamp_dt or datetime.now()
-                self._cold_storage.write_indicators(symbol, [indicator_record], write_date)
-                results['cold'] = True
-        except Exception as e:
-            logger.error(f"MinIO write_indicators failed for {symbol}: {e}")
-        
-        self._log_write_result('indicators', symbol, results)
-        return results
-    
     def write_alert(self, data: Dict[str, Any]) -> Dict[str, bool]:
         """Write alert to all 3 tiers.
         
@@ -231,6 +140,7 @@ class StorageWriter:
         Args:
             data: Dict with keys: alert_id, timestamp, symbol, alert_type, 
                   alert_level, created_at, details
+                  Timestamp and created_at should be datetime objects.
                   
         Returns:
             Dict with success status for each tier
@@ -238,16 +148,26 @@ class StorageWriter:
         results = {'redis': False, 'warm': False, 'cold': False}
         symbol = data.get('symbol', '')
         
-        # Write to Redis (push to list) - keep all fields for AnomalyValidator
+        # Convert datetime fields to ISO strings for Redis
+        timestamp_dt = self._to_datetime(data.get('timestamp'))
+        created_at_dt = self._to_datetime(data.get('created_at'))
+        timestamp_iso = timestamp_dt.isoformat() if timestamp_dt else None
+        created_at_iso = created_at_dt.isoformat() if created_at_dt else None
+        
+        # Write to Redis (push to list) - use ISO strings for datetime fields
         try:
-            self.redis.write_alert(data)
+            redis_data = {
+                **data,
+                'timestamp': timestamp_iso,
+                'created_at': created_at_iso,
+            }
+            self.redis.write_alert(redis_data)
             results['redis'] = True
         except Exception as e:
             logger.error(f"Redis write_alert failed for {symbol}: {e}")
         
-        # Write to warm path (PostgreSQL)
+        # Write to warm path (PostgreSQL) - use datetime object (driver auto-converts)
         # Map alert_level to severity for PostgreSQL schema compatibility
-        timestamp_dt = self._to_datetime(data.get('timestamp'))
         try:
             alert_record = {
                 'timestamp': timestamp_dt,
@@ -263,10 +183,10 @@ class StorageWriter:
         except Exception as e:
             logger.error(f"PostgreSQL write_alert failed for {symbol}: {e}")
         
-        # Write to cold path (MinIO)
+        # Write to cold path (MinIO) - use datetime object directly
         try:
             alert_record = {
-                'timestamp': data.get('timestamp'),
+                'timestamp': timestamp_dt,
                 'symbol': symbol,
                 'alert_type': data.get('alert_type'),
                 'severity': data.get('alert_level'),  # Map alert_level to severity
@@ -283,11 +203,25 @@ class StorageWriter:
         self._log_write_result('alert', symbol, results)
         return results
     
-    def _to_datetime(self, timestamp: int) -> Optional[datetime]:
-        """Convert Unix timestamp (milliseconds) to datetime."""
+    def _to_datetime(self, timestamp) -> Optional[datetime]:
+        """Validate and return datetime object.
+        
+        Per timestamp standardization convention, streaming jobs should
+        pass datetime objects directly. This method validates the input.
+        
+        Args:
+            timestamp: datetime object (expected)
+            
+        Returns:
+            datetime object or None if invalid/None
+        """
         if timestamp is None:
             return None
-        return datetime.fromtimestamp(timestamp / 1000)
+        if isinstance(timestamp, datetime):
+            return timestamp
+        # Log warning for non-datetime input (should not happen with standardized code)
+        logger.warning(f"Expected datetime object, got {type(timestamp).__name__}. Using current time as fallback.")
+        return datetime.now()
     
     def _log_write_result(
         self, 

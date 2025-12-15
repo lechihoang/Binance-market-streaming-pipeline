@@ -8,7 +8,10 @@ for connection reuse across requests.
 import os
 from functools import lru_cache
 
-from src.storage import RedisStorage, PostgresStorage, MinioStorage, QueryRouter
+from src.storage.redis import RedisStorage
+from src.storage.postgres import PostgresStorage
+from src.storage.minio import MinioStorage
+from src.storage.query_router import QueryRouter
 
 
 @lru_cache()
@@ -33,14 +36,14 @@ def get_postgres() -> PostgresStorage:
         PostgresStorage instance with database connection
         
     Environment variables:
-        POSTGRES_DATA_HOST: PostgreSQL host (default: localhost)
+        POSTGRES_DATA_HOST: PostgreSQL host (default: postgres-data)
         POSTGRES_DATA_PORT: PostgreSQL port (default: 5432)
         POSTGRES_DATA_USER: Database user (default: crypto)
         POSTGRES_DATA_PASSWORD: Database password (default: crypto)
         POSTGRES_DATA_DB: Database name (default: crypto_data)
     """
     return PostgresStorage(
-        host=os.getenv("POSTGRES_DATA_HOST", "localhost"),
+        host=os.getenv("POSTGRES_DATA_HOST", "postgres-data"),
         port=int(os.getenv("POSTGRES_DATA_PORT", "5432")),
         user=os.getenv("POSTGRES_DATA_USER", "crypto"),
         password=os.getenv("POSTGRES_DATA_PASSWORD", "crypto"),

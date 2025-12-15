@@ -20,6 +20,8 @@ from src.utils.retry import ExponentialBackoff
 
 logger = get_logger(__name__)
 
+# Note: 'import logging' is kept for logging.getLogger("kafka").setLevel() in main()
+
 # Default symbols
 DEFAULT_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
@@ -136,7 +138,7 @@ class TickerConsumer:
     """Core ticker consumer service."""
     
     def __init__(self, config: TickerConfig):
-        from src.storage import RedisTickerStorage
+        from src.storage.redis import RedisTickerStorage
         
         self.config = config
         self._configured_symbols = set(s.upper() for s in config.symbols)
@@ -155,7 +157,7 @@ class TickerConsumer:
     
     def _init_redis(self) -> None:
         """Initialize Redis connection."""
-        from src.storage import RedisTickerStorage
+        from src.storage.redis import RedisTickerStorage
         
         self._redis = RedisTickerStorage(
             host=self.config.redis_host,
@@ -310,7 +312,7 @@ def health_check_main() -> int:
     Returns 0 if Redis is reachable, 1 otherwise.
     """
     try:
-        from src.storage import RedisTickerStorage
+        from src.storage.redis import RedisTickerStorage
         
         config = TickerConfig.from_env()
         redis = RedisTickerStorage(

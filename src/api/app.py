@@ -18,7 +18,9 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from src.api.routers import market_routes, analytics_routes, system
+from src.api.routers import market_routes
+from src.api.routers import analytics_routes
+from src.api.routers import system
 
 
 # Rate limit configuration

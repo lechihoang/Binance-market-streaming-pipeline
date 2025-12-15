@@ -26,12 +26,15 @@ from pyspark.sql.types import (
     LongType, BooleanType, TimestampType
 )
 
-from .core import Config, RedisConnector
+from src.streaming.core import Config, RedisConnector
 from src.utils.shutdown import GracefulShutdown
 from src.utils.logging import StructuredFormatter
 
 # Import storage tier classes for StorageWriter integration
-from src.storage import RedisStorage, PostgresStorage, MinioStorage, StorageWriter
+from src.storage.redis import RedisStorage
+from src.storage.postgres import PostgresStorage
+from src.storage.minio import MinioStorage
+from src.storage.storage_writer import StorageWriter
 
 # Import metrics utilities for production monitoring
 from src.utils.metrics import (
@@ -71,14 +74,15 @@ class TradeAggregationJob:
         
         # Micro-batch auto-stop attributes
         self.empty_batch_count: int = 0
-        self.empty_batch_threshold: int = 2  # Stop quickly when no new data
-        self.max_runtime_seconds: int = 60  # 1 minute per job
+        self.empty_batch_threshold: int = 3  # Stop after 3 consecutive empty batches
+        self.max_runtime_seconds: int = 180  # 3 minutes per job (accounts for ~60s Spark startup)
         self.start_time: Optional[float] = None
         
         # Initialize GracefulShutdown for controlled shutdown behavior
+        # Increased timeout to 60s to allow checkpoint completion before forced termination
         self.graceful_shutdown = GracefulShutdown(
-            graceful_shutdown_timeout=30,
-            shutdown_progress_interval=5,
+            graceful_shutdown_timeout=60,
+            shutdown_progress_interval=10,
             logger=self.logger
         )
         
@@ -113,19 +117,30 @@ class TradeAggregationJob:
         return logger
     
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals with graceful shutdown support."""
+        """Handle shutdown signals with graceful shutdown support.
+        
+        IMPORTANT: We do NOT call query.stop() here immediately.
+        Instead, we set a flag and let the current batch complete naturally.
+        The query will be stopped after the batch finishes and checkpoint is committed.
+        This prevents offset loss due to incomplete checkpoint writes.
+        """
         # Delegate to GracefulShutdown for proper shutdown handling
         self.graceful_shutdown.request_shutdown(signum)
         self.shutdown_requested = True
         
-        # Stop the query to trigger shutdown sequence
-        # The actual termination will wait for batch completion in run()
-        if self.query:
-            self.query.stop()
+        # NOTE: Do NOT call query.stop() here!
+        # Let the current batch complete and checkpoint commit.
+        # The should_stop() method in write_to_sinks will stop the query
+        # after the batch completes, ensuring checkpoint is written.
+        self.logger.info("Shutdown signal received - will stop after current batch completes and checkpoint commits")
     
     def should_stop(self, is_empty_batch: bool) -> bool:
         """
-        Check if job should stop based on empty batch count or timeout.
+        Check if job should stop based on shutdown signal, empty batch count or timeout.
+        
+        IMPORTANT: This is called INSIDE foreachBatch, so returning True here
+        and calling query.stop() will allow Spark to commit the checkpoint
+        for the current batch before stopping.
         
         Args:
             is_empty_batch: Whether the current batch is empty
@@ -133,6 +148,12 @@ class TradeAggregationJob:
         Returns:
             True if job should stop, False otherwise
         """
+        # Check if shutdown was requested via signal (SIGTERM/SIGINT)
+        # This ensures we stop gracefully after the current batch completes
+        if self.shutdown_requested:
+            self.logger.info("Shutdown signal detected, stopping after this batch completes")
+            return True
+        
         # Check timeout
         if self.start_time and (time.time() - self.start_time) > self.max_runtime_seconds:
             self.logger.info(f"Max runtime {self.max_runtime_seconds}s exceeded, stopping")
@@ -782,11 +803,13 @@ class TradeAggregationJob:
             self.logger.info(f"Graceful shutdown timeout: {self.graceful_shutdown.graceful_shutdown_timeout}s")
             
             # Write to multiple sinks using foreachBatch
+            # Trigger interval increased to 60s to match actual processing time (~40-50s per batch)
+            # This prevents "falling behind" warnings and allows proper batch completion
             query = (enriched_df
                     .writeStream
                     .foreachBatch(self.write_to_sinks)
                     .outputMode("update")
-                    .trigger(processingTime='10 seconds')
+                    .trigger(processingTime='60 seconds')
                     .option("checkpointLocation", self.config.spark.checkpoint_location)
                     .start())
             
@@ -794,10 +817,20 @@ class TradeAggregationJob:
             
             # Use awaitTermination with timeout for micro-batch processing
             # The query will also stop if should_stop() returns True in write_to_sinks
+            # IMPORTANT: awaitTermination returns when query stops, but checkpoint
+            # may still be committing. We need to wait for that to complete.
             query.awaitTermination(timeout=self.max_runtime_seconds)
             
             # Wait for any in-progress batch to complete (Requirement 1.3, 1.4)
             was_graceful = self.graceful_shutdown.wait_for_batch_completion()
+            
+            # CRITICAL: Wait a bit for Spark to commit checkpoint after query stops
+            # Spark commits checkpoint AFTER foreachBatch returns, so we need to
+            # give it time to write the checkpoint before we stop SparkSession
+            if self.query and not self.query.isActive:
+                self.logger.info("Query stopped, waiting for checkpoint commit...")
+                time.sleep(5)  # Give Spark time to commit checkpoint
+                self.logger.info("Checkpoint commit wait completed")
             
             # Log whether shutdown was graceful or forced (Requirement 3.3)
             if self.graceful_shutdown.shutdown_requested:

@@ -7,17 +7,16 @@ This DAG runs independently from the Binance Connector DAG.
 TaskGroup Structure:
 1. health_checks: test_redis_health, test_postgres_health, test_minio_health (parallel)
 2. trade_aggregation: run_trade_aggregation_job >> validate_aggregation_output
-3. technical_indicators: run_technical_indicators_job >> validate_indicators_output
-4. anomaly_detection: run_anomaly_detection_job >> validate_anomaly_output
-5. cleanup: cleanup_streaming
+3. anomaly_detection: run_anomaly_detection_job >> validate_anomaly_output
+4. cleanup: cleanup_streaming
 
 Storage Architecture:
 - Hot Path: Redis (real-time queries)
 - Warm Path: PostgreSQL (90-day analytics)
 - Cold Path: MinIO (historical archive)
 
-Note: anomaly_detection_job runs AFTER technical_indicators_job because it depends on
-the processed_indicators Kafka topic which is created by technical_indicators_job.
+Note: anomaly_detection_job runs AFTER trade_aggregation_job because it depends on
+the processed_aggregations Kafka topic which is created by trade_aggregation_job.
 """
 
 from airflow import DAG
@@ -32,18 +31,16 @@ import sys
 # Add parent directory to path so 'from src.xxx' imports work
 sys.path.insert(0, '/opt/airflow')
 
-from data_quality import on_failure_callback
 from cleanup_utils import cleanup_streaming_resources
 
 # Import health check functions from storage module
-from src.storage.redis import check_redis_health, RedisStorage
+from src.storage.redis import check_redis_health
 from src.storage.postgres import check_postgres_health
 from src.storage.minio import check_minio_health
 
 # Import validation functions
 from src.validators.job_validators import (
     validate_aggregation_output,
-    validate_indicators_output,
     validate_anomaly_output,
 )
 
@@ -54,7 +51,6 @@ default_args = {
     'depends_on_past': False,
     'email_on_failure': False,
     'email_on_retry': False,
-    'on_failure_callback': on_failure_callback,
 }
 
 # Storage config from environment
@@ -72,34 +68,6 @@ minio_access_key = os.getenv('MINIO_ACCESS_KEY', 'minioadmin')
 minio_secret_key = os.getenv('MINIO_SECRET_KEY', 'minioadmin')
 minio_bucket = os.getenv('MINIO_BUCKET', 'crypto-data')
 minio_secure = os.getenv('MINIO_SECURE', 'false').lower() == 'true'
-
-
-# Validation wrapper functions for PythonOperator
-def run_aggregation_validation(**kwargs):
-    """Wrapper function to run aggregation validation with RedisStorage."""
-    redis_storage = RedisStorage(host=redis_host, port=redis_port)
-    result = validate_aggregation_output(redis_storage)
-    if not result.is_valid:
-        raise ValueError(result.message)
-    return result.message
-
-
-def run_indicators_validation(**kwargs):
-    """Wrapper function to run indicators validation with RedisStorage."""
-    redis_storage = RedisStorage(host=redis_host, port=redis_port)
-    result = validate_indicators_output(redis_storage)
-    if not result.is_valid:
-        raise ValueError(result.message)
-    return result.message
-
-
-def run_anomaly_validation(**kwargs):
-    """Wrapper function to run anomaly validation with RedisStorage."""
-    redis_storage = RedisStorage(host=redis_host, port=redis_port)
-    result = validate_anomaly_output(redis_storage)
-    if not result.is_valid:
-        raise ValueError(result.message)
-    return result.message
 
 
 # Common environment variables for Spark jobs
@@ -126,7 +94,7 @@ with DAG(
     dag_id='streaming_processing_dag',
     default_args=default_args,
     description='Spark streaming jobs for processing trade data from Kafka',
-    schedule_interval='* * * * *',  # Run every 1 minute
+    schedule_interval='*/5 * * * *',  # Run every 5 minutes (allows time for Spark startup + processing)
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,  # Prevent overlapping runs
@@ -179,59 +147,44 @@ with DAG(
     with TaskGroup("trade_aggregation") as trade_aggregation:
         run_trade_aggregation_job = BashOperator(
             task_id='run_trade_aggregation_job',
-            bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -m streaming.trade_aggregation_job',
+            bash_command='PYTHONPATH=/opt/airflow:$PYTHONPATH /usr/local/bin/python src/streaming/trade_aggregation_job.py',
             cwd='/opt/airflow',
             env=spark_job_env,
+            # No execution_timeout needed - job has internal max_runtime (3 min)
+            # and will self-terminate before next DAG run (5 min interval)
         )
         
         validate_aggregation = PythonOperator(
             task_id='validate_aggregation_output',
-            python_callable=run_aggregation_validation,
+            python_callable=validate_aggregation_output,
+            op_kwargs={'redis_host': redis_host, 'redis_port': redis_port},
         )
         
         # Internal dependency: run job then validate
         run_trade_aggregation_job >> validate_aggregation
     
     # ==========================================================================
-    # TaskGroup 3: Technical Indicators
-    # ==========================================================================
-    with TaskGroup("technical_indicators") as technical_indicators:
-        run_technical_indicators_job = BashOperator(
-            task_id='run_technical_indicators_job',
-            bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -c "from streaming.technical_indicators_job import run_technical_indicators_job; run_technical_indicators_job()"',
-            cwd='/opt/airflow',
-            env=spark_job_env,
-        )
-        
-        validate_indicators = PythonOperator(
-            task_id='validate_indicators_output',
-            python_callable=run_indicators_validation,
-        )
-        
-        # Internal dependency: run job then validate
-        run_technical_indicators_job >> validate_indicators
-    
-    # ==========================================================================
-    # TaskGroup 4: Anomaly Detection
+    # TaskGroup 3: Anomaly Detection
     # ==========================================================================
     with TaskGroup("anomaly_detection") as anomaly_detection:
         run_anomaly_detection_job = BashOperator(
             task_id='run_anomaly_detection_job',
-            bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -c "from streaming.anomaly_detection_job import run_anomaly_detection_job; run_anomaly_detection_job()"',
+            bash_command='PYTHONPATH=/opt/airflow:$PYTHONPATH /usr/local/bin/python src/streaming/anomaly_detection_job.py',
             cwd='/opt/airflow',
             env=spark_job_env,
         )
         
         validate_anomaly = PythonOperator(
             task_id='validate_anomaly_output',
-            python_callable=run_anomaly_validation,
+            python_callable=validate_anomaly_output,
+            op_kwargs={'redis_host': redis_host, 'redis_port': redis_port},
         )
         
         # Internal dependency: run job then validate
         run_anomaly_detection_job >> validate_anomaly
     
     # ==========================================================================
-    # TaskGroup 5: Cleanup (runs regardless of upstream failures)
+    # TaskGroup 4: Cleanup (runs regardless of upstream failures)
     # ==========================================================================
     # Note: cleanup task is outside TaskGroup to allow trigger_rule to work properly
     # TaskGroups don't propagate trigger_rule to their dependencies
@@ -248,10 +201,10 @@ with DAG(
     # ==========================================================================
     # TaskGroup Dependencies
     # ==========================================================================
-    # Main flow: health_checks >> trade_aggregation >> technical_indicators >> anomaly_detection
+    # Main flow: health_checks >> trade_aggregation >> anomaly_detection
     # Cleanup runs after all tasks complete (success or fail)
-    health_checks >> trade_aggregation >> technical_indicators >> anomaly_detection
+    health_checks >> trade_aggregation >> anomaly_detection
     
     # Cleanup depends on ALL upstream tasks with ALL_DONE trigger
     # This ensures cleanup runs even if any upstream task fails
-    [health_checks, trade_aggregation, technical_indicators, anomaly_detection] >> cleanup_streaming_task
+    [health_checks, trade_aggregation, anomaly_detection] >> cleanup_streaming_task

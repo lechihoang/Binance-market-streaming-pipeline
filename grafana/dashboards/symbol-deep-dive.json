@@ -4,14 +4,14 @@
   },
   "editable": true,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
+  "graphTooltip": 1,
   "id": null,
   "links": [],
   "liveNow": false,
   "panels": [
     {
       "id": 1,
-      "title": "Price Chart - $symbol",
+      "title": "Price - ${symbol}USDT",
       "type": "timeseries",
       "datasource": {
         "type": "marcusolsson-json-datasource",
@@ -27,39 +27,39 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/ohlc/latest?symbol=${symbol}USDT&interval=${interval}&limit=100",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${candleInterval}",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
-            { "jsonPath": "$[*].open", "name": "Open" },
-            { "jsonPath": "$[*].high", "name": "High" },
-            { "jsonPath": "$[*].low", "name": "Low" },
-            { "jsonPath": "$[*].close", "name": "Close" }
+            { "jsonPath": "$[*].close", "name": "Price" }
           ]
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
+          "decimals": 2,
+          "noValue": "No data",
           "color": {
-            "mode": "palette-classic"
+            "mode": "fixed",
+            "fixedColor": "#73BF69"
           },
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
+            "axisLabel": "Price (USD)",
+            "axisPlacement": "left",
             "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
             },
@@ -78,20 +78,20 @@
       },
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": ["last", "min", "max"],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "multi",
+          "mode": "single",
           "sort": "none"
         }
       }
     },
     {
       "id": 2,
-      "title": "RSI - $symbol",
+      "title": "Volume - ${symbol}USDT",
       "type": "timeseries",
       "datasource": {
         "type": "marcusolsson-json-datasource",
@@ -107,78 +107,48 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/indicators/latest/${symbol}USDT?limit=100",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${candleInterval}",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
-            { "jsonPath": "$[*].rsi", "name": "RSI" }
+            { "jsonPath": "$[*].volume", "name": "Volume" }
           ]
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "min": 0,
-          "max": 100,
-          "color": {
-            "mode": "palette-classic"
-          },
+          "unit": "short",
+          "decimals": 4,
+          "color": { "mode": "fixed", "fixedColor": "#5794F2" },
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "RSI",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
+            "axisLabel": "Volume",
+            "axisPlacement": "left",
+            "drawStyle": "bars",
+            "fillOpacity": 50,
+            "gradientMode": "opacity",
+            "lineWidth": 1,
             "showPoints": "never",
             "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "line"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 70 },
-              { "color": "blue", "value": 30 }
-            ]
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
           }
         },
         "overrides": []
       },
       "options": {
         "legend": {
-          "calcs": ["lastNotNull"],
-          "displayMode": "list",
+          "calcs": ["sum", "mean", "last"],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
+        "tooltip": { "mode": "single", "sort": "none" }
       }
     },
     {
-      "id": 3,
-      "title": "MACD - $symbol",
+      "id": 4,
+      "title": "Trades Count - ${symbol}USDT",
       "type": "timeseries",
       "datasource": {
         "type": "marcusolsson-json-datasource",
@@ -194,142 +164,48 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/indicators/latest/${symbol}USDT?limit=100",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${candleInterval}",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
-            { "jsonPath": "$[*].macd", "name": "MACD Line" },
-            { "jsonPath": "$[*].macd_signal", "name": "Signal Line" }
+            { "jsonPath": "$[*].trades_count", "name": "Trades" }
           ]
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "color": {
-            "mode": "palette-classic"
-          },
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "#FF9830" },
           "custom": {
-            "axisCenteredZero": true,
+            "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "MACD",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
+            "axisLabel": "Trades Count",
+            "axisPlacement": "left",
+            "drawStyle": "bars",
+            "fillOpacity": 50,
+            "gradientMode": "opacity",
+            "lineWidth": 1,
             "showPoints": "never",
             "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
           }
         },
         "overrides": []
       },
       "options": {
         "legend": {
-          "calcs": ["lastNotNull"],
-          "displayMode": "list",
+          "calcs": ["sum", "mean", "last"],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
+        "tooltip": { "mode": "single", "sort": "none" }
       }
     },
     {
-      "id": 5,
-      "title": "Technical Indicators - $symbol",
-      "type": "table",
-      "datasource": {
-        "type": "marcusolsson-json-datasource",
-        "uid": "fastapi"
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 16
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "method": "GET",
-          "urlPath": "/api/v1/analytics/indicators/latest/${symbol}USDT?limit=20",
-          "fields": [
-            { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
-            { "jsonPath": "$[*].rsi", "name": "RSI" },
-            { "jsonPath": "$[*].macd", "name": "MACD" },
-            { "jsonPath": "$[*].macd_signal", "name": "Signal" },
-            { "jsonPath": "$[*].sma_20", "name": "SMA20" },
-            { "jsonPath": "$[*].ema_12", "name": "EMA12" },
-            { "jsonPath": "$[*].bb_upper", "name": "BB Upper" },
-            { "jsonPath": "$[*].bb_lower", "name": "BB Lower" }
-          ]
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "displayMode": "auto",
-            "inspect": false
-          },
-          "decimals": 2
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Time" },
-            "properties": [
-              { "id": "custom.width", "value": 180 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "RSI" },
-            "properties": [
-              { "id": "custom.displayMode", "value": "color-text" },
-              { "id": "thresholds", "value": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "blue", "value": null },
-                  { "color": "green", "value": 30 },
-                  { "color": "red", "value": 70 }
-                ]
-              }}
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false,
-          "reducer": ["sum"],
-          "fields": ""
-        }
-      }
-    },
-    {
-      "id": 4,
-      "title": "Recent Candles - $symbol",
+      "id": 3,
+      "title": "Recent Candles - ${symbol}USDT",
       "type": "table",
       "datasource": {
         "type": "marcusolsson-json-datasource",
@@ -339,27 +215,28 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 16
       },
       "targets": [
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${interval}",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${candleInterval}",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].open", "name": "Open" },
             { "jsonPath": "$[*].high", "name": "High" },
             { "jsonPath": "$[*].low", "name": "Low" },
             { "jsonPath": "$[*].close", "name": "Close" },
-            { "jsonPath": "$[*].volume", "name": "Volume" }
+            { "jsonPath": "$[*].volume", "name": "Volume" },
+            { "jsonPath": "$[*].trades_count", "name": "Trades" }
           ]
         }
       ],
       "fieldConfig": {
         "defaults": {
           "custom": {
-            "align": "auto",
+            "align": "center",
             "displayMode": "auto",
             "inspect": false
           }
@@ -368,7 +245,7 @@
           {
             "matcher": { "id": "byName", "options": "Time" },
             "properties": [
-              { "id": "custom.width", "value": 200 }
+              { "id": "custom.width", "value": 180 }
             ]
           },
           {
@@ -404,6 +281,12 @@
             "properties": [
               { "id": "decimals", "value": 4 }
             ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Trades" },
+            "properties": [
+              { "id": "unit", "value": "short" }
+            ]
           }
         ]
       },
@@ -424,7 +307,7 @@
   "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["crypto", "symbol", "technical-analysis"],
+  "tags": ["crypto", "symbol", "deep-dive"],
   "templating": {
     "list": [
       {
@@ -449,6 +332,7 @@
         "skipUrlSync": false,
         "type": "custom"
       },
+
       {
         "current": {
           "selected": true,
@@ -457,16 +341,17 @@
         },
         "hide": 0,
         "includeAll": false,
-        "label": "Interval",
+        "label": "Candle",
         "multi": false,
-        "name": "interval",
+        "name": "candleInterval",
         "options": [
           { "selected": true, "text": "1m", "value": "1m" },
           { "selected": false, "text": "5m", "value": "5m" },
           { "selected": false, "text": "15m", "value": "15m" },
+          { "selected": false, "text": "30m", "value": "30m" },
           { "selected": false, "text": "1h", "value": "1h" }
         ],
-        "query": "1m,5m,15m,1h",
+        "query": "1m,5m,15m,30m,1h",
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"
@@ -474,7 +359,7 @@
     ]
   },
   "time": {
-    "from": "now-24h",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},

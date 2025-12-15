@@ -61,20 +61,6 @@ class KlineResponse(BaseModel):
     trades_count: Optional[int] = None
 
 
-class IndicatorResponse(BaseModel):
-    """Technical indicators for a symbol."""
-    timestamp: datetime
-    rsi: Optional[float] = None
-    macd: Optional[float] = None
-    macd_signal: Optional[float] = None
-    sma_20: Optional[float] = None
-    ema_12: Optional[float] = None
-    ema_26: Optional[float] = None
-    bb_upper: Optional[float] = None
-    bb_lower: Optional[float] = None
-    atr: Optional[float] = None
-
-
 class VolumeAnalysisResponse(BaseModel):
     """Volume analysis aggregation."""
     symbol: str
@@ -172,3 +158,47 @@ class WebSocketMessage(BaseModel):
     type: str  # trade, kline, ticker, heartbeat, error
     data: Optional[Any] = None
     timestamp: datetime = Field(default_factory=datetime.now)
+
+
+# ============================================================================
+# Trades Count Response Models
+# ============================================================================
+
+class TradesCountResponse(BaseModel):
+    """Trades count aggregated by time interval."""
+    timestamp: datetime
+    trades_count: int
+    interval: str
+
+
+class TrendResponse(BaseModel):
+    """Simple trend indicator."""
+    symbol: str
+    price_change_pct: float
+    trend_label: str  # "Tăng", "Giảm", "Đi ngang"
+    trend_color: str  # "green", "red", "gray"
+
+
+# ============================================================================
+# Trend Label Helper Function
+# ============================================================================
+
+def get_trend_label(price_change_pct: float) -> tuple[str, str]:
+    """
+    Determine trend label and color based on price change percentage.
+    
+    Args:
+        price_change_pct: Price change percentage (e.g., 2.5 for 2.5%)
+    
+    Returns:
+        Tuple of (label, color)
+        - If > 1%, returns ("Tăng", "green")
+        - If < -1%, returns ("Giảm", "red")
+        - Otherwise, returns ("Đi ngang", "gray")
+    """
+    if price_change_pct > 1.0:
+        return ("Tăng", "green")
+    elif price_change_pct < -1.0:
+        return ("Giảm", "red")
+    else:
+        return ("Đi ngang", "gray")

@@ -25,33 +25,35 @@ from unittest.mock import Mock, patch
 import pytest
 from hypothesis import given, settings, strategies as st, assume
 
-from src.utils import (
-    # Retry utilities
+# Retry utilities
+from src.utils.retry import (
     ExponentialBackoff,
     RetryConfig,
     retry_operation,
     retry_operation_async,
     with_retry,
-    # Config utilities
+)
+# Config utilities
+from src.utils.config import (
     get_env_str,
     get_env_int,
     get_env_float,
     get_env_bool,
     get_env_list,
     get_env_optional,
-    # Logging utilities
-    setup_logging,
-    get_logger,
-    # Metrics utilities
+)
+# Logging utilities
+from src.utils.logging import setup_logging, get_logger
+# Metrics utilities
+from src.utils.metrics import (
     record_request,
     record_error,
     record_latency,
     track_latency,
     track_latency_decorator,
-    # Shutdown utilities
-    GracefulShutdown,
-    ShutdownState,
 )
+# Shutdown utilities
+from src.utils.shutdown import GracefulShutdown, ShutdownState
 
 
 # ============================================================================

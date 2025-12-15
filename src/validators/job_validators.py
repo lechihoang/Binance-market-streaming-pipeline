@@ -9,17 +9,17 @@ validate using the appropriate validator class.
 
 Requirements:
 - 2.1, 2.2, 2.3, 2.4, 2.5: Aggregation validation
-- 3.1, 3.2, 3.3, 3.4, 3.5: Indicator validation  
 - 4.1, 4.2, 4.3, 4.4, 4.5: Anomaly validation
 - 5.1, 5.2, 5.3, 5.4, 5.5: Storage tier validation
 """
 
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # Constants for retry logic
@@ -198,168 +198,6 @@ class AggregationValidator:
             f"Missing fields: {', '.join(sorted(all_missing))}"
         )
 
-
-
-class IndicatorValidator:
-    """
-    Validator for technical indicators output.
-    
-    Validates that indicator records contain required fields and allows
-    time-dependent nullable fields to be null (fields that need historical
-    data to compute, e.g., RSI needs 15 candles).
-    
-    Requirements: 3.1, 3.2, 3.3
-    """
-    
-    # Required fields that must be present and non-null
-    REQUIRED_FIELDS: Set[str] = {
-        'symbol',
-        'timestamp',
-    }
-    
-    # Time-dependent nullable fields that may be null when insufficient
-    # historical data exists for computation
-    NULLABLE_FIELDS: Set[str] = {
-        'sma_5',      # Needs 5 candles
-        'sma_10',     # Needs 10 candles
-        'sma_20',     # Needs 20 candles
-        'sma_50',     # Needs 50 candles
-        'ema_12',     # Needs 12 candles
-        'ema_26',     # Needs 26 candles
-        'rsi_14',     # Needs 15 candles
-        'macd_line',  # Needs 26 candles
-        'macd_signal',  # Needs 26 candles
-        'macd_histogram',  # Needs 26 candles
-        'bb_upper',   # Needs 20 candles
-        'bb_middle',  # Needs 20 candles
-        'bb_lower',   # Needs 20 candles
-        'atr_14',     # Needs 15 candles
-    }
-    
-    def __init__(self):
-        self.name = "IndicatorValidator"
-    
-    def validate(self, records: List[Dict[str, Any]]) -> ValidationResult:
-        """
-        Validate a list of indicator records.
-        
-        Args:
-            records: List of indicator record dictionaries
-            
-        Returns:
-            ValidationResult with validation status and details
-        """
-        errors: List[ValidationError] = []
-        valid_count = 0
-        field_presence: Dict[str, int] = {f: 0 for f in self.REQUIRED_FIELDS | self.NULLABLE_FIELDS}
-        records_with_indicators = 0
-        
-        for record in records:
-            record_errors = self._validate_record(record)
-            if record_errors:
-                errors.extend(record_errors)
-            else:
-                valid_count += 1
-            
-            # Track field presence for completeness stats
-            for field_name in field_presence:
-                if field_name in record and record[field_name] is not None:
-                    field_presence[field_name] += 1
-            
-            # Count records that have at least one computed indicator
-            if self._has_computed_indicators(record):
-                records_with_indicators += 1
-        
-        record_count = len(records)
-        invalid_count = record_count - valid_count
-        is_valid = invalid_count == 0
-        
-        # Calculate field completeness percentages
-        field_completeness = {}
-        if record_count > 0:
-            for field_name, count in field_presence.items():
-                field_completeness[field_name] = round(count / record_count * 100, 2)
-        
-        # Calculate percentage of records with computed indicators
-        indicator_pct = 0.0
-        if record_count > 0:
-            indicator_pct = round(records_with_indicators / record_count * 100, 2)
-        
-        message = self._build_message(
-            is_valid, valid_count, record_count, errors, indicator_pct
-        )
-        
-        return ValidationResult(
-            validator_name=self.name,
-            is_valid=is_valid,
-            record_count=record_count,
-            valid_count=valid_count,
-            invalid_count=invalid_count,
-            errors=errors,
-            field_completeness=field_completeness,
-            message=message,
-        )
-    
-    def _validate_record(self, record: Dict[str, Any]) -> List[ValidationError]:
-        """Validate a single indicator record."""
-        errors = []
-        record_id = self._get_record_identifier(record)
-        
-        # Check for missing required fields
-        missing_fields = []
-        for field_name in self.REQUIRED_FIELDS:
-            if field_name not in record:
-                missing_fields.append(field_name)
-            elif record[field_name] is None:
-                missing_fields.append(field_name)
-        
-        if missing_fields:
-            errors.append(ValidationError(
-                record_identifier=record_id,
-                error_type="missing_required_fields",
-                message=f"Missing required fields: {', '.join(missing_fields)}",
-                missing_fields=missing_fields,
-            ))
-        
-        return errors
-    
-    def _has_computed_indicators(self, record: Dict[str, Any]) -> bool:
-        """Check if record has at least one computed indicator value."""
-        for field_name in self.NULLABLE_FIELDS:
-            if field_name in record and record[field_name] is not None:
-                return True
-        return False
-    
-    def _get_record_identifier(self, record: Dict[str, Any]) -> str:
-        """Get a human-readable identifier for a record."""
-        symbol = record.get('symbol', 'unknown')
-        timestamp = record.get('timestamp', 'unknown')
-        return f"{symbol}@{timestamp}"
-    
-    def _build_message(
-        self, 
-        is_valid: bool, 
-        valid_count: int, 
-        record_count: int,
-        errors: List[ValidationError],
-        indicator_pct: float
-    ) -> str:
-        """Build a descriptive message for the validation result."""
-        if is_valid:
-            return (
-                f"Validated {record_count} indicator records successfully. "
-                f"{indicator_pct}% have computed indicators."
-            )
-        
-        # Collect unique missing fields across all errors
-        all_missing = set()
-        for error in errors:
-            all_missing.update(error.missing_fields)
-        
-        return (
-            f"Validation failed: {len(errors)} records invalid. "
-            f"Missing fields: {', '.join(sorted(all_missing))}"
-        )
 
 
 class AnomalyValidator:
@@ -585,9 +423,11 @@ def _retry_with_backoff(
 
 
 def validate_aggregation_output(
-    redis_storage,
+    redis_host: Optional[str] = None,
+    redis_port: Optional[int] = None,
     symbols: Optional[List[str]] = None,
     interval: str = "1m",
+    **kwargs,
 ) -> ValidationResult:
     """
     Validate trade aggregation output by querying Redis.
@@ -608,6 +448,14 @@ def validate_aggregation_output(
     Raises:
         Exception: If Redis is unavailable after all retries
     """
+    import os
+    from src.storage.redis import RedisStorage
+    
+    # Get Redis config from parameters or environment
+    redis_host = redis_host or os.getenv('REDIS_HOST', 'redis')
+    redis_port = redis_port or int(os.getenv('REDIS_PORT', '6379'))
+    redis_storage = RedisStorage(host=redis_host, port=redis_port)
+    
     validator = AggregationValidator()
     
     # Default symbols if not provided
@@ -673,118 +521,17 @@ def validate_aggregation_output(
             f"Field completeness: {validation_result.field_completeness}"
         )
     else:
-        logger.error(
-            f"Aggregation validation failed: {validation_result.message}"
-        )
-    
-    return validation_result
-
-
-def validate_indicators_output(
-    redis_storage,
-    symbols: Optional[List[str]] = None,
-) -> ValidationResult:
-    """
-    Validate technical indicators output by querying Redis.
-    
-    Queries Redis for recent indicator data and validates records
-    using IndicatorValidator. Logs percentage of records with computed indicators.
-    
-    Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 5.2, 5.4, 5.5
-    
-    Args:
-        redis_storage: RedisStorage instance to query
-        symbols: List of symbols to validate (if None, uses default symbols)
-        
-    Returns:
-        ValidationResult with validation status and details
-        
-    Raises:
-        Exception: If Redis is unavailable after all retries
-    """
-    validator = IndicatorValidator()
-    
-    # Default symbols if not provided
-    if symbols is None:
-        symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
-    
-    records: List[Dict[str, Any]] = []
-    
-    def fetch_indicators():
-        """Fetch indicator data from Redis."""
-        fetched = []
-        for symbol in symbols:
-            data = redis_storage.get_indicators(symbol)
-            if data:
-                # Add symbol to the record for validation
-                record = {
-                    "symbol": symbol,
-                    "timestamp": data.get("timestamp", time.time()),
-                    **data,
-                }
-                fetched.append(record)
-        return fetched
-    
-    # Retry fetching data from Redis
-    result, error = _retry_with_backoff(fetch_indicators)
-    
-    if error is not None:
-        # Storage unavailable after all retries
-        raise Exception(
-            f"Failed to query Redis for indicator data after {MAX_RETRIES} retries: {error}"
-        )
-    
-    records = result or []
-    
-    # Handle empty data scenario (Requirement 5.5)
-    if not records:
-        logger.warning(
-            "No indicator data found in Redis. "
-            "Job may have processed empty batches."
-        )
-        return ValidationResult(
-            validator_name=validator.name,
-            is_valid=True,
-            record_count=0,
-            valid_count=0,
-            invalid_count=0,
-            errors=[],
-            field_completeness={},
-            message="No indicator data found in Redis (empty batches are valid)",
-        )
-    
-    # Validate records
-    validation_result = validator.validate(records)
-    
-    # Calculate and log percentage of records with computed indicators (Requirement 3.5)
-    records_with_indicators = 0
-    for record in records:
-        for field_name in validator.NULLABLE_FIELDS:
-            if field_name in record and record[field_name] is not None:
-                records_with_indicators += 1
-                break
-    
-    indicator_pct = 0.0
-    if records:
-        indicator_pct = round(records_with_indicators / len(records) * 100, 2)
-    
-    if validation_result.is_valid:
-        logger.info(
-            f"Indicator validation passed: {validation_result.record_count} records validated. "
-            f"{indicator_pct}% have computed indicators. "
-            f"Field completeness: {validation_result.field_completeness}"
-        )
-    else:
-        logger.error(
-            f"Indicator validation failed: {validation_result.message}"
-        )
+        logger.error(f"Aggregation validation failed: {validation_result.message}")
+        raise ValueError(validation_result.message)
     
     return validation_result
 
 
 def validate_anomaly_output(
-    redis_storage,
+    redis_host: Optional[str] = None,
+    redis_port: Optional[int] = None,
     limit: int = 100,
+    **kwargs,
 ) -> ValidationResult:
     """
     Validate anomaly detection output by querying Redis.
@@ -804,6 +551,14 @@ def validate_anomaly_output(
     Raises:
         Exception: If Redis is unavailable after all retries
     """
+    import os
+    from src.storage.redis import RedisStorage
+    
+    # Get Redis config from parameters or environment
+    redis_host = redis_host or os.getenv('REDIS_HOST', 'redis')
+    redis_port = redis_port or int(os.getenv('REDIS_PORT', '6379'))
+    redis_storage = RedisStorage(host=redis_host, port=redis_port)
+    
     validator = AnomalyValidator()
     
     def fetch_alerts():
@@ -849,8 +604,8 @@ def validate_anomaly_output(
             f"Field completeness: {validation_result.field_completeness}"
         )
     else:
-        logger.error(
-            f"Anomaly validation failed: {validation_result.message}"
-        )
+        logger.error(f"Anomaly validation failed: {validation_result.message}")
+        raise ValueError(validation_result.message)
     
     return validation_result
+

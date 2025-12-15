@@ -161,17 +161,17 @@ class TestDashboardPanelCompleteness:
         assert panel_types.get("All Tickers - Real-time Data") == "table"
     
     def test_market_overview_volume_panels(self):
-        """Market Overview SHALL display top gainers and losers tables."""
+        """Market Overview SHALL display top by trades count and quote volume as horizontal bar charts."""
         dashboard = load_dashboard_json("market-overview.json")
         panel_titles = get_panel_titles(dashboard)
         panel_types = get_panel_types(dashboard)
         
-        # Dashboard shows top movers instead of volume gauge
-        assert "Top Gainers" in panel_titles, "Missing Top Gainers panel"
-        assert panel_types.get("Top Gainers") == "table"
+        # Dashboard shows top by trades count and quote volume as horizontal bar charts
+        assert "Top 5 by Trades Count" in panel_titles, "Missing Top 5 by Trades Count panel"
+        assert panel_types.get("Top 5 by Trades Count") == "barchart"
         
-        assert "Top Losers" in panel_titles, "Missing Top Losers panel"
-        assert panel_types.get("Top Losers") == "table"
+        assert "Top 5 by Quote Volume" in panel_titles, "Missing Top 5 by Quote Volume panel"
+        assert panel_types.get("Top 5 by Quote Volume") == "barchart"
     
     def test_symbol_deep_dive_price_chart(self):
         """Symbol Deep Dive SHALL display candlestick/timeseries price chart."""
@@ -185,28 +185,43 @@ class TestDashboardPanelCompleteness:
         for panel_title in price_chart_panels:
             assert panel_types.get(panel_title) == "timeseries"
     
-    def test_symbol_deep_dive_indicator_panels(self):
-        """Symbol Deep Dive SHALL display RSI and MACD graphs."""
+    def test_symbol_deep_dive_no_complex_indicators(self):
+        """Symbol Deep Dive SHALL NOT display RSI, MACD, or Technical Indicators panels.
+        
+        Validates: Requirements 3.3, 3.4, 3.5
+        """
         dashboard = load_dashboard_json("symbol-deep-dive.json")
         panel_titles = get_panel_titles(dashboard)
         
+        # RSI panel should NOT exist (Requirement 3.3)
         rsi_panels = [t for t in panel_titles if "RSI" in t]
-        assert len(rsi_panels) > 0, "Missing RSI panel"
+        assert len(rsi_panels) == 0, f"RSI panel should be removed but found: {rsi_panels}"
         
+        # MACD panel should NOT exist (Requirement 3.4)
         macd_panels = [t for t in panel_titles if "MACD" in t]
-        assert len(macd_panels) > 0, "Missing MACD panel"
+        assert len(macd_panels) == 0, f"MACD panel should be removed but found: {macd_panels}"
+        
+        # Technical Indicators table should NOT exist (Requirement 3.5)
+        indicator_panels = [t for t in panel_titles if "Technical Indicators" in t]
+        assert len(indicator_panels) == 0, f"Technical Indicators panel should be removed but found: {indicator_panels}"
     
-    def test_trading_analytics_heatmap(self):
-        """Trading Analytics SHALL display volume heatmap."""
+    def test_trading_analytics_trades_count_chart(self):
+        """Trading Analytics SHALL display Trades Count Chart (replacing Volume Heatmap).
+        
+        Validates: Requirement 2.3
+        """
         dashboard = load_dashboard_json("trading-analytics.json")
         panel_titles = get_panel_titles(dashboard)
         panel_types = get_panel_types(dashboard)
         
-        heatmap_panels = [t for t in panel_titles if "Heatmap" in t or "heatmap" in t]
-        assert len(heatmap_panels) > 0, "Missing Volume Heatmap panel"
+        # Volume Heatmap should be replaced with Trades Count Chart
+        trades_count_panels = [t for t in panel_titles if "giao dịch" in t.lower() or "trades" in t.lower()]
+        assert len(trades_count_panels) > 0, "Missing Trades Count Chart panel (Số giao dịch theo thời gian)"
         
-        for panel_title in heatmap_panels:
-            assert panel_types.get(panel_title) == "heatmap"
+        # Verify it's a bar chart type
+        for panel_title in trades_count_panels:
+            panel_type = panel_types.get(panel_title)
+            assert panel_type == "barchart", f"Trades Count Chart should be barchart type, got: {panel_type}"
     
     def test_system_health_pipeline_panels(self):
         """System Health SHALL display Messages/sec graph."""

@@ -7,7 +7,6 @@ Path format: {bucket}/{data_type}/symbol={symbol}/date={YYYY-MM-DD}/data.parquet
 
 import io
 import json
-import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -16,10 +15,11 @@ import pyarrow.parquet as pq
 from minio import Minio
 from minio.error import S3Error
 
+from src.utils.logging import get_logger
 from src.utils.retry import RetryConfig, retry_operation
 from src.utils.metrics import track_latency, record_error, record_retry
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MinioStorage:
@@ -168,24 +168,24 @@ class MinioStorage:
                 return None
             raise
 
-    def _to_datetime(self, timestamp: int) -> datetime:
-        """Convert Unix timestamp (milliseconds) to datetime."""
-        return datetime.fromtimestamp(timestamp / 1000)
+
 
 
     # ==================== Write Methods ====================
 
     def write_klines(self, symbol: str, data: List[Dict[str, Any]], date: datetime) -> bool:
-        """Write klines data as Parquet to MinIO."""
+        """Write klines data as Parquet to MinIO.
+        
+        Args:
+            symbol: Trading symbol
+            data: List of kline dicts with datetime objects for timestamp
+            date: Date for partitioning
+        """
         if not data:
             return True
         
         arrays = {
-            'timestamp': pa.array([
-                d["timestamp"] if isinstance(d["timestamp"], datetime)
-                else self._to_datetime(d["timestamp"])
-                for d in data
-            ], type=pa.timestamp('ms')),
+            'timestamp': pa.array([d["timestamp"] for d in data], type=pa.timestamp('ms')),
             'symbol': pa.array([d.get("symbol", symbol) for d in data]),
             'open': pa.array([float(d["open"]) for d in data]),
             'high': pa.array([float(d["high"]) for d in data]),
@@ -200,7 +200,13 @@ class MinioStorage:
         return self._write_parquet_to_minio(table, object_path)
 
     def write_indicators(self, symbol: str, data: List[Dict[str, Any]], date: datetime) -> bool:
-        """Write indicators data as Parquet to MinIO."""
+        """Write indicators data as Parquet to MinIO.
+        
+        Args:
+            symbol: Trading symbol
+            data: List of indicator dicts with datetime objects for timestamp
+            date: Date for partitioning
+        """
         if not data:
             return True
         
@@ -208,11 +214,7 @@ class MinioStorage:
             return float(value) if value is not None else default
         
         arrays = {
-            'timestamp': pa.array([
-                d["timestamp"] if isinstance(d["timestamp"], datetime)
-                else self._to_datetime(d["timestamp"])
-                for d in data
-            ], type=pa.timestamp('ms')),
+            'timestamp': pa.array([d["timestamp"] for d in data], type=pa.timestamp('ms')),
             'symbol': pa.array([d.get("symbol", symbol) for d in data]),
             'rsi': pa.array([safe_float(d.get("rsi")) for d in data]),
             'macd': pa.array([safe_float(d.get("macd")) for d in data]),
@@ -229,16 +231,18 @@ class MinioStorage:
         return self._write_parquet_to_minio(table, object_path)
 
     def write_alerts(self, symbol: str, data: List[Dict[str, Any]], date: datetime) -> bool:
-        """Write alerts data as Parquet to MinIO."""
+        """Write alerts data as Parquet to MinIO.
+        
+        Args:
+            symbol: Trading symbol
+            data: List of alert dicts with datetime objects for timestamp
+            date: Date for partitioning
+        """
         if not data:
             return True
         
         arrays = {
-            'timestamp': pa.array([
-                d["timestamp"] if isinstance(d["timestamp"], datetime)
-                else self._to_datetime(d["timestamp"])
-                for d in data
-            ], type=pa.timestamp('ms')),
+            'timestamp': pa.array([d["timestamp"] for d in data], type=pa.timestamp('ms')),
             'symbol': pa.array([d.get("symbol", symbol) for d in data]),
             'alert_type': pa.array([d["alert_type"] for d in data]),
             'severity': pa.array([d["severity"] for d in data]),

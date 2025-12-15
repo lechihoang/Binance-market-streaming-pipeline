@@ -21,14 +21,15 @@ Requirements:
 """
 
 import asyncio
-import logging
 import random
 import time
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, Callable, Optional, Tuple, Type, TypeVar
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 T = TypeVar("T")
 

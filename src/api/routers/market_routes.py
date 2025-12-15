@@ -16,7 +16,6 @@ Table of Contents:
 
 import asyncio
 import json
-import logging
 import os
 import time
 from collections import defaultdict
@@ -30,10 +29,13 @@ from starlette.websockets import WebSocketState
 
 from src.api.dependencies import get_redis, get_postgres, get_minio
 from src.api.models import TickerResponse, PriceResponse, TradeResponse
-from src.storage import RedisStorage, RedisTickerStorage, PostgresStorage, MinioStorage
+from src.storage.redis import RedisStorage, RedisTickerStorage
+from src.storage.postgres import PostgresStorage
+from src.storage.minio import MinioStorage
+from src.utils.logging import get_logger
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Combined router for all market-related endpoints
 router = APIRouter()
@@ -49,6 +51,14 @@ class TopMoverResponse(BaseModel):
     price: float
     change_percent: float
     volume: float
+
+
+class TopTradingResponse(BaseModel):
+    """Response model for top trading endpoints (by trades count or quote volume)."""
+    symbol: str
+    last_price: float
+    trades_count: int
+    quote_volume: float
 
 
 class TickerDataResponse(BaseModel):
@@ -85,6 +95,30 @@ class TickerHealthResponse(BaseModel):
     ticker_count: int
     latency_ms: float
     timestamp: int
+
+
+class MarketSummaryResponse(BaseModel):
+    """Response model for market summary statistics."""
+    total_symbols: int
+    total_trades: int
+    total_quote_volume: float
+    avg_trade_value: float
+    timestamp: int  # Response timestamp
+
+
+# ============================================================================
+# DEPENDENCY INJECTION - Ticker Storage
+# ============================================================================
+
+@lru_cache()
+def get_ticker_storage() -> RedisTickerStorage:
+    """Get singleton RedisTickerStorage instance."""
+    return RedisTickerStorage(
+        host=os.getenv("REDIS_HOST", "localhost"),
+        port=int(os.getenv("REDIS_PORT", "6379")),
+        db=int(os.getenv("REDIS_DB", "0")),
+        ttl_seconds=int(os.getenv("TICKER_TTL_SECONDS", "60")),
+    )
 
 
 # ============================================================================
@@ -401,10 +435,11 @@ async def get_top_movers(
     direction: str = Query(default="gainers", pattern="^(gainers|losers)$"),
     limit: int = Query(default=10, ge=1, le=50),
     redis: RedisStorage = Depends(get_redis),
+    storage: RedisTickerStorage = Depends(get_ticker_storage),
 ) -> List[TopMoverResponse]:
-    """Get top gainers or losers.
+    """Get top gainers or losers from all available tickers.
     
-    Retrieves symbols with highest price changes from Redis.
+    Retrieves all tickers from Redis real-time storage and sorts by price change.
     
     Args:
         direction: 'gainers' for top gainers, 'losers' for top losers
@@ -413,34 +448,68 @@ async def get_top_movers(
     Returns:
         List of TopMoverResponse sorted by change_percent
     """
-    # Get all available symbols from Redis market keys
-    symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
     movers = []
     
-    for symbol in symbols:
+    # Get all tickers from real-time storage first
+    all_tickers = storage.get_all_tickers()
+    
+    for ticker in all_tickers:
         try:
-            # Get data from market:{symbol} key (used by aggregation)
-            data = redis.client.hgetall(f"market:{symbol}")
-            if data:
-                price = float(data.get("price", data.get("close", 0)))
-                open_price = float(data.get("open", price))
-                volume = float(data.get("volume", 0))
+            symbol = ticker.get("symbol", "")
+            if not symbol:
+                continue
                 
-                # Calculate change percent
-                if open_price > 0:
-                    change_percent = ((price - open_price) / open_price) * 100
-                else:
-                    change_percent = 0.0
-                
-                movers.append(TopMoverResponse(
-                    symbol=symbol,
-                    price=price,
-                    change_percent=round(change_percent, 4),
-                    volume=volume,
-                ))
+            price = float(ticker.get("last_price", 0))
+            change_pct_str = ticker.get("price_change_pct", "0")
+            # Remove % sign if present
+            change_pct_str = str(change_pct_str).replace("%", "")
+            change_percent = float(change_pct_str) if change_pct_str else 0.0
+            volume = float(ticker.get("quote_volume", ticker.get("volume", 0)))
+            
+            movers.append(TopMoverResponse(
+                symbol=symbol,
+                price=price,
+                change_percent=round(change_percent, 4),
+                volume=volume,
+            ))
         except Exception as e:
-            logger.warning(f"Failed to get ticker for {symbol}: {e}")
+            logger.warning(f"Failed to parse ticker data: {e}")
             continue
+    
+    # Fallback to market keys if no real-time tickers
+    if not movers:
+        # Scan for all market:* keys
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = redis.client.scan(cursor, match="market:*", count=100)
+                for key in keys:
+                    try:
+                        symbol = key.replace("market:", "") if isinstance(key, str) else key.decode().replace("market:", "")
+                        data = redis.client.hgetall(key)
+                        if data:
+                            price = float(data.get("price", data.get("close", 0)))
+                            open_price = float(data.get("open", price))
+                            volume = float(data.get("volume", 0))
+                            
+                            if open_price > 0:
+                                change_percent = ((price - open_price) / open_price) * 100
+                            else:
+                                change_percent = 0.0
+                            
+                            movers.append(TopMoverResponse(
+                                symbol=symbol,
+                                price=price,
+                                change_percent=round(change_percent, 4),
+                                volume=volume,
+                            ))
+                    except Exception as e:
+                        logger.warning(f"Failed to get ticker for {key}: {e}")
+                        continue
+                if cursor == 0:
+                    break
+        except Exception as e:
+            logger.warning(f"Failed to scan market keys: {e}")
     
     # Sort by change_percent
     if direction == "gainers":
@@ -451,21 +520,117 @@ async def get_top_movers(
     return movers[:limit]
 
 
+@router.get("/top-by-trades", response_model=List[TopTradingResponse], tags=["market"])
+async def get_top_by_trades(
+    response: Response,
+    limit: int = Query(default=5, ge=1, le=50),
+    storage: RedisTickerStorage = Depends(get_ticker_storage),
+) -> List[TopTradingResponse]:
+    """Get top symbols by trades count.
+    
+    Retrieves all tickers from Redis and sorts by trades_count descending,
+    with quote_volume as secondary sort criteria.
+    
+    Args:
+        limit: Maximum number of results (default 5, max 50)
+        
+    Returns:
+        List of TopTradingResponse sorted by trades_count DESC
+        
+    Requirements: 1.1, 1.4, 3.1, 3.3, 3.4
+    """
+    start_time = time.time()
+    
+    all_tickers = storage.get_all_tickers()
+    
+    results = []
+    for ticker in all_tickers:
+        try:
+            symbol = ticker.get("symbol", "")
+            if not symbol:
+                continue
+            
+            last_price = float(ticker.get("last_price", 0))
+            trades_count = int(ticker.get("trades_count", 0))
+            quote_volume = float(ticker.get("quote_volume", 0))
+            
+            results.append(TopTradingResponse(
+                symbol=symbol,
+                last_price=last_price,
+                trades_count=trades_count,
+                quote_volume=quote_volume,
+            ))
+        except Exception as e:
+            logger.warning(f"Failed to parse ticker data for top-by-trades: {e}")
+            continue
+    
+    # Sort by trades_count DESC, then quote_volume DESC (secondary)
+    results.sort(key=lambda x: (x.trades_count, x.quote_volume), reverse=True)
+    
+    # Add response time header
+    response_time_ms = (time.time() - start_time) * 1000
+    response.headers["X-Response-Time-Ms"] = f"{response_time_ms:.2f}"
+    
+    return results[:limit]
+
+
+@router.get("/top-by-volume", response_model=List[TopTradingResponse], tags=["market"])
+async def get_top_by_volume(
+    response: Response,
+    limit: int = Query(default=5, ge=1, le=50),
+    storage: RedisTickerStorage = Depends(get_ticker_storage),
+) -> List[TopTradingResponse]:
+    """Get top symbols by quote volume.
+    
+    Retrieves all tickers from Redis and sorts by quote_volume descending,
+    with trades_count as secondary sort criteria.
+    
+    Args:
+        limit: Maximum number of results (default 5, max 50)
+        
+    Returns:
+        List of TopTradingResponse sorted by quote_volume DESC
+        
+    Requirements: 2.1, 2.4, 3.2, 3.3, 3.4
+    """
+    start_time = time.time()
+    
+    all_tickers = storage.get_all_tickers()
+    
+    results = []
+    for ticker in all_tickers:
+        try:
+            symbol = ticker.get("symbol", "")
+            if not symbol:
+                continue
+            
+            last_price = float(ticker.get("last_price", 0))
+            trades_count = int(ticker.get("trades_count", 0))
+            quote_volume = float(ticker.get("quote_volume", 0))
+            
+            results.append(TopTradingResponse(
+                symbol=symbol,
+                last_price=last_price,
+                trades_count=trades_count,
+                quote_volume=quote_volume,
+            ))
+        except Exception as e:
+            logger.warning(f"Failed to parse ticker data for top-by-volume: {e}")
+            continue
+    
+    # Sort by quote_volume DESC, then trades_count DESC (secondary)
+    results.sort(key=lambda x: (x.quote_volume, x.trades_count), reverse=True)
+    
+    # Add response time header
+    response_time_ms = (time.time() - start_time) * 1000
+    response.headers["X-Response-Time-Ms"] = f"{response_time_ms:.2f}"
+    
+    return results[:limit]
+
+
 # ============================================================================
 # TICKER ENDPOINTS - Helper Functions and Dependencies
 # ============================================================================
-
-# Dependency injection for ticker storage
-@lru_cache()
-def get_ticker_storage() -> RedisTickerStorage:
-    """Get singleton RedisTickerStorage instance."""
-    return RedisTickerStorage(
-        host=os.getenv("REDIS_HOST", "localhost"),
-        port=int(os.getenv("REDIS_PORT", "6379")),
-        db=int(os.getenv("REDIS_DB", "0")),
-        ttl_seconds=int(os.getenv("TICKER_TTL_SECONDS", "60")),
-    )
-
 
 # Optional fields that determine `complete` status
 OPTIONAL_FIELDS = {"trades_count", "quote_volume"}
@@ -502,6 +667,11 @@ def format_ticker_response(data: dict) -> TickerDataResponse:
     Returns:
         TickerDataResponse with all fields
     """
+    # Use current time as fallback for updated_at to avoid Grafana parsing errors
+    updated_at = data.get("updated_at", 0)
+    if not updated_at or updated_at == 0:
+        updated_at = int(time.time() * 1000)
+    
     return TickerDataResponse(
         symbol=data.get("symbol", ""),
         last_price=str(data.get("last_price", "0")),
@@ -513,7 +683,7 @@ def format_ticker_response(data: dict) -> TickerDataResponse:
         volume=str(data.get("volume", "0")),
         quote_volume=str(data.get("quote_volume", "0")),
         trades_count=int(data.get("trades_count", 0)),
-        updated_at=int(data.get("updated_at", 0)),
+        updated_at=int(updated_at),
         complete=is_ticker_complete(data),
     )
 
@@ -633,6 +803,54 @@ async def get_ticker_health(
         redis_connected=redis_connected,
         ticker_count=ticker_count,
         latency_ms=round(latency_ms, 2),
+        timestamp=int(time.time() * 1000),
+    )
+
+
+@router.get("/summary", response_model=MarketSummaryResponse, tags=["market"])
+async def get_market_summary(
+    response: Response,
+    storage: RedisTickerStorage = Depends(get_ticker_storage),
+) -> MarketSummaryResponse:
+    """
+    Get real-time market summary statistics.
+    
+    Aggregates data from all tickers to provide:
+    - Total number of symbols being tracked
+    - Total trades count across all symbols
+    - Total quote volume (USDT) across all symbols
+    - Average trade value (total_quote_volume / total_trades)
+    
+    Returns:
+        MarketSummaryResponse with aggregated statistics
+    """
+    start_time = time.time()
+    
+    all_tickers = storage.get_all_tickers()
+    
+    total_symbols = len(all_tickers)
+    total_trades = 0
+    total_quote_volume = 0.0
+    
+    for ticker in all_tickers:
+        try:
+            total_trades += int(ticker.get("trades_count", 0))
+            total_quote_volume += float(ticker.get("quote_volume", 0))
+        except (ValueError, TypeError):
+            continue
+    
+    avg_trade_value = total_quote_volume / total_trades if total_trades > 0 else 0.0
+    
+    # Add response time header
+    response_time_ms = (time.time() - start_time) * 1000
+    response.headers["X-Response-Time-Ms"] = f"{response_time_ms:.2f}"
+    response.headers["X-Data-Source"] = "redis"
+    
+    return MarketSummaryResponse(
+        total_symbols=total_symbols,
+        total_trades=total_trades,
+        total_quote_volume=round(total_quote_volume, 2),
+        avg_trade_value=round(avg_trade_value, 2),
         timestamp=int(time.time() * 1000),
     )
 

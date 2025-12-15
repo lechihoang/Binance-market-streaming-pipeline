@@ -8,12 +8,150 @@
   "liveNow": false,
   "panels": [
     {
+      "id": 10,
+      "title": "Total Symbols",
+      "description": "Number of symbols being tracked",
+      "type": "stat",
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/market/summary",
+          "fields": [
+            { "jsonPath": "$.total_symbols", "name": "Total Symbols", "type": "number" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 11,
+      "title": "Total Trades (24h)",
+      "description": "Total number of trades across all symbols",
+      "type": "stat",
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/market/summary",
+          "fields": [
+            { "jsonPath": "$.total_trades", "name": "Total Trades", "type": "number" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Total Quote Volume (24h)",
+      "description": "Total trading volume in USDT across all symbols",
+      "type": "stat",
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/market/summary",
+          "fields": [
+            { "jsonPath": "$.total_quote_volume", "name": "Total Volume", "type": "number" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "yellow", "value": null }] },
+          "unit": "currencyUSD",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 13,
+      "title": "Avg Trade Value",
+      "description": "Average value per trade (Total Volume / Total Trades)",
+      "type": "stat",
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/market/summary",
+          "fields": [
+            { "jsonPath": "$.avg_trade_value", "name": "Avg Trade Value", "type": "number" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] },
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
       "id": 1,
       "title": "All Tickers - Real-time Data",
       "description": "Real-time ticker data from Kafka → Redis pipeline. Shows all configured symbols.",
       "type": "table",
       "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
-      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 0 },
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 4 },
       "targets": [
         {
           "refId": "A",
@@ -47,68 +185,132 @@
           { "matcher": { "id": "byName", "options": "Volume" }, "properties": [{ "id": "unit", "value": "short" }, { "id": "decimals", "value": 2 }] },
           { "matcher": { "id": "byName", "options": "Quote Vol" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 0 }] },
           { "matcher": { "id": "byName", "options": "Trades" }, "properties": [{ "id": "unit", "value": "short" }] },
-          { "matcher": { "id": "byName", "options": "Updated" }, "properties": [{ "id": "unit", "value": "dateTimeFromNow" }] }
+          { "matcher": { "id": "byName", "options": "Updated" }, "properties": [{ "id": "unit", "value": "dateTimeAsIso" }, { "id": "custom.displayMode", "value": "auto" }, { "id": "noValue", "value": "N/A" }] }
         ]
       },
-      "options": { "showHeader": true, "cellHeight": "md", "footer": { "show": true, "reducer": ["count"], "fields": ["Symbol"] }, "sortBy": [{ "displayName": "Quote Vol", "desc": true }] }
+      "options": { "showHeader": true, "cellHeight": "md", "footer": { "show": true, "reducer": ["count"], "fields": ["Symbol"] }, "sortBy": [{ "displayName": "Price", "desc": true }] }
     },
     {
       "id": 2,
-      "title": "Top Gainers",
-      "type": "table",
+      "title": "Top 5 by Trades Count",
+      "description": "Top 5 cryptocurrencies by number of trades in 24h",
+      "type": "barchart",
       "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
       "targets": [
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/market/top-movers?direction=gainers&limit=10",
+          "urlPath": "/api/v1/market/top-by-trades?limit=5",
           "fields": [
-            { "jsonPath": "$[*].symbol", "name": "Symbol" },
-            { "jsonPath": "$[*].price", "name": "Price" },
-            { "jsonPath": "$[*].change_percent", "name": "Change %" },
-            { "jsonPath": "$[*].volume", "name": "Volume" }
+            { "jsonPath": "$[*].symbol", "name": "Symbol", "type": "string" },
+            { "jsonPath": "$[*].trades_count", "name": "Trades", "type": "number" }
           ]
         }
       ],
       "fieldConfig": {
-        "defaults": { "custom": { "align": "center", "displayMode": "auto" } },
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "short"
+        },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] },
-          { "matcher": { "id": "byName", "options": "Change %" }, "properties": [{ "id": "unit", "value": "percent" }, { "id": "custom.displayMode", "value": "color-background-solid" }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
-          { "matcher": { "id": "byName", "options": "Volume" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] }
+          {
+            "matcher": { "id": "byName", "options": "Trades" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+            ]
+          }
         ]
       },
-      "options": { "showHeader": true, "cellHeight": "sm", "footer": { "show": false } }
+      "options": {
+        "barRadius": 0.1,
+        "barWidth": 0.6,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "orientation": "horizontal",
+        "showValue": "always",
+        "stacking": "none",
+        "tooltip": { "mode": "single", "sort": "none" },
+        "xField": "Symbol",
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      }
     },
     {
       "id": 3,
-      "title": "Top Losers",
-      "type": "table",
+      "title": "Top 5 by Quote Volume",
+      "description": "Top 5 cryptocurrencies by quote volume (USDT) in 24h",
+      "type": "barchart",
       "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
       "targets": [
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/market/top-movers?direction=losers&limit=10",
+          "urlPath": "/api/v1/market/top-by-volume?limit=5",
           "fields": [
-            { "jsonPath": "$[*].symbol", "name": "Symbol" },
-            { "jsonPath": "$[*].price", "name": "Price" },
-            { "jsonPath": "$[*].change_percent", "name": "Change %" },
-            { "jsonPath": "$[*].volume", "name": "Volume" }
+            { "jsonPath": "$[*].symbol", "name": "Symbol", "type": "string" },
+            { "jsonPath": "$[*].quote_volume", "name": "Quote Volume", "type": "number" }
           ]
         }
       ],
       "fieldConfig": {
-        "defaults": { "custom": { "align": "center", "displayMode": "auto" } },
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "currencyUSD"
+        },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] },
-          { "matcher": { "id": "byName", "options": "Change %" }, "properties": [{ "id": "unit", "value": "percent" }, { "id": "custom.displayMode", "value": "color-background-solid" }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
-          { "matcher": { "id": "byName", "options": "Volume" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] }
+          {
+            "matcher": { "id": "byName", "options": "Quote Volume" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+            ]
+          }
         ]
       },
-      "options": { "showHeader": true, "cellHeight": "sm", "footer": { "show": false } }
+      "options": {
+        "barRadius": 0.1,
+        "barWidth": 0.6,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "orientation": "horizontal",
+        "showValue": "always",
+        "stacking": "none",
+        "tooltip": { "mode": "single", "sort": "none" },
+        "xField": "Symbol",
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      }
     }
   ],
   "refresh": "5s",

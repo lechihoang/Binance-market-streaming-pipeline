@@ -24,10 +24,13 @@ from unittest.mock import MagicMock
 from hypothesis import given, settings, strategies as st, HealthCheck
 from fastapi.testclient import TestClient
 
-from src.api.main import app, rate_tracker, RATE_LIMIT_PER_MINUTE
+from src.api.app import app, rate_tracker, RATE_LIMIT_PER_MINUTE
 from src.api.dependencies import get_redis, get_postgres, get_minio, get_query_router
 from src.api.routers.system import determine_overall_status
-from src.storage import RedisStorage, PostgresStorage, MinioStorage, QueryRouter
+from src.storage.redis import RedisStorage
+from src.storage.postgres import PostgresStorage
+from src.storage.minio import MinioStorage
+from src.storage.query_router import QueryRouter
 
 
 # ============================================================================
@@ -95,9 +98,10 @@ def create_mock_minio():
 def redis_storage():
     """Create RedisStorage instance and clean up after test."""
     storage = RedisStorage(host="localhost", port=6379, db=15)
-    storage.flush_db()
+    # Use client.flushdb() directly since flush_db method was removed
+    storage.client.flushdb()
     yield storage
-    storage.flush_db()
+    storage.client.flushdb()
 
 
 @pytest.fixture
@@ -283,7 +287,7 @@ class TestTradesLimitConstraint:
         Feature: fastapi-backend, Property 3: Trades limit constraint
         Validates: Requirements 1.3
         """
-        redis_storage.flush_db()
+        redis_storage.client.flushdb()
         
         for trade in trades:
             redis_storage.write_recent_trade(symbol, trade)
@@ -320,6 +324,11 @@ def mock_query_router():
 class TestQueryTierSelection:
     """Property tests for query tier selection based on time range."""
     
+    # Class constants for tier names
+    TIER_REDIS = "redis"
+    TIER_POSTGRES = "postgres"
+    TIER_MINIO = "minio"
+    
     @given(offset_minutes=st.integers(min_value=1, max_value=59))
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_redis_tier_selection_for_recent_data(self, mock_query_router, offset_minutes):
@@ -329,11 +338,10 @@ class TestQueryTierSelection:
         """
         now = datetime.now()
         start = now - timedelta(minutes=offset_minutes)
-        end = now
         
-        selected_tier = mock_query_router._select_tier(start, end)
+        selected_tier = mock_query_router._select_tier(start)
         
-        assert selected_tier == QueryRouter.TIER_REDIS
+        assert selected_tier == self.TIER_REDIS
     
     @given(offset_hours=st.integers(min_value=2, max_value=24 * 89))
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
@@ -344,11 +352,10 @@ class TestQueryTierSelection:
         """
         now = datetime.now()
         start = now - timedelta(hours=offset_hours)
-        end = now
         
-        selected_tier = mock_query_router._select_tier(start, end)
+        selected_tier = mock_query_router._select_tier(start)
         
-        assert selected_tier == QueryRouter.TIER_POSTGRES
+        assert selected_tier == self.TIER_POSTGRES
     
     @given(offset_days=st.integers(min_value=90, max_value=364))
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
@@ -359,11 +366,10 @@ class TestQueryTierSelection:
         """
         now = datetime.now()
         start = now - timedelta(days=offset_days)
-        end = now
         
-        selected_tier = mock_query_router._select_tier(start, end)
+        selected_tier = mock_query_router._select_tier(start)
         
-        assert selected_tier == QueryRouter.TIER_MINIO
+        assert selected_tier == self.TIER_MINIO
 
 
 # ============================================================================
@@ -402,7 +408,7 @@ class TestAlertsLimitConstraint:
         Feature: fastapi-backend, Property 6: Alerts limit constraint
         Validates: Requirements 3.1
         """
-        redis_storage.flush_db()
+        redis_storage.client.flushdb()
         
         for alert in alerts:
             redis_storage.write_alert(alert)
@@ -546,7 +552,7 @@ class TestFallbackChainExecution:
         Feature: fastapi-backend, Property 10: Fallback chain execution
         Validates: Requirements 7.3
         """
-        redis_storage.flush_db()
+        redis_storage.client.flushdb()
         postgres_storage.query_candles.return_value = []
         minio_storage.read_klines.return_value = []
         
