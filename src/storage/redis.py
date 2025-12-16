@@ -665,6 +665,106 @@ class RedisTickerStorage:
 # HEALTH CHECKS
 # ============================================================================
 
+# ============================================================================
+# REDIS CONNECTOR - Simple connector for streaming jobs
+# ============================================================================
+
+class RedisConnector:
+    """
+    Redis connector for writing data to Redis.
+    
+    Supports writing to hash, list, and string data types with TTL support.
+    """
+    
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 6379,
+        db: int = 0,
+        password: Optional[str] = None
+    ):
+        """
+        Initialize Redis connector.
+        
+        Args:
+            host: Redis host
+            port: Redis port
+            db: Redis database number
+            password: Optional Redis password
+        """
+        self.host = host
+        self.port = port
+        self.db = db
+        self.password = password
+        self._client = None
+        self._pool = None
+    
+    @property
+    def client(self):
+        """Get Redis client, creating connection if needed."""
+        if self._client is None:
+            self._pool = redis.ConnectionPool(
+                host=self.host,
+                port=self.port,
+                db=self.db,
+                password=self.password
+            )
+            self._client = redis.Redis(connection_pool=self._pool)
+            # Test connection
+            self._client.ping()
+        
+        return self._client
+    
+    def write_to_redis(
+        self,
+        key: str,
+        value: Dict[str, Any],
+        ttl_seconds: Optional[int] = None,
+        value_type: str = "hash",
+        list_max_size: Optional[int] = None
+    ) -> None:
+        """
+        Write data to Redis.
+        
+        Args:
+            key: Redis key
+            value: Data to write (dictionary)
+            ttl_seconds: Optional TTL in seconds
+            value_type: Type of Redis data structure ("hash", "list", "string")
+            list_max_size: Maximum list size (for list type only)
+        """
+        if value_type == "hash":
+            self.client.hset(key, mapping=value)
+            if ttl_seconds:
+                self.client.expire(key, ttl_seconds)
+        
+        elif value_type == "list":
+            self.client.lpush(key, json.dumps(value))
+            if list_max_size:
+                self.client.ltrim(key, 0, list_max_size - 1)
+        
+        elif value_type == "string":
+            self.client.set(key, json.dumps(value))
+            if ttl_seconds:
+                self.client.expire(key, ttl_seconds)
+        
+        else:
+            raise ValueError(f"Unsupported value_type: {value_type}")
+    
+    def close(self) -> None:
+        """Close Redis connection."""
+        if self._client:
+            self._client.close()
+            self._client = None
+        if self._pool:
+            self._pool.disconnect()
+            self._pool = None
+
+
+# ============================================================================
+# HEALTH CHECKS
+# ============================================================================
+
 def check_redis_health(
     host: str = "localhost",
     port: int = 6379,

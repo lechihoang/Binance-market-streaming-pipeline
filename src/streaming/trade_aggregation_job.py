@@ -26,7 +26,8 @@ from pyspark.sql.types import (
     LongType, BooleanType, TimestampType
 )
 
-from src.streaming.core import Config, RedisConnector
+from src.utils.config import Config
+from src.storage.redis import RedisConnector
 from src.utils.shutdown import GracefulShutdown
 from src.utils.logging import StructuredFormatter
 

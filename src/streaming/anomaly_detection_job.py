@@ -46,7 +46,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from src.streaming.core import Config, KafkaConnector
+from src.utils.config import Config
 from src.utils.logging import StructuredFormatter
 from src.utils.shutdown import GracefulShutdown
 
@@ -62,6 +62,69 @@ from src.utils.metrics import (
     record_message_processed,
     track_latency,
 )
+
+
+# ============================================================================
+# KAFKA CONNECTOR (inlined from core.py - only used by this job)
+# ============================================================================
+
+
+class KafkaConnector:
+    """
+    Kafka connector for writing data to Kafka topics.
+    
+    Note: For Spark Structured Streaming, Kafka writes are typically done
+    through the DataFrame API. This class is for non-Spark Kafka operations.
+    """
+    
+    def __init__(
+        self,
+        bootstrap_servers: str = "localhost:9092",
+        client_id: Optional[str] = None
+    ):
+        """
+        Initialize Kafka connector.
+        
+        Args:
+            bootstrap_servers: Kafka bootstrap servers
+            client_id: Optional client ID
+        """
+        self.bootstrap_servers = bootstrap_servers
+        self.client_id = client_id
+        self._producer = None
+    
+    @property
+    def producer(self):
+        """Get Kafka producer, creating if needed."""
+        if self._producer is None:
+            from kafka import KafkaProducer
+            
+            self._producer = KafkaProducer(
+                bootstrap_servers=self.bootstrap_servers,
+                client_id=self.client_id,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                key_serializer=lambda k: k.encode('utf-8') if k else None
+            )
+        
+        return self._producer
+    
+    def send(self, topic: str, value: Dict[str, Any], key: Optional[str] = None) -> None:
+        """
+        Send message to Kafka topic.
+        
+        Args:
+            topic: Kafka topic name
+            value: Message value (dictionary)
+            key: Optional message key
+        """
+        self.producer.send(topic, value=value, key=key)
+        self.producer.flush()
+    
+    def close(self) -> None:
+        """Close Kafka producer."""
+        if self._producer:
+            self._producer.close()
+            self._producer = None
 
 
 class AnomalyDetectionJob:
