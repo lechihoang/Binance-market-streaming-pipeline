@@ -7,8 +7,10 @@ Path format: {bucket}/{data_type}/symbol={symbol}/date={YYYY-MM-DD}/data.parquet
 
 import io
 import json
+import time
+from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -255,6 +257,132 @@ class MinioStorage:
         table = pa.table(arrays, schema=self.ALERTS_SCHEMA)
         object_path = self._get_object_path("alerts", symbol, date)
         return self._write_parquet_to_minio(table, object_path)
+
+    # ==================== Batch Write Methods ====================
+
+    def _get_batch_object_path(self, data_type: str, symbol: str, date: datetime) -> str:
+        """Generate batch object path with timestamp for uniqueness.
+        
+        Path format: {data_type}/symbol={symbol}/year={YYYY}/month={MM}/day={DD}/batch_{timestamp}.parquet
+        """
+        return (
+            f"{data_type}/symbol={symbol}/"
+            f"year={date.year}/month={date.month:02d}/day={date.day:02d}/"
+            f"batch_{int(time.time() * 1000)}.parquet"
+        )
+
+    def write_klines_batch(
+        self, records: List[Dict[str, Any]], write_date: Optional[datetime] = None
+    ) -> Tuple[int, List[str]]:
+        """Write batch of klines as single Parquet file per symbol.
+        
+        Groups records by symbol and writes one Parquet file per symbol.
+        Uses date-based partitioning (year/month/day).
+        
+        Args:
+            records: List of kline dicts with timestamp, symbol, OHLCV data
+            write_date: Date for partitioning (defaults to current date)
+            
+        Returns:
+            Tuple of (success_count, list of failed symbols)
+            
+        Requirements: 1.4, 5.1, 5.3
+        """
+        if not records:
+            return (0, [])
+        
+        write_date = write_date or datetime.now()
+        
+        # Group records by symbol
+        by_symbol: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for record in records:
+            symbol = record.get("symbol", "UNKNOWN")
+            by_symbol[symbol].append(record)
+        
+        success_count = 0
+        failed_symbols: List[str] = []
+        
+        for symbol, klines in by_symbol.items():
+            try:
+                arrays = {
+                    'timestamp': pa.array(
+                        [d["timestamp"] for d in klines], type=pa.timestamp('ms')
+                    ),
+                    'symbol': pa.array([d.get("symbol", symbol) for d in klines]),
+                    'open': pa.array([float(d["open"]) for d in klines]),
+                    'high': pa.array([float(d["high"]) for d in klines]),
+                    'low': pa.array([float(d["low"]) for d in klines]),
+                    'close': pa.array([float(d["close"]) for d in klines]),
+                    'volume': pa.array([float(d["volume"]) for d in klines]),
+                    'quote_volume': pa.array([float(d.get("quote_volume", 0)) for d in klines]),
+                    'trades_count': pa.array([int(d.get("trades_count", 0)) for d in klines]),
+                }
+                table = pa.table(arrays, schema=self.KLINES_SCHEMA)
+                object_path = self._get_batch_object_path("klines", symbol, write_date)
+                
+                if self._write_parquet_to_minio(table, object_path):
+                    success_count += len(klines)
+                    logger.debug(f"Wrote {len(klines)} klines for {symbol} to {object_path}")
+                else:
+                    failed_symbols.append(symbol)
+                    logger.error(f"Failed to write klines batch for {symbol}")
+            except Exception as e:
+                failed_symbols.append(symbol)
+                logger.error(f"Error writing klines batch for {symbol}: {e}")
+        
+        return (success_count, failed_symbols)
+
+    def write_alerts_batch(
+        self, alerts: List[Dict[str, Any]], write_date: Optional[datetime] = None
+    ) -> Tuple[int, List[str]]:
+        """Write batch of alerts as single Parquet file.
+        
+        Writes all alerts to a single Parquet file with date-based partitioning.
+        
+        Args:
+            alerts: List of alert dicts with timestamp, symbol, alert_type, etc.
+            write_date: Date for partitioning (defaults to current date)
+            
+        Returns:
+            Tuple of (success_count, list of error messages)
+            
+        Requirements: 5.2, 5.3
+        """
+        if not alerts:
+            return (0, [])
+        
+        write_date = write_date or datetime.now()
+        errors: List[str] = []
+        
+        try:
+            arrays = {
+                'timestamp': pa.array(
+                    [d["timestamp"] for d in alerts], type=pa.timestamp('ms')
+                ),
+                'symbol': pa.array([d.get("symbol", "UNKNOWN") for d in alerts]),
+                'alert_type': pa.array([d["alert_type"] for d in alerts]),
+                'severity': pa.array([d["severity"] for d in alerts]),
+                'message': pa.array([d.get("message", "") for d in alerts]),
+                'metadata': pa.array([
+                    json.dumps(d.get("metadata")) if d.get("metadata") else ""
+                    for d in alerts
+                ]),
+            }
+            table = pa.table(arrays, schema=self.ALERTS_SCHEMA)
+            
+            # Use "all" as symbol for batch alerts file
+            object_path = self._get_batch_object_path("alerts", "all", write_date)
+            
+            if self._write_parquet_to_minio(table, object_path):
+                logger.debug(f"Wrote {len(alerts)} alerts to {object_path}")
+                return (len(alerts), [])
+            else:
+                errors.append("Failed to write alerts batch to MinIO")
+                return (0, errors)
+        except Exception as e:
+            errors.append(f"Error writing alerts batch: {e}")
+            logger.error(f"Error writing alerts batch: {e}")
+            return (0, errors)
 
 
     # ==================== Read Methods ====================

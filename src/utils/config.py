@@ -250,8 +250,10 @@ class SparkConfig:
     checkpoint_interval: str = "30 seconds"
     
     # State store settings for reliability
-    state_store_min_batches_to_retain: int = 10
-    state_store_maintenance_interval: str = "30s"
+    # Increased from 10 to 50 to prevent state file deletion during job restarts
+    # This ensures state files are retained across multiple DAG runs
+    state_store_min_batches_to_retain: int = 50
+    state_store_maintenance_interval: str = "60s"
     
     # Backpressure
     backpressure_enabled: bool = True
@@ -270,7 +272,7 @@ class SparkConfig:
             shuffle_partitions=get_env_int("SPARK_SHUFFLE_PARTITIONS", 2),
             checkpoint_location=get_env_str("SPARK_CHECKPOINT_LOCATION", default_checkpoint),
             checkpoint_interval=get_env_str("SPARK_CHECKPOINT_INTERVAL", "30 seconds"),
-            state_store_min_batches_to_retain=get_env_int("SPARK_STATE_STORE_MIN_BATCHES", 10),
+            state_store_min_batches_to_retain=get_env_int("SPARK_STATE_STORE_MIN_BATCHES", 50),
             state_store_maintenance_interval=get_env_str("SPARK_STATE_STORE_MAINTENANCE_INTERVAL", "30s"),
             backpressure_enabled=get_env_bool("SPARK_BACKPRESSURE_ENABLED", True),
         )

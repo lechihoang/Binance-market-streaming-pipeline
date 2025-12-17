@@ -19,7 +19,7 @@ Requirements: 6.4
 # ============================================================================
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 from hypothesis import given, settings, strategies as st, HealthCheck
 from fastapi.testclient import TestClient
@@ -345,7 +345,7 @@ class TestQueryTierSelection:
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         start = now - timedelta(minutes=offset_minutes)
         
         selected_tier = mock_query_router._select_tier(start)
@@ -359,7 +359,7 @@ class TestQueryTierSelection:
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         start = now - timedelta(hours=offset_hours)
         
         selected_tier = mock_query_router._select_tier(start)
@@ -373,7 +373,7 @@ class TestQueryTierSelection:
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         start = now - timedelta(days=offset_days)
         
         selected_tier = mock_query_router._select_tier(start)

@@ -266,6 +266,120 @@ class PostgresStorage:
         )
         self._execute_with_retry(query, params)
 
+    # ==================== Batch Operations ====================
+
+    def upsert_candles_batch(self, candles: List[Dict[str, Any]]) -> int:
+        """Batch upsert candles using executemany.
+        
+        Uses INSERT with ON CONFLICT for efficient batch upsert operations.
+        
+        Args:
+            candles: List of candle dictionaries with keys:
+                timestamp, symbol, open, high, low, close, volume, 
+                quote_volume, trades_count
+                
+        Returns:
+            Number of affected rows (inserts + updates)
+            
+        Requirements: 1.3, 4.1, 4.3
+        """
+        if not candles:
+            return 0
+        
+        query = """
+            INSERT INTO trades_1m 
+            (timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count)
+            VALUES (%(timestamp)s, %(symbol)s, %(open)s, %(high)s, %(low)s, 
+                    %(close)s, %(volume)s, %(quote_volume)s, %(trades_count)s)
+            ON CONFLICT (symbol, timestamp) DO UPDATE SET
+                open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                close = EXCLUDED.close, volume = EXCLUDED.volume,
+                quote_volume = EXCLUDED.quote_volume, trades_count = EXCLUDED.trades_count
+        """
+        
+        def execute_batch():
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(query, candles)
+                    conn.commit()
+                    return len(candles)
+        
+        def on_retry(attempt: int, delay_ms: int, error: Exception):
+            record_retry("postgres_storage", "upsert_candles_batch", "failed")
+        
+        try:
+            with track_latency("postgres_storage", "upsert_candles_batch"):
+                result = retry_operation(
+                    execute_batch,
+                    config=self._retry_config,
+                    operation_name="PostgreSQL batch upsert candles",
+                    on_retry=on_retry,
+                )
+            record_retry("postgres_storage", "upsert_candles_batch", "success")
+            logger.debug(f"Batch upserted {result} candles")
+            return result
+        except Exception as e:
+            record_error("postgres_storage", "upsert_candles_batch_error", "error")
+            logger.error(f"Failed to batch upsert candles: {e}")
+            raise
+
+    def insert_alerts_batch(self, alerts: List[Dict[str, Any]]) -> int:
+        """Batch insert alerts using executemany.
+        
+        Args:
+            alerts: List of alert dictionaries with keys:
+                timestamp, symbol, alert_type, severity, message, metadata
+                
+        Returns:
+            Number of inserted rows
+            
+        Requirements: 4.2, 4.3
+        """
+        if not alerts:
+            return 0
+        
+        # Prepare alerts with JSON-serialized metadata
+        prepared_alerts = []
+        for alert in alerts:
+            prepared = dict(alert)
+            metadata = prepared.get('metadata')
+            if isinstance(metadata, dict):
+                prepared['metadata'] = json.dumps(metadata)
+            prepared_alerts.append(prepared)
+        
+        query = """
+            INSERT INTO alerts
+            (timestamp, symbol, alert_type, severity, message, metadata)
+            VALUES (%(timestamp)s, %(symbol)s, %(alert_type)s, %(severity)s, 
+                    %(message)s, %(metadata)s)
+        """
+        
+        def execute_batch():
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(query, prepared_alerts)
+                    conn.commit()
+                    return len(prepared_alerts)
+        
+        def on_retry(attempt: int, delay_ms: int, error: Exception):
+            record_retry("postgres_storage", "insert_alerts_batch", "failed")
+        
+        try:
+            with track_latency("postgres_storage", "insert_alerts_batch"):
+                result = retry_operation(
+                    execute_batch,
+                    config=self._retry_config,
+                    operation_name="PostgreSQL batch insert alerts",
+                    on_retry=on_retry,
+                )
+            record_retry("postgres_storage", "insert_alerts_batch", "success")
+            logger.debug(f"Batch inserted {result} alerts")
+            return result
+        except Exception as e:
+            record_error("postgres_storage", "insert_alerts_batch_error", "error")
+            logger.error(f"Failed to batch insert alerts: {e}")
+            raise
+
     # ==================== Query Methods ====================
 
     def query_candles(

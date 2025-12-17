@@ -325,9 +325,10 @@
           { "selected": true, "text": "BTC", "value": "BTC" },
           { "selected": false, "text": "ETH", "value": "ETH" },
           { "selected": false, "text": "BNB", "value": "BNB" },
-          { "selected": false, "text": "SOL", "value": "SOL" }
+          { "selected": false, "text": "SOL", "value": "SOL" },
+          { "selected": false, "text": "XRP", "value": "XRP" }
         ],
-        "query": "BTC,ETH,BNB,SOL",
+        "query": "BTC,ETH,BNB,SOL,XRP",
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"

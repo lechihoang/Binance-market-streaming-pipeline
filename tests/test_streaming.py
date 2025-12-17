@@ -22,7 +22,7 @@ import json
 import uuid
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import Mock, patch, MagicMock
@@ -154,7 +154,7 @@ def create_alert(
         "alert_type": alert_type,
         "alert_level": alert_level,
         "details": details,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
 
 

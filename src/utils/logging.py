@@ -114,7 +114,7 @@ class StructuredFormatter(logging.Formatter):
         Returns:
             Formatted string: [timestamp] [level] [job_name] [logger_name] message
         """
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
 
         log_parts = [
             f"[{timestamp}]",

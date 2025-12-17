@@ -7,7 +7,7 @@ Routes queries to appropriate storage tier based on time range:
 - >= 90 days: MinIO (Cold Path)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from .redis import RedisStorage
@@ -79,7 +79,7 @@ class QueryRouter:
     
     def _select_tier(self, start: datetime) -> str:
         """Select storage tier based on start time. Assumes naive UTC datetimes."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         start_utc = start.replace(tzinfo=None) if start.tzinfo else start
         if start_utc >= now - timedelta(hours=self.REDIS_THRESHOLD_HOURS):
             return "redis"

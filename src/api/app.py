@@ -10,7 +10,7 @@ import os
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from threading import Lock
 from typing import Any, Dict, List, Optional
@@ -514,7 +514,7 @@ def query_klines_with_fallback(
     end: datetime,
 ) -> tuple[List[dict], str]:
     """Query klines with fallback chain."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     redis_cutoff = now - timedelta(hours=1)
     postgres_cutoff = now - timedelta(days=90)
     
@@ -745,7 +745,7 @@ async def get_klines(
     start = (start.replace(tzinfo=None) if start and start.tzinfo else start)
     end = (end.replace(tzinfo=None) if end and end.tzinfo else end)
     
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     if end is None:
         end = now
     if start is None:
@@ -761,7 +761,7 @@ async def get_klines(
     
     return [
         KlineResponse(
-            timestamp=record.get("timestamp"),
+            timestamp=record.get("timestamp").replace(tzinfo=timezone.utc),
             open=record.get("open", 0.0),
             high=record.get("high", 0.0),
             low=record.get("low", 0.0),
@@ -789,7 +789,7 @@ async def get_trades_count(
             detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_TRADES_COUNT_INTERVALS))}"
         )
     
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     interval_durations = {
         "1m": timedelta(minutes=1),
         "1h": timedelta(hours=1),
@@ -809,7 +809,7 @@ async def get_trades_count(
         
         return [
             TradesCountResponse(
-                timestamp=record["timestamp"],
+                timestamp=record["timestamp"].replace(tzinfo=timezone.utc),
                 trades_count=record["trades_count"],
                 interval=record["interval"],
             )
@@ -843,22 +843,8 @@ async def get_whale_alerts(
                     except:
                         details = {}
                 
-                ts = alert.get("timestamp", 0)
-                if isinstance(ts, (int, float)):
-                    if ts > 1e10:
-                        ts = datetime.fromtimestamp(ts / 1000)
-                    else:
-                        ts = datetime.fromtimestamp(ts)
-                elif isinstance(ts, str):
-                    try:
-                        ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                    except:
-                        ts = datetime.utcnow()
-                elif not isinstance(ts, datetime):
-                    ts = datetime.utcnow()
-                
                 whale_alerts.append(WhaleAlertResponse(
-                    timestamp=ts,
+                    timestamp=alert.get("timestamp").replace(tzinfo=timezone.utc),
                     symbol=alert.get("symbol", "UNKNOWN"),
                     side=details.get("side", "BUY"),
                     amount=float(details.get("quantity", details.get("amount", 0))),
@@ -871,7 +857,7 @@ async def get_whale_alerts(
     # If not enough from Redis, try PostgreSQL
     if len(whale_alerts) < effective_limit:
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
             start = now - timedelta(days=7)
             
             for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]:
@@ -886,7 +872,7 @@ async def get_whale_alerts(
                                 details = {}
                         
                         whale_alerts.append(WhaleAlertResponse(
-                            timestamp=alert.get("timestamp", datetime.utcnow()),
+                            timestamp=alert.get("timestamp").replace(tzinfo=timezone.utc),
                             symbol=alert.get("symbol", "UNKNOWN"),
                             side=details.get("side", "BUY"),
                             amount=float(details.get("quantity", details.get("amount", 0))),
@@ -924,6 +910,6 @@ async def get_health(
         status=overall_status,
         redis=redis_health.healthy,
         postgres=postgres_health.healthy,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc),
         services=[redis_health, postgres_health]
     )

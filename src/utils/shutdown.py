@@ -13,7 +13,7 @@ to provide reusable shutdown handling across all services.
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -101,7 +101,7 @@ class GracefulShutdown:
         Args:
             signal_num: The signal number received (e.g., SIGINT=2, SIGTERM=15)
         """
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)
         self.shutdown_requested = True
         self.shutdown_start_time = time.time()
         

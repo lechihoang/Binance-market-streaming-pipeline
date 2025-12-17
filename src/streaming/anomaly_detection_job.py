@@ -21,7 +21,7 @@ import signal
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from pyspark.sql import DataFrame, SparkSession
@@ -255,10 +255,15 @@ class AnomalyDetectionJob:
                         str(self.config.spark.backpressure_enabled).lower())
                  .config("spark.sql.streaming.checkpointLocation",
                         self.config.spark.checkpoint_location)
+                 # State store reliability settings
+                 # Retain more batches to prevent state file deletion during job restarts
                  .config("spark.sql.streaming.minBatchesToRetain",
                         str(self.config.spark.state_store_min_batches_to_retain))
+                 # Increase maintenance interval to reduce cleanup frequency
                  .config("spark.sql.streaming.stateStore.maintenanceInterval",
                         self.config.spark.state_store_maintenance_interval)
+                 # Create snapshots more frequently to reduce delta file dependencies
+                 .config("spark.sql.streaming.stateStore.minDeltasForSnapshot", "5")
                  .config("spark.sql.streaming.stateStore.stateSchemaCheck", "false")
                  .getOrCreate())
 
@@ -453,16 +458,21 @@ class AnomalyDetectionJob:
             "alert_id": str(uuid.uuid4()),
             "timestamp": timestamp,
             "symbol": symbol, "alert_type": alert_type, "alert_level": alert_level,
-            "details": details, "created_at": datetime.utcnow()
+            "details": details, "created_at": datetime.now(timezone.utc)
         }
 
     def _write_alerts_to_sinks(self, alerts: List[Dict[str, Any]], batch_id: int) -> None:
-        """Write alerts to multiple sinks using StorageWriter for 3-tier storage."""
+        """Write alerts to multiple sinks using StorageWriter batch method for 3-tier storage.
+        
+        Per Requirements 1.2, 1.3, 1.4, 2.1: Collects all alerts first, then calls
+        storage_writer.write_alerts_batch() for parallel batch writes.
+        """
         if not alerts:
             self.logger.debug(f"Batch {batch_id}: No alerts to write")
             return
         self.logger.info(f"Batch {batch_id}: Writing {len(alerts)} alerts to sinks")
 
+        # Write to Kafka (for downstream consumers)
         try:
             kafka_conn = KafkaConnector(bootstrap_servers=self.config.kafka.bootstrap_servers, client_id="anomaly_detection_job")
             for alert in alerts:
@@ -472,26 +482,30 @@ class AnomalyDetectionJob:
         except Exception as e:
             self.logger.error(f"Batch {batch_id}: Failed to write to Kafka: {str(e)}")
 
-        success_count = 0
-        failure_count = 0
+        # Collect all alerts for batch write to 3-tier storage
+        alert_records = []
         for alert in alerts:
-            try:
-                alert_data = {
-                    'alert_id': alert.get('alert_id'), 'timestamp': alert.get('timestamp'),
-                    'symbol': alert.get('symbol'), 'alert_type': alert.get('alert_type'),
-                    'alert_level': alert.get('alert_level'), 'created_at': alert.get('created_at'),
-                    'details': alert.get('details', '{}'),
-                }
-                results = self.storage_writer.write_alert(alert_data)
-                if all(results.values()):
-                    success_count += 1
-                else:
-                    failure_count += 1
-                    failed_tiers = [k for k, v in results.items() if not v]
-                    self.logger.warning(f"Batch {batch_id}: Partial write failure for alert {alert.get('symbol')} - failed tiers: {failed_tiers}")
-            except Exception as e:
-                failure_count += 1
-                self.logger.error(f"Batch {batch_id}: Failed to write alert for {alert.get('symbol')}: {str(e)}")
+            alert_data = {
+                'alert_id': alert.get('alert_id'),
+                'timestamp': alert.get('timestamp'),
+                'symbol': alert.get('symbol'),
+                'alert_type': alert.get('alert_type'),
+                'alert_level': alert.get('alert_level'),
+                'created_at': alert.get('created_at'),
+                'details': alert.get('details', '{}'),
+            }
+            alert_records.append(alert_data)
+        
+        # Write all alerts to all 3 tiers via StorageWriter batch method
+        batch_result = self.storage_writer.write_alerts_batch(alert_records)
+        success_count = batch_result.success_count
+        failure_count = batch_result.failure_count
+        
+        # Log tier-level results
+        for tier, succeeded in batch_result.tier_results.items():
+            if not succeeded:
+                self.logger.warning(f"Batch {batch_id}: {tier} tier write failed")
+        
         self.logger.info(f"Batch {batch_id}: StorageWriter completed - {success_count} succeeded, {failure_count} failed")
 
     def _process_batch(self, batch_df: DataFrame, batch_id: int) -> None:

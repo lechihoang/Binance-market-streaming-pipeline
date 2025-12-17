@@ -306,6 +306,91 @@ class RedisStorage:
             return None
         return data
 
+    def write_aggregations_batch(
+        self, records: List[Dict[str, Any]]
+    ) -> tuple[int, List[Dict[str, Any]]]:
+        """Write multiple aggregations using Redis pipeline.
+        
+        Uses Redis pipeline to batch all HSET operations for improved performance.
+        Each record should contain: symbol, interval, and OHLCV data.
+        
+        Args:
+            records: List of aggregation records, each containing:
+                - symbol: Trading pair symbol
+                - interval: Time interval (e.g., '1m', '5m', '1h')
+                - open, high, low, close, volume: OHLCV data
+                - timestamp: Unix timestamp
+                
+        Returns:
+            Tuple of (success_count, failed_records)
+            
+        Requirements: 1.2, 3.1, 3.3
+        Property 3: Redis pipeline atomicity
+        """
+        if not records:
+            return 0, []
+        
+        failed_records: List[Dict[str, Any]] = []
+        success_count = 0
+        
+        try:
+            pipe = self.client.pipeline()
+            valid_records: List[Dict[str, Any]] = []
+            
+            for record in records:
+                try:
+                    symbol = record.get("symbol")
+                    interval = record.get("interval", "1m")
+                    
+                    if not symbol:
+                        failed_records.append(record)
+                        continue
+                    
+                    # Build key and mapping
+                    key = f"market:{symbol}:{interval}"
+                    mapping = {
+                        "price": str(record.get("close", 0)),
+                        "open": str(record.get("open", 0)),
+                        "high": str(record.get("high", 0)),
+                        "low": str(record.get("low", 0)),
+                        "close": str(record.get("close", 0)),
+                        "volume": str(record.get("volume", 0)),
+                        "timestamp": str(record.get("timestamp", "")),
+                    }
+                    
+                    pipe.hset(key, mapping=mapping)
+                    pipe.expire(key, self.TTL_1_HOUR)
+                    
+                    # Also write to market:{symbol} for Grafana (1m interval only)
+                    if interval == "1m":
+                        market_key = f"market:{symbol}"
+                        pipe.hset(market_key, mapping=mapping)
+                        pipe.expire(market_key, self.TTL_1_HOUR)
+                    
+                    valid_records.append(record)
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to prepare record for pipeline: {e}")
+                    failed_records.append(record)
+            
+            # Execute pipeline
+            if valid_records:
+                pipe.execute()
+                success_count = len(valid_records)
+                logger.debug(f"Batch wrote {success_count} aggregations to Redis")
+            
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(f"Redis pipeline execution failed: {e}")
+            # All records failed
+            failed_records = records
+            success_count = 0
+        except Exception as e:
+            logger.error(f"Unexpected error in batch write: {e}")
+            failed_records = records
+            success_count = 0
+        
+        return success_count, failed_records
+
     # =========================================================================
     # Collection Operations - Recent Trades, Alerts
     # =========================================================================
@@ -360,6 +445,64 @@ class RedisStorage:
         key = "alerts:recent"
         alerts_json = self.client.lrange(key, 0, limit - 1)
         return [json.loads(a) for a in alerts_json]
+
+    def write_alerts_batch(
+        self, alerts: List[Dict[str, Any]], max_alerts: int = MAX_ALERTS
+    ) -> tuple[int, List[Dict[str, Any]]]:
+        """Write multiple alerts using Redis pipeline.
+        
+        Uses Redis pipeline to batch all LPUSH operations for improved performance.
+        Maintains list size limit with LTRIM after all pushes.
+        
+        Args:
+            alerts: List of alert dictionaries to write
+            max_alerts: Maximum number of alerts to keep in the list
+                
+        Returns:
+            Tuple of (success_count, failed_records)
+            
+        Requirements: 3.2, 3.3
+        """
+        if not alerts:
+            return 0, []
+        
+        failed_records: List[Dict[str, Any]] = []
+        success_count = 0
+        key = "alerts:recent"
+        
+        try:
+            pipe = self.client.pipeline()
+            valid_alerts: List[Dict[str, Any]] = []
+            
+            for alert in alerts:
+                try:
+                    alert_json = json.dumps(alert)
+                    pipe.lpush(key, alert_json)
+                    valid_alerts.append(alert)
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Failed to serialize alert: {e}")
+                    failed_records.append(alert)
+            
+            # Trim list to maintain size limit and set TTL
+            if valid_alerts:
+                pipe.ltrim(key, 0, max_alerts - 1)
+                pipe.expire(key, self.TTL_24_HOURS)
+                
+                # Execute pipeline
+                pipe.execute()
+                success_count = len(valid_alerts)
+                logger.debug(f"Batch wrote {success_count} alerts to Redis")
+            
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(f"Redis pipeline execution failed for alerts: {e}")
+            failed_records = alerts
+            success_count = 0
+        except Exception as e:
+            logger.error(f"Unexpected error in alerts batch write: {e}")
+            failed_records = alerts
+            success_count = 0
+        
+        return success_count, failed_records
 
 
 # ============================================================================

@@ -209,10 +209,14 @@ class TradeAggregationJob:
                  .config("spark.sql.streaming.checkpointLocation", 
                         self.config.spark.checkpoint_location)
                  # State store reliability settings
+                 # Retain more batches to prevent state file deletion during job restarts
                  .config("spark.sql.streaming.minBatchesToRetain", 
                         str(self.config.spark.state_store_min_batches_to_retain))
+                 # Increase maintenance interval to reduce cleanup frequency
                  .config("spark.sql.streaming.stateStore.maintenanceInterval",
                         self.config.spark.state_store_maintenance_interval)
+                 # Create snapshots more frequently to reduce delta file dependencies
+                 .config("spark.sql.streaming.stateStore.minDeltasForSnapshot", "5")
                  .config("spark.sql.streaming.stateStore.stateSchemaCheck", "false")
                  .getOrCreate())
         
@@ -690,43 +694,35 @@ class TradeAggregationJob:
         except Exception as e:
             self.logger.error(f"Batch {batch_id}: Failed to write to Kafka: {str(e)}")
         
-        # Write to 3-tier storage using StorageWriter (Redis, DuckDB, Parquet)
-        # Per Requirements 5.1: Redis with overwrite, DuckDB with upsert, Parquet with append
-        success_count = 0
-        failure_count = 0
+        # Write to 3-tier storage using StorageWriter batch method (Redis, PostgreSQL, MinIO)
+        # Per Requirements 1.2, 1.3, 1.4, 2.1: Batch writes with parallel execution
         
+        # Collect all records first, then call batch method
+        aggregation_records = []
         for row in records:
-            try:
-                # Convert row to aggregation data dict
-                aggregation_data = {
-                    'timestamp': row.window_start,
-                    'symbol': row.symbol,
-                    'interval': row.window_duration,
-                    'open': float(row.open) if row.open else None,
-                    'high': float(row.high) if row.high else None,
-                    'low': float(row.low) if row.low else None,
-                    'close': float(row.close) if row.close else None,
-                    'volume': float(row.volume) if row.volume else None,
-                    'quote_volume': float(row.quote_volume) if hasattr(row, 'quote_volume') and row.quote_volume else 0,
-                    'trades_count': int(row.trade_count) if hasattr(row, 'trade_count') and row.trade_count else 0,
-                }
-                
-                # Write to all 3 tiers via StorageWriter
-                results = self.storage_writer.write_aggregation(aggregation_data)
-                
-                if all(results.values()):
-                    success_count += 1
-                else:
-                    failure_count += 1
-                    failed_tiers = [k for k, v in results.items() if not v]
-                    self.logger.warning(
-                        f"Batch {batch_id}: Partial write failure for {row.symbol} - "
-                        f"failed tiers: {failed_tiers}"
-                    )
-                    
-            except Exception as e:
-                failure_count += 1
-                self.logger.error(f"Batch {batch_id}: Failed to write aggregation for {row.symbol}: {str(e)}")
+            aggregation_data = {
+                'timestamp': row.window_start,
+                'symbol': row.symbol,
+                'interval': row.window_duration,
+                'open': float(row.open) if row.open else None,
+                'high': float(row.high) if row.high else None,
+                'low': float(row.low) if row.low else None,
+                'close': float(row.close) if row.close else None,
+                'volume': float(row.volume) if row.volume else None,
+                'quote_volume': float(row.quote_volume) if hasattr(row, 'quote_volume') and row.quote_volume else 0,
+                'trades_count': int(row.trade_count) if hasattr(row, 'trade_count') and row.trade_count else 0,
+            }
+            aggregation_records.append(aggregation_data)
+        
+        # Write all records to all 3 tiers via StorageWriter batch method
+        batch_result = self.storage_writer.write_aggregations_batch(aggregation_records)
+        success_count = batch_result.success_count
+        failure_count = batch_result.failure_count
+        
+        # Log tier-level results
+        for tier, succeeded in batch_result.tier_results.items():
+            if not succeeded:
+                self.logger.warning(f"Batch {batch_id}: {tier} tier write failed")
         
         # Record message processed metrics for successful writes
         for _ in range(success_count):

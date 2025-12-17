@@ -11,7 +11,7 @@
   "panels": [
     {
       "id": 1,
-      "title": "Số giao dịch theo thời gian",
+      "title": "Số giao dịch theo thời gian - ${symbol}USDT",
       "type": "barchart",
       "datasource": {
         "type": "marcusolsson-json-datasource",
@@ -27,7 +27,7 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/trades-count?symbol=BTCUSDT&interval=${interval}&limit=24",
+          "urlPath": "/api/v1/analytics/trades-count?symbol=${symbol}USDT&interval=${interval}&limit=24",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].trades_count", "name": "Số giao dịch" }
@@ -199,6 +199,29 @@
   "tags": ["crypto", "trading", "analytics", "whale"],
   "templating": {
     "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "BTC",
+          "value": "BTC"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Symbol",
+        "multi": false,
+        "name": "symbol",
+        "options": [
+          { "selected": true, "text": "BTC", "value": "BTC" },
+          { "selected": false, "text": "ETH", "value": "ETH" },
+          { "selected": false, "text": "BNB", "value": "BNB" },
+          { "selected": false, "text": "SOL", "value": "SOL" },
+          { "selected": false, "text": "XRP", "value": "XRP" }
+        ],
+        "query": "BTC,ETH,BNB,SOL,XRP",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
       {
         "current": {
           "selected": true,
