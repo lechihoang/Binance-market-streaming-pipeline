@@ -8,7 +8,6 @@ A production-grade data engineering project that ingests, processes, and visuali
 - [Architecture](#architecture)
 - [Tech Stack](#tech-stack)
 - [Features](#features)
-- [Data Flow](#data-flow)
 - [Storage Architecture](#storage-architecture)
 - [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
@@ -32,8 +31,7 @@ This project demonstrates a complete real-time data pipeline that:
 
 ## Architecture
 
-<!-- Add your system architecture diagram here -->
-![System Architecture](docs/images/architecture.png)
+![System Architecture](img/system_architechture.png)
 
 The system follows an event-driven architecture with the following components:
 
@@ -92,55 +90,6 @@ The system follows an event-driven architecture with the following components:
 - System health monitoring
 - Trading analytics visualization
 - Real-time market overview
-
-## Data Flow
-
-<!-- Add your data flow diagram here -->
-![Data Flow](docs/images/data-flow.png)
-
-```
-Binance WebSocket API
-        |
-        v
-+------------------+
-| Binance Connector|  (WebSocket -> Kafka)
-+------------------+
-        |
-        v
-+------------------+
-|   Apache Kafka   |  (raw_trades, raw_tickers topics)
-+------------------+
-        |
-        +------------------------+
-        |                        |
-        v                        v
-+------------------+    +------------------+
-| Ticker Consumer  |    | Trade Aggregation|  (Spark Streaming)
-+------------------+    +------------------+
-        |                        |
-        v                        v
-+------------------+    +------------------+
-|      Redis       |    | processed_aggs   |  (Kafka topic)
-|   (Hot Path)     |    +------------------+
-+------------------+             |
-                                 v
-                        +------------------+
-                        | Anomaly Detection|  (Spark Streaming)
-                        +------------------+
-                                 |
-                                 v
-                        +------------------+
-                        |  Storage Writer  |
-                        +------------------+
-                                 |
-        +------------------------+------------------------+
-        |                        |                        |
-        v                        v                        v
-+------------------+    +------------------+    +------------------+
-|      Redis       |    |   PostgreSQL     |    |      MinIO       |
-|   (Hot Path)     |    |  (Warm Path)     |    |   (Cold Path)    |
-+------------------+    +------------------+    +------------------+
-```
 
 ## Storage Architecture
 
@@ -210,8 +159,8 @@ The `QueryRouter` automatically selects the appropriate storage tier based on th
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd <project-directory>
+git clone https://github.com/lechihoang/binance-market-streaming-pipeline.git
+cd binance-market-streaming-pipeline
 ```
 
 2. Copy environment configuration:
