@@ -19,7 +19,7 @@ A production-grade data engineering project that ingests, processes, and visuali
 
 ## Overview
 
-This project demonstrates a complete real-time data pipeline designed to handle high-throughput streaming data (1,000-10,000+ messages/second) from cryptocurrency exchanges. The pipeline:
+This project demonstrates a complete real-time data pipeline designed to handle high-throughput streaming data (100-1,000+ messages/second) from cryptocurrency exchanges. The pipeline:
 
 1. Connects to Binance WebSocket API to receive live trade and ticker data
 2. Streams data through Apache Kafka for reliable message delivery
@@ -60,7 +60,7 @@ The system follows an event-driven architecture with the following components:
 
 ### Real-Time Data Ingestion
 - WebSocket connection to Binance with automatic reconnection
-- High-throughput message processing (1,000-10,000+ messages/second depending on market activity)
+- High-throughput message processing (100-1,000+ messages/second depending on market activity)
 - Support for multiple trading pairs (15+ symbols by default)
 - Trade and ticker data streams
 - Message enrichment with ingestion timestamps
