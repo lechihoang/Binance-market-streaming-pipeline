@@ -11,9 +11,9 @@ A production-grade data engineering project that ingests, processes, and visuali
 - [Storage Architecture](#storage-architecture)
 - [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
+- [Airflow DAGs](#airflow-dags)
 - [API Endpoints](#api-endpoints)
 - [Monitoring and Dashboards](#monitoring-and-dashboards)
-- [Airflow DAGs](#airflow-dags)
 - [Configuration](#configuration)
 - [Testing](#testing)
 
@@ -127,11 +127,11 @@ The `QueryRouter` automatically selects the appropriate storage tier based on th
 │   ├── ticker_consumer/
 │   │   └── consumer.py            # Kafka to Redis ticker consumer
 │   ├── utils/
-│   │   ├── config.py              # Configuration management
 │   │   ├── kafka.py               # Kafka utilities
 │   │   ├── logging.py             # Structured logging
 │   │   ├── metrics.py             # Prometheus metrics
-│   │   └── retry.py               # Retry with backoff
+│   │   ├── retry.py               # Retry with backoff
+│   │   └── shutdown.py            # Graceful shutdown handling
 │   └── validators/
 │       └── job_validators.py      # Output validation
 ├── grafana/
@@ -194,6 +194,36 @@ To remove all data volumes:
 docker-compose down -v
 ```
 
+## Airflow DAGs
+
+| DAG | Schedule | Description |
+|-----|----------|-------------|
+| `binance_connector_dag` | Manual trigger | Runs WebSocket connector for data ingestion |
+| `streaming_processing_dag` | Every 5 minutes | Executes Spark streaming jobs |
+
+### 1. Binance Connector DAG
+
+Manages the WebSocket connection to Binance API for real-time data ingestion. Runs continuously to stream trade and ticker data to Kafka topics.
+
+**Tasks:**
+- `check_kafka_health`: Verify Kafka broker connectivity
+- `run_binance_connector`: Start WebSocket client for trade/ticker streams
+- `run_ticker_consumer`: Consume ticker data from Kafka to Redis
+
+![Binance Connector DAG](img/dag1.png)
+
+### 2. Streaming Processing DAG
+
+Orchestrates Spark streaming jobs for data processing. Runs every 5 minutes to aggregate trades and detect anomalies.
+
+**Tasks:**
+- `health_checks`: Verify Redis, PostgreSQL, and MinIO connectivity
+- `trade_aggregation`: Compute 1-minute OHLCV candles with buy/sell metrics
+- `anomaly_detection`: Detect whale trades, price spikes, and volume anomalies
+- `cleanup_streaming`: Clean up resources after processing
+
+![Streaming Processing DAG](img/dag2.png)
+
 ## API Endpoints
 
 ### Market Data
@@ -253,36 +283,6 @@ Infrastructure monitoring, service status, and performance metrics.
 - Kafka consumer lag
 - Redis memory usage
 - API request rates and response times
-
-## Airflow DAGs
-
-| DAG | Schedule | Description |
-|-----|----------|-------------|
-| `binance_connector_dag` | Manual trigger | Runs WebSocket connector for data ingestion |
-| `streaming_processing_dag` | Every 5 minutes | Executes Spark streaming jobs |
-
-### 1. Binance Connector DAG
-
-Manages the WebSocket connection to Binance API for real-time data ingestion. Runs continuously to stream trade and ticker data to Kafka topics.
-
-**Tasks:**
-- `check_kafka_health`: Verify Kafka broker connectivity
-- `run_binance_connector`: Start WebSocket client for trade/ticker streams
-- `run_ticker_consumer`: Consume ticker data from Kafka to Redis
-
-![Binance Connector DAG](img/dag1.png)
-
-### 2. Streaming Processing DAG
-
-Orchestrates Spark streaming jobs for data processing. Runs every 5 minutes to aggregate trades and detect anomalies.
-
-**Tasks:**
-- `health_checks`: Verify Redis, PostgreSQL, and MinIO connectivity
-- `trade_aggregation`: Compute 1-minute OHLCV candles with buy/sell metrics
-- `anomaly_detection`: Detect whale trades, price spikes, and volume anomalies
-- `cleanup_streaming`: Clean up resources after processing
-
-![Streaming Processing DAG](img/dag2.png)
 
 ## Configuration
 
