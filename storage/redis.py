@@ -134,6 +134,12 @@ class RedisStorage:
             return self.client.ping()
         except Exception:
             return False
+    
+    def close(self) -> None:
+        if self._client:
+            self._client.close()
+            self._client = None
+            logger.info("Redis connection closed")
 
     def _make_aggregation_key(self, symbol: str, interval: str = "1m") -> str:
         """Create Redis key for aggregation data."""
@@ -170,7 +176,7 @@ class RedisStorage:
             for k, v in data.items():
                 if v == "":
                     result[k] = None
-                elif k in ("trades_count", "trade_count"):
+                elif k in ("trade_count", "buy_count", "sell_count"):
                     result[k] = int(float(v)) if v else 0
                 else:
                     try:
@@ -326,7 +332,7 @@ class RedisStorage:
             # - high: max of all highs
             # - low: min of all lows
             # - close: last candle's close
-            # - volume/quote_volume/trades_count: sum
+            # - volume/quote_volume/trade_count: sum
             agg_candle = {
                 "timestamp": window_start,
                 "symbol": window_candles[0].get("symbol", ""),
@@ -337,7 +343,7 @@ class RedisStorage:
                 "close": window_candles[-1].get("close", 0),
                 "volume": sum(c.get("volume", 0) for c in window_candles),
                 "quote_volume": sum(c.get("quote_volume", 0) for c in window_candles),
-                "trades_count": sum(c.get("trades_count", 0) for c in window_candles),
+                "trade_count": sum(c.get("trade_count", 0) for c in window_candles),
             }
             
             # Handle edge case where all lows were 0 or missing
@@ -408,7 +414,7 @@ class RedisStorage:
         - l: low
         - v: volume
         - q: quote_volume
-        - n: trades_count (if available)
+        - n: trade_count (if available)
         - E: event_time -> updated_at
         """
         return {
@@ -421,7 +427,7 @@ class RedisStorage:
             "low": str(data.get("l", data.get("low", "0"))),
             "volume": str(data.get("v", data.get("volume", "0"))),
             "quote_volume": str(data.get("q", data.get("quote_volume", "0"))),
-            "trades_count": str(data.get("n", data.get("trades_count", "0"))),
+            "trade_count": str(data.get("n", data.get("trade_count", "0"))),
             "updated_at": str(data.get("E", data.get("updated_at", int(time.time() * 1000)))),
         }
     
@@ -440,7 +446,7 @@ class RedisStorage:
             "low": data.get("low", "0"),
             "volume": data.get("volume", "0"),
             "quote_volume": data.get("quote_volume", "0"),
-            "trades_count": int(data.get("trades_count", 0) or 0),
+            "trade_count": int(data.get("trade_count", 0) or 0),
             "updated_at": int(data.get("updated_at", 0) or 0),
         }
     

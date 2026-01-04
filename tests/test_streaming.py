@@ -523,7 +523,7 @@ class TestRedisStorage:
     @patch('redis.ConnectionPool')
     def test_redis_write_hash_success(self, mock_pool, mock_redis):
         """Test Redis write with hash type."""
-        from src.storage.redis import RedisStorage
+        from storage.redis import RedisStorage
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
@@ -547,7 +547,7 @@ class TestRedisStorage:
     @patch('redis.ConnectionPool')
     def test_redis_write_list_success(self, mock_pool, mock_redis):
         """Test Redis write with list type."""
-        from src.storage.redis import RedisStorage
+        from storage.redis import RedisStorage
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
@@ -571,7 +571,7 @@ class TestRedisStorage:
     @patch('redis.ConnectionPool')
     def test_redis_connection_failure(self, mock_pool, mock_redis):
         """Test Redis connection failure handling."""
-        from src.storage.redis import RedisStorage
+        from storage.redis import RedisStorage
         
         mock_client = Mock()
         mock_redis.return_value = mock_client

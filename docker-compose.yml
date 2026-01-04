@@ -145,34 +145,6 @@ services:
         reservations:
           memory: 128M
 
-  # MinIO - S3-compatible object storage for cold path (archive)
-  minio:
-    image: minio/minio:latest
-    hostname: minio
-    container_name: minio
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio-data:/data
-    networks:
-      - streaming-network
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 128M
-
 
   # Airflow Init - One-time initialization
   airflow-init:
@@ -196,7 +168,10 @@ services:
       _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
     volumes:
       - ./dags:/opt/airflow/dags
-      - ./src:/opt/airflow/src
+      - ./storage:/opt/airflow/storage
+      - ./streaming:/opt/airflow/streaming
+      - ./utils:/opt/airflow/utils
+      - ./validators:/opt/airflow/validators
       - ./data:/opt/airflow/data
     entrypoint: /bin/bash
     command:
@@ -209,7 +184,6 @@ services:
         airflow variables set redis_host "redis:${REDIS_PORT:-6379}" || true
         airflow variables set postgres_data_host "postgres-data" || true
         airflow variables set postgres_data_port "5432" || true
-        airflow variables set minio_endpoint "minio:9000" || true
         echo "Airflow initialization complete!"
     networks:
       - streaming-network
@@ -253,25 +227,21 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
-      # PostgreSQL Data Storage (Warm Path)
       POSTGRES_HOST: postgres-data
       POSTGRES_PORT: '5432'
       POSTGRES_USER: ${POSTGRES_USER:-crypto}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
       POSTGRES_DB: ${POSTGRES_DB:-crypto_data}
-      # MinIO Object Storage (Cold Path)
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-      MINIO_BUCKET: ${MINIO_BUCKET:-crypto-data}
-      MINIO_SECURE: ${MINIO_SECURE:-false}
     ports:
       - "8080:8080"
     volumes:
       - ./dags:/opt/airflow/dags
-      - ./src:/opt/airflow/src
+      - ./storage:/opt/airflow/storage
+      - ./streaming:/opt/airflow/streaming
+      - ./utils:/opt/airflow/utils
+      - ./validators:/opt/airflow/validators
       - ./data:/opt/airflow/data
-    command: webserver
+    command: airflow webserver
     networks:
       - streaming-network
     healthcheck:
@@ -320,23 +290,19 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
-      # PostgreSQL Data Storage (Warm Path)
       POSTGRES_HOST: postgres-data
       POSTGRES_PORT: '5432'
       POSTGRES_USER: ${POSTGRES_USER:-crypto}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
       POSTGRES_DB: ${POSTGRES_DB:-crypto_data}
-      # MinIO Object Storage (Cold Path)
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-      MINIO_BUCKET: ${MINIO_BUCKET:-crypto-data}
-      MINIO_SECURE: ${MINIO_SECURE:-false}
     volumes:
       - ./dags:/opt/airflow/dags
-      - ./src:/opt/airflow/src
+      - ./storage:/opt/airflow/storage
+      - ./streaming:/opt/airflow/streaming
+      - ./utils:/opt/airflow/utils
+      - ./validators:/opt/airflow/validators
       - ./data:/opt/airflow/data
-    command: scheduler
+    command: airflow scheduler
     networks:
       - streaming-network
     healthcheck:
@@ -440,8 +406,6 @@ services:
         condition: service_healthy
       postgres-data:
         condition: service_healthy
-      minio:
-        condition: service_healthy
     ports:
       - "8000:8000"
     environment:
@@ -449,22 +413,17 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
       PARQUET_PATH: /app/data/parquet
-      # PostgreSQL Data Storage (Warm Path)
       POSTGRES_DATA_HOST: postgres-data
       POSTGRES_DATA_PORT: '5432'
       POSTGRES_DATA_USER: ${POSTGRES_USER:-crypto}
       POSTGRES_DATA_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
       POSTGRES_DATA_DB: ${POSTGRES_DB:-crypto_data}
-      # MinIO Object Storage (Cold Path)
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-      MINIO_BUCKET: ${MINIO_BUCKET:-crypto-data}
-      MINIO_SECURE: ${MINIO_SECURE:-false}
     volumes:
-      - ./src:/app/src
+      - ./api:/app/api
+      - ./storage:/app/storage
+      - ./utils:/app/utils
       - ./data:/app/data
-    command: uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload
     networks:
       - streaming-network
     healthcheck:
@@ -508,12 +467,14 @@ services:
       TICKER_MAX_TRACKED_SYMBOLS: "100"
       LOG_LEVEL: ${TICKER_LOG_LEVEL:-INFO}
     volumes:
-      - ./src:/app/src
-    command: python -c "from src.ticker_consumer.consumer import main; main()"
+      - ./ticker_consumer:/app/ticker_consumer
+      - ./storage:/app/storage
+      - ./utils:/app/utils
+    command: python -c "from ticker_consumer.consumer import main; main()"
     networks:
       - streaming-network
     healthcheck:
-      test: ["CMD", "python", "-c", "from src.ticker_consumer.consumer import health_check_main; exit(health_check_main())"]
+      test: ["CMD", "python", "-c", "from ticker_consumer.consumer import health_check_main; exit(health_check_main())"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -568,7 +529,6 @@ services:
 volumes:
   postgres-db-volume:
   postgres-data-volume:
-  minio-data:
   grafana-storage:
   prometheus-data:
 

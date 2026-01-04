@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from src.utils.logging import get_logger
+from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -358,7 +358,7 @@ def validate_aggregation_output(
 ) -> ValidationResult:
     """Validate trade aggregation output by querying Redis."""
     import os
-    from src.storage.redis import RedisStorage
+    from storage.redis import RedisStorage
     
     # Get Redis config from parameters or environment
     redis_host = redis_host or os.getenv('REDIS_HOST', 'redis')
@@ -442,7 +442,7 @@ def validate_anomaly_output(
 ) -> ValidationResult:
     """Validate anomaly detection output by querying Redis."""
     import os
-    from src.storage.redis import RedisStorage
+    from storage.redis import RedisStorage
     
     # Get Redis config from parameters or environment
     redis_host = redis_host or os.getenv('REDIS_HOST', 'redis')

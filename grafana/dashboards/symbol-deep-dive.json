@@ -167,7 +167,7 @@
           "urlPath": "/api/v1/analytics/klines/${symbol}USDT",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
-            { "jsonPath": "$[*].trades_count", "name": "Trades" }
+            { "jsonPath": "$[*].trade_count", "name": "Trades" }
           ]
         }
       ],
@@ -226,7 +226,7 @@
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].buy_count", "name": "buy_count" },
             { "jsonPath": "$[*].sell_count", "name": "sell_count" },
-            { "jsonPath": "$[*].trades_count", "name": "trades_count" }
+            { "jsonPath": "$[*].trade_count", "name": "trade_count" }
           ]
         }
       ],
@@ -236,7 +236,7 @@
           "options": {
             "mode": "binary",
             "reduce": { "reducer": "sum" },
-            "binary": { "left": "buy_count", "operator": "/", "right": "trades_count" },
+            "binary": { "left": "buy_count", "operator": "/", "right": "trade_count" },
             "alias": "buy_ratio"
           }
         },
@@ -254,7 +254,7 @@
           "options": {
             "mode": "binary",
             "reduce": { "reducer": "sum" },
-            "binary": { "left": "sell_count", "operator": "/", "right": "trades_count" },
+            "binary": { "left": "sell_count", "operator": "/", "right": "trade_count" },
             "alias": "sell_ratio"
           }
         },
@@ -273,7 +273,7 @@
             "excludeByName": {
               "buy_count": true,
               "sell_count": true,
-              "trades_count": true,
+              "trade_count": true,
               "buy_ratio": true,
               "sell_ratio": true
             },
@@ -356,7 +356,7 @@
             { "jsonPath": "$[*].low", "name": "Low" },
             { "jsonPath": "$[*].close", "name": "Close" },
             { "jsonPath": "$[*].volume", "name": "Volume" },
-            { "jsonPath": "$[*].trades_count", "name": "Trades" },
+            { "jsonPath": "$[*].trade_count", "name": "Trades" },
             { "jsonPath": "$[*].buy_count", "name": "Buy Count" },
             { "jsonPath": "$[*].sell_count", "name": "Sell Count" }
           ]

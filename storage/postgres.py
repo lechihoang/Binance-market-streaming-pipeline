@@ -9,9 +9,9 @@ import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
-from src.utils.logging import get_logger
-from src.utils.retry import RetryConfig, retry_operation
-from src.utils.metrics import track_latency, record_error, record_retry
+from utils.logging import get_logger
+from utils.retry import RetryConfig, retry_operation
+from utils.metrics import track_latency, record_error, record_retry
 
 logger = get_logger(__name__)
 
@@ -139,9 +139,14 @@ class PostgresStorage:
                         close DOUBLE PRECISION,
                         volume DOUBLE PRECISION,
                         quote_volume DOUBLE PRECISION,
-                        trades_count INTEGER,
+                        trade_count INTEGER,
                         buy_count INTEGER,
                         sell_count INTEGER,
+                        volume_weighted_avg_price DOUBLE PRECISION,
+                        price_change_percent DOUBLE PRECISION,
+                        buy_sell_ratio DOUBLE PRECISION,
+                        average_price DOUBLE PRECISION,
+                        price_volatility DOUBLE PRECISION,
                         PRIMARY KEY (symbol, timestamp)
                     )
                 """)
@@ -196,20 +201,32 @@ class PostgresStorage:
     def upsert_candle(self, candle: Dict[str, Any]) -> None:
         query = """
             INSERT INTO trades_1m 
-            (timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count, buy_count, sell_count)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (timestamp, symbol, open, high, low, close, volume, quote_volume, 
+             trade_count, buy_count, sell_count, volume_weighted_avg_price,
+             price_change_percent, buy_sell_ratio, average_price, price_volatility)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (symbol, timestamp) DO UPDATE SET
                 open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                 close = EXCLUDED.close, volume = EXCLUDED.volume,
-                quote_volume = EXCLUDED.quote_volume, trades_count = EXCLUDED.trades_count,
-                buy_count = EXCLUDED.buy_count, sell_count = EXCLUDED.sell_count
+                quote_volume = EXCLUDED.quote_volume, trade_count = EXCLUDED.trade_count,
+                buy_count = EXCLUDED.buy_count, sell_count = EXCLUDED.sell_count,
+                volume_weighted_avg_price = EXCLUDED.volume_weighted_avg_price,
+                price_change_percent = EXCLUDED.price_change_percent,
+                buy_sell_ratio = EXCLUDED.buy_sell_ratio,
+                average_price = EXCLUDED.average_price,
+                price_volatility = EXCLUDED.price_volatility
         """
         params = (
             candle.get('timestamp'), candle.get('symbol'),
             candle.get('open'), candle.get('high'), candle.get('low'),
             candle.get('close'), candle.get('volume'),
-            candle.get('quote_volume'), candle.get('trades_count'),
-            candle.get('buy_count'), candle.get('sell_count')
+            candle.get('quote_volume'), candle.get('trade_count'),
+            candle.get('buy_count'), candle.get('sell_count'),
+            candle.get('volume_weighted_avg_price'),
+            candle.get('price_change_percent'),
+            candle.get('buy_sell_ratio'),
+            candle.get('average_price'),
+            candle.get('price_volatility')
         )
         self._execute_with_retry(query, params)
 
@@ -250,20 +267,29 @@ class PostgresStorage:
         self._execute_with_retry(query, params)
 
     def upsert_candles_batch(self, candles: List[Dict[str, Any]]) -> int:
-        """Batch upsert candles using executemany."""
         if not candles:
             return 0
         
         query = """
             INSERT INTO trades_1m 
-            (timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count, buy_count, sell_count)
+            (timestamp, symbol, open, high, low, close, volume, quote_volume, 
+             trade_count, buy_count, sell_count, volume_weighted_avg_price,
+             price_change_percent, buy_sell_ratio, average_price, price_volatility)
             VALUES (%(timestamp)s, %(symbol)s, %(open)s, %(high)s, %(low)s, 
-                    %(close)s, %(volume)s, %(quote_volume)s, %(trades_count)s, %(buy_count)s, %(sell_count)s)
+                    %(close)s, %(volume)s, %(quote_volume)s, %(trade_count)s, 
+                    %(buy_count)s, %(sell_count)s, %(volume_weighted_avg_price)s,
+                    %(price_change_percent)s, %(buy_sell_ratio)s, 
+                    %(average_price)s, %(price_volatility)s)
             ON CONFLICT (symbol, timestamp) DO UPDATE SET
                 open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                 close = EXCLUDED.close, volume = EXCLUDED.volume,
-                quote_volume = EXCLUDED.quote_volume, trades_count = EXCLUDED.trades_count,
-                buy_count = EXCLUDED.buy_count, sell_count = EXCLUDED.sell_count
+                quote_volume = EXCLUDED.quote_volume, trade_count = EXCLUDED.trade_count,
+                buy_count = EXCLUDED.buy_count, sell_count = EXCLUDED.sell_count,
+                volume_weighted_avg_price = EXCLUDED.volume_weighted_avg_price,
+                price_change_percent = EXCLUDED.price_change_percent,
+                buy_sell_ratio = EXCLUDED.buy_sell_ratio,
+                average_price = EXCLUDED.average_price,
+                price_volatility = EXCLUDED.price_volatility
         """
         
         def execute_batch():
@@ -348,7 +374,9 @@ class PostgresStorage:
     ) -> List[Dict[str, Any]]:
         query = """
             SELECT timestamp, symbol, open, high, low, close, 
-                   volume, quote_volume, trades_count, buy_count, sell_count
+                   volume, quote_volume, trade_count, buy_count, sell_count,
+                   volume_weighted_avg_price, price_change_percent, 
+                   buy_sell_ratio, average_price, price_volatility
             FROM trades_1m
             WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
             ORDER BY timestamp ASC
@@ -363,22 +391,15 @@ class PostgresStorage:
         end: datetime, 
         interval: str = "5m"
     ) -> List[Dict[str, Any]]:
-        """Query and aggregate 1m candles to higher timeframes using SQL."""
-        # For 1m interval, just return raw candles
         if interval == "1m":
             return self.query_candles(symbol, start, end)
         
-        # Validate interval
         valid_intervals = {"5m", "15m"}
         if interval not in valid_intervals:
             raise ValueError(f"Invalid interval: {interval}. Must be one of {valid_intervals | {'1m'}}")
         
-        # Extract interval minutes for SQL calculation
         interval_minutes = int(interval.replace("m", ""))
         
-        # SQL query that aggregates 1m candles into higher timeframes
-        # Uses date_trunc to align to hour, then adds interval-aligned minutes
-        # array_agg with ORDER BY ensures correct first/last values for open/close
         query = """
             SELECT 
                 date_trunc('hour', timestamp) + 
@@ -390,9 +411,15 @@ class PostgresStorage:
                 (array_agg(close ORDER BY timestamp DESC))[1] as close,
                 SUM(volume) as volume,
                 SUM(quote_volume) as quote_volume,
-                SUM(trades_count) as trades_count,
+                SUM(trade_count) as trade_count,
                 SUM(buy_count) as buy_count,
-                SUM(sell_count) as sell_count
+                SUM(sell_count) as sell_count,
+                SUM(quote_volume) / NULLIF(SUM(volume), 0) as volume_weighted_avg_price,
+                ((array_agg(close ORDER BY timestamp DESC))[1] - (array_agg(open ORDER BY timestamp ASC))[1]) 
+                    / NULLIF((array_agg(open ORDER BY timestamp ASC))[1], 0) * 100 as price_change_percent,
+                SUM(buy_count)::float / NULLIF(SUM(sell_count), 0) as buy_sell_ratio,
+                AVG(average_price) as average_price,
+                AVG(price_volatility) as price_volatility
             FROM trades_1m
             WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
             GROUP BY 1
@@ -400,9 +427,9 @@ class PostgresStorage:
         """
         
         params = (
-            interval_minutes, interval_minutes,  # For the interval calculation
-            symbol,  # For the symbol column
-            symbol, start, end  # For the WHERE clause
+            interval_minutes, interval_minutes,
+            symbol,
+            symbol, start, end
         )
         
         result = self._execute_with_retry(query, params, fetch=True)
@@ -444,8 +471,6 @@ class PostgresStorage:
     def query_trades_count(
         self, symbol: str, start: datetime, end: datetime, interval: str = "1h"
     ) -> List[Dict[str, Any]]:
-        """Query trades count aggregated by time interval."""
-        # Map interval to PostgreSQL date_trunc format
         interval_map = {
             "1m": "minute",
             "1h": "hour",
@@ -457,7 +482,7 @@ class PostgresStorage:
         query = """
             SELECT 
                 date_trunc(%s, timestamp) AS bucket_timestamp,
-                SUM(trades_count) AS total_trades_count
+                SUM(trade_count) AS total_trade_count
             FROM trades_1m
             WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
             GROUP BY bucket_timestamp
@@ -474,7 +499,7 @@ class PostgresStorage:
         return [
             {
                 "timestamp": row["bucket_timestamp"],
-                "trades_count": int(row["total_trades_count"] or 0),
+                "trade_count": int(row["total_trade_count"] or 0),
                 "interval": interval,
             }
             for row in result

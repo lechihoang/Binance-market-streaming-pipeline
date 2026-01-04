@@ -1,7 +1,7 @@
 """
 End-to-end integration tests for streaming performance optimization.
 
-Tests data flow through all storage tiers (Redis, PostgreSQL, MinIO)
+Tests data flow through 2-tier storage (Redis, PostgreSQL)
 using the batch write methods implemented for performance optimization.
 
 Requirements: All (streaming-performance spec)
@@ -16,10 +16,9 @@ from typing import Dict, Any, List
 from unittest.mock import MagicMock, patch
 
 # Import storage classes
-from src.storage.redis import RedisStorage
-from src.storage.postgres import PostgresStorage
-from src.storage.minio import MinioStorage
-from src.storage.storage_writer import StorageWriter, BatchResult
+from storage.redis import RedisStorage
+from storage.postgres import PostgresStorage
+from storage.storage_writer import StorageWriter, BatchResult
 
 
 def is_redis_available():
@@ -57,26 +56,9 @@ def is_postgres_available():
         return False
 
 
-def is_minio_available():
-    """Check if MinIO is available for testing."""
-    try:
-        from minio import Minio
-        client = Minio(
-            os.getenv("MINIO_ENDPOINT", "localhost:9000"),
-            access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
-            secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
-            secure=False
-        )
-        client.list_buckets()
-        return True
-    except Exception:
-        return False
-
-
 REDIS_AVAILABLE = is_redis_available()
 POSTGRES_AVAILABLE = is_postgres_available()
-MINIO_AVAILABLE = is_minio_available()
-ALL_SERVICES_AVAILABLE = REDIS_AVAILABLE and POSTGRES_AVAILABLE and MINIO_AVAILABLE
+ALL_SERVICES_AVAILABLE = REDIS_AVAILABLE and POSTGRES_AVAILABLE
 
 skip_if_no_redis = pytest.mark.skipif(
     not REDIS_AVAILABLE,
@@ -88,14 +70,9 @@ skip_if_no_postgres = pytest.mark.skipif(
     reason="PostgreSQL server not available"
 )
 
-skip_if_no_minio = pytest.mark.skipif(
-    not MINIO_AVAILABLE,
-    reason="MinIO server not available"
-)
-
 skip_if_no_docker = pytest.mark.skipif(
     not ALL_SERVICES_AVAILABLE,
-    reason="Docker services not available (Redis, PostgreSQL, MinIO required)"
+    reason="Docker services not available (Redis, PostgreSQL required)"
 )
 
 
@@ -129,26 +106,11 @@ def postgres_storage():
 
 
 @pytest.fixture
-def minio_storage():
-    """Create MinioStorage instance for testing."""
-    storage = MinioStorage(
-        endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
-        access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
-        secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
-        bucket="test-crypto-data",
-        secure=False
-    )
-    yield storage
-    storage.close()
-
-
-@pytest.fixture
-def storage_writer(redis_storage, postgres_storage, minio_storage):
-    """Create StorageWriter with all storage tiers."""
+def storage_writer(redis_storage, postgres_storage):
+    """Create StorageWriter with 2-tier storage."""
     return StorageWriter(
         redis=redis_storage,
-        postgres=postgres_storage,
-        minio=minio_storage
+        postgres=postgres_storage
     )
 
 
@@ -169,7 +131,7 @@ def generate_aggregation_records(count: int = 10, symbol: str = "BTCUSDT") -> Li
             "close": 50050.0 + i * 10,
             "volume": 100.0 + i,
             "quote_volume": 5000000.0 + i * 1000,
-            "trades_count": 1000 + i * 10,
+            "trade_count": 1000 + i * 10,
         })
     
     return records
@@ -296,116 +258,45 @@ class TestPostgresBatchOperations:
         assert row_count == 0
 
 
-@skip_if_no_minio
-class TestMinioBatchOperations:
-    """Test MinIO batch write operations."""
-    
-    def test_write_klines_batch_success(self, minio_storage):
-        """Test batch writing klines to MinIO."""
-        records = generate_aggregation_records(5)
-        write_date = datetime.now()
-        
-        success_count, failed_symbols = minio_storage.write_klines_batch(records, write_date)
-        
-        assert success_count == 5
-        assert len(failed_symbols) == 0
-    
-    def test_write_alerts_batch_success(self, minio_storage):
-        """Test batch writing alerts to MinIO."""
-        alerts = []
-        base_time = datetime.now()
-        
-        for i in range(5):
-            alerts.append({
-                "timestamp": base_time - timedelta(minutes=i),
-                "symbol": "BTCUSDT",
-                "alert_type": "WHALE_ALERT",
-                "severity": "HIGH",
-                "message": f"Test alert {i}",
-                "metadata": {"value": i * 100},
-            })
-        
-        write_date = datetime.now()
-        success_count, errors = minio_storage.write_alerts_batch(alerts, write_date)
-        
-        assert success_count == 5
-        assert len(errors) == 0
-    
-    def test_write_klines_batch_empty(self, minio_storage):
-        """Test batch writing empty list returns zero."""
-        success_count, failed_symbols = minio_storage.write_klines_batch([], datetime.now())
-        
-        assert success_count == 0
-        assert len(failed_symbols) == 0
-
-
 @skip_if_no_docker
 class TestStorageWriterIntegration:
     """End-to-end integration tests for StorageWriter batch operations."""
     
     def test_write_aggregations_batch_all_tiers(self, storage_writer):
-        """Test batch writing aggregations to all 3 storage tiers.
-        
-        Verifies:
-        - Data flows through Redis, PostgreSQL, and MinIO
-        - All tiers receive the data successfully
-        - BatchResult contains correct statistics
-        
-        Requirements: 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4
-        """
+        """Test batch writing aggregations to 2-tier storage."""
         records = generate_aggregation_records(10)
         
         result = storage_writer.write_aggregations_batch(records)
         
-        # Verify BatchResult structure
         assert isinstance(result, BatchResult)
         assert result.total_records == 10
         assert result.success_count > 0
         assert result.duration_ms > 0
         
-        # Verify all tiers succeeded
         assert result.tier_results["redis"] is True, "Redis tier should succeed"
         assert result.tier_results["warm"] is True, "PostgreSQL tier should succeed"
-        assert result.tier_results["cold"] is True, "MinIO tier should succeed"
         
-        # Verify no failures
         assert result.failure_count == 0
         assert len(result.failed_records) == 0
     
     def test_write_alerts_batch_all_tiers(self, storage_writer):
-        """Test batch writing alerts to all 3 storage tiers.
-        
-        Verifies:
-        - Alerts flow through Redis, PostgreSQL, and MinIO
-        - All tiers receive the alerts successfully
-        - BatchResult contains correct statistics
-        
-        Requirements: 1.5, 2.1, 2.2, 2.3, 2.4
-        """
+        """Test batch writing alerts to 2-tier storage."""
         alerts = generate_alert_records(5)
         
         result = storage_writer.write_alerts_batch(alerts)
         
-        # Verify BatchResult structure
         assert isinstance(result, BatchResult)
         assert result.total_records == 5
         assert result.success_count > 0
         assert result.duration_ms > 0
         
-        # Verify all tiers succeeded
         assert result.tier_results["redis"] is True, "Redis tier should succeed"
         assert result.tier_results["warm"] is True, "PostgreSQL tier should succeed"
-        assert result.tier_results["cold"] is True, "MinIO tier should succeed"
     
     def test_parallel_write_independence(self, storage_writer, redis_storage):
-        """Test that tier failures don't block other tiers.
-        
-        Property 6: Parallel write independence
-        Validates: Requirements 2.3
-        """
+        """Test that tier failures don't block other tiers."""
         records = generate_aggregation_records(5)
         
-        # Mock PostgreSQL to fail
         original_upsert = storage_writer._warm_storage.upsert_candles_batch
         storage_writer._warm_storage.upsert_candles_batch = MagicMock(
             side_effect=Exception("Simulated PostgreSQL failure")
@@ -414,18 +305,14 @@ class TestStorageWriterIntegration:
         try:
             result = storage_writer.write_aggregations_batch(records)
             
-            # Redis and MinIO should still succeed
             assert result.tier_results["redis"] is True, "Redis should succeed despite PostgreSQL failure"
             assert result.tier_results["warm"] is False, "PostgreSQL should fail"
-            assert result.tier_results["cold"] is True, "MinIO should succeed despite PostgreSQL failure"
             
-            # Verify Redis actually has the data
             for record in records:
                 key = f"market:{record['symbol']}:{record['interval']}"
                 data = redis_storage.client.hgetall(key)
                 assert data is not None, f"Redis should have data for {key}"
         finally:
-            # Restore original method
             storage_writer._warm_storage.upsert_candles_batch = original_upsert
     
     def test_empty_batch_handling(self, storage_writer):
@@ -437,12 +324,11 @@ class TestStorageWriterIntegration:
         assert result.failure_count == 0
         assert result.tier_results["redis"] is True
         assert result.tier_results["warm"] is True
-        assert result.tier_results["cold"] is True
 
 
 @skip_if_no_docker
 class TestDataFlowVerification:
-    """Verify data flows correctly through all storage tiers."""
+    """Verify data flows correctly through 2-tier storage."""
     
     def test_aggregation_data_readable_after_batch_write(
         self, storage_writer, redis_storage, postgres_storage
@@ -450,16 +336,13 @@ class TestDataFlowVerification:
         """Verify aggregation data can be read back from each tier after batch write."""
         records = generate_aggregation_records(3, symbol="ETHUSDT")
         
-        # Write batch
         result = storage_writer.write_aggregations_batch(records)
         assert all(result.tier_results.values()), "All tiers should succeed"
         
-        # Verify Redis data
         redis_data = redis_storage.get_aggregation("ETHUSDT", "1m")
         assert redis_data is not None, "Redis should have aggregation data"
         assert "close" in redis_data, "Redis data should have close price"
         
-        # Verify PostgreSQL data
         start = datetime.now() - timedelta(hours=1)
         end = datetime.now() + timedelta(hours=1)
         pg_candles = postgres_storage.query_candles("ETHUSDT", start, end)
@@ -478,7 +361,6 @@ class TestDataFlowVerification:
         assert result.total_records == 9
         assert all(result.tier_results.values()), "All tiers should succeed"
         
-        # Verify each symbol has data in Redis
         for symbol in symbols:
             redis_data = redis_storage.get_aggregation(symbol, "1m")
             assert redis_data is not None, f"Redis should have data for {symbol}"
@@ -496,15 +378,11 @@ class TestLatencyMeasurement:
         result = storage_writer.write_aggregations_batch(records)
         total_time_ms = (time.time() - start_time) * 1000
         
-        # Log latency for analysis
         print(f"\nBatch write latency for 100 records:")
         print(f"  Total time: {total_time_ms:.2f}ms")
         print(f"  Reported duration: {result.duration_ms:.2f}ms")
         print(f"  Per-record average: {total_time_ms / 100:.2f}ms")
         
-        # Verify reasonable latency (should be much faster than sequential writes)
-        # Sequential writes would take ~100 * 3 tiers * ~10ms = 3000ms
-        # Batch + parallel should be under 1000ms for 100 records
         assert total_time_ms < 5000, f"Batch write too slow: {total_time_ms}ms"
         assert result.success_count == 100
     
@@ -514,11 +392,7 @@ class TestLatencyMeasurement:
         
         result = storage_writer.write_aggregations_batch(records)
         
-        # The duration should reflect parallel execution
-        # If sequential, it would be ~3x longer (one tier at a time)
-        # With parallel, all 3 tiers run concurrently
         print(f"\nParallel write duration: {result.duration_ms:.2f}ms for 50 records")
         
-        # Verify all tiers completed
         assert all(result.tier_results.values())
         assert result.success_count == 50

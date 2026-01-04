@@ -20,11 +20,10 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from src.storage.redis import RedisStorage
-from src.storage.postgres import PostgresStorage
-from src.storage.minio import MinioStorage
-from src.storage.query_router import QueryRouter
-from src.utils.logging import get_logger
+from storage.redis import RedisStorage
+from storage.postgres import PostgresStorage
+from storage.query_router import QueryRouter
+from utils.logging import get_logger
 
 
 logger = get_logger(__name__)
@@ -129,21 +128,20 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Crypto Data API",
     description="""
-REST API for cryptocurrency market data from Three-Tier Storage.
+REST API for cryptocurrency market data from Two-Tier Storage.
 
 ## Features
 
 * **Market Data** - Real-time ticker, price, and trade data from Redis
-* **Analytics** - Historical klines from PostgreSQL/MinIO
+* **Analytics** - Historical klines from PostgreSQL
 * **Alerts** - Whale alerts and anomaly detection results
 * **System Monitoring** - Health checks and Prometheus metrics
 
 ## Data Sources
 
 The API automatically routes queries to the appropriate storage tier:
-- **Redis**: Real-time data (last 1 hour)
-- **PostgreSQL**: Interactive analytics (last 90 days)
-- **MinIO**: Historical data (older than 90 days)
+- **Redis**: Real-time data (last 1 hour, cache)
+- **PostgreSQL**: Historical data (permanent storage)
 """,
     version="1.0.0",
     lifespan=lifespan,
@@ -238,7 +236,6 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 
 class TickerDataResponse(BaseModel):
-    """Real-time ticker response model."""
     symbol: str
     last_price: str
     price_change: str
@@ -248,7 +245,7 @@ class TickerDataResponse(BaseModel):
     low: str
     volume: str
     quote_volume: str
-    trades_count: int
+    trade_count: int
     updated_at: int
     complete: bool
 
@@ -282,7 +279,7 @@ class TopTradingResponse(BaseModel):
     """Response model for top trading endpoints."""
     symbol: str
     last_price: float
-    trades_count: int
+    trade_count: int
     quote_volume: float
 
 
@@ -295,7 +292,7 @@ class KlineResponse(BaseModel):
     close: float
     volume: float
     quote_volume: Optional[float] = None
-    trades_count: Optional[int] = None
+    trade_count: Optional[int] = None
     buy_count: Optional[int] = None
     sell_count: Optional[int] = None
 
@@ -303,7 +300,7 @@ class KlineResponse(BaseModel):
 class TradesCountResponse(BaseModel):
     """Trades count aggregated by time interval."""
     timestamp: datetime
-    trades_count: int
+    trade_count: int
     interval: str
 
 
@@ -392,24 +389,11 @@ def get_postgres() -> PostgresStorage:
 
 
 @lru_cache()
-def get_minio() -> MinioStorage:
-    """Get singleton MinioStorage instance."""
-    return MinioStorage(
-        endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
-        access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
-        secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
-        bucket=os.getenv("MINIO_BUCKET", "crypto-data"),
-        secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
-    )
-
-
-@lru_cache()
 def get_query_router() -> QueryRouter:
     """Get singleton QueryRouter instance."""
     return QueryRouter(
         redis=get_redis(),
         postgres=get_postgres(),
-        minio=get_minio(),
     )
 
 
@@ -424,7 +408,7 @@ def get_ticker_storage() -> RedisStorage:
     )
 
 
-OPTIONAL_FIELDS = {"trades_count", "quote_volume"}
+OPTIONAL_FIELDS = {"trade_count", "quote_volume"}
 
 
 def is_ticker_complete(data: dict) -> bool:
@@ -454,7 +438,7 @@ def format_ticker_response(data: dict) -> TickerDataResponse:
         low=str(data.get("low", "0")),
         volume=str(data.get("volume", "0")),
         quote_volume=str(data.get("quote_volume", "0")),
-        trades_count=int(data.get("trades_count", 0)),
+        trade_count=int(data.get("trade_count", 0)),
         updated_at=int(updated_at),
         complete=is_ticker_complete(data),
     )
@@ -543,23 +527,19 @@ def validate_interval(interval: str) -> None:
 
 def query_klines_with_fallback(
     query_router: QueryRouter,
-    minio: MinioStorage,
     symbol: str,
     start: datetime,
     end: datetime,
     interval: str = "1m",
 ) -> tuple[List[dict], str]:
-    """Query klines with fallback chain."""
+    """Query klines with automatic tier selection (Redis cache or PostgreSQL)."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     redis_cutoff = now - timedelta(hours=1)
-    postgres_cutoff = now - timedelta(days=90)
     
     if start >= redis_cutoff:
         primary_tier = "redis"
-    elif start >= postgres_cutoff:
-        primary_tier = "postgres"
     else:
-        primary_tier = "minio"
+        primary_tier = "postgres"
     
     try:
         data = query_router.query(
@@ -573,16 +553,6 @@ def query_klines_with_fallback(
             return data, primary_tier
     except Exception as e:
         logger.warning(f"QueryRouter failed for klines/{symbol} interval={interval}: {e}")
-    
-    try:
-        if interval == "1m":
-            data = minio.read_klines(symbol, start, end)
-        else:
-            data = minio.read_klines_aggregated(symbol, start, end, interval)
-        if data:
-            return data, "minio"
-    except Exception as e:
-        logger.warning(f"MinIO fallback failed for klines/{symbol} interval={interval}: {e}")
     
     return [], "none"
 
@@ -634,7 +604,7 @@ async def get_market_summary(
     
     for ticker in all_tickers:
         try:
-            total_trades += int(ticker.get("trades_count", 0))
+            total_trades += int(ticker.get("trade_count", 0))
             total_quote_volume += float(ticker.get("quote_volume", 0))
         except (ValueError, TypeError):
             continue
@@ -695,20 +665,20 @@ async def get_top_by_trades(
                 continue
             
             last_price = float(ticker.get("last_price", 0))
-            trades_count = int(ticker.get("trades_count", 0))
+            trade_count = int(ticker.get("trade_count", 0))
             quote_volume = float(ticker.get("quote_volume", 0))
             
             results.append(TopTradingResponse(
                 symbol=symbol,
                 last_price=last_price,
-                trades_count=trades_count,
+                trade_count=trade_count,
                 quote_volume=quote_volume,
             ))
         except Exception as e:
             logger.warning(f"Failed to parse ticker data for top-by-trades: {e}")
             continue
     
-    results.sort(key=lambda x: (x.trades_count, x.quote_volume), reverse=True)
+    results.sort(key=lambda x: (x.trade_count, x.quote_volume), reverse=True)
     
     response_time_ms = (time.time() - start_time) * 1000
     response.headers["X-Response-Time-Ms"] = f"{response_time_ms:.2f}"
@@ -735,20 +705,20 @@ async def get_top_by_volume(
                 continue
             
             last_price = float(ticker.get("last_price", 0))
-            trades_count = int(ticker.get("trades_count", 0))
+            trade_count = int(ticker.get("trade_count", 0))
             quote_volume = float(ticker.get("quote_volume", 0))
             
             results.append(TopTradingResponse(
                 symbol=symbol,
                 last_price=last_price,
-                trades_count=trades_count,
+                trade_count=trade_count,
                 quote_volume=quote_volume,
             ))
         except Exception as e:
             logger.warning(f"Failed to parse ticker data for top-by-volume: {e}")
             continue
     
-    results.sort(key=lambda x: (x.quote_volume, x.trades_count), reverse=True)
+    results.sort(key=lambda x: (x.quote_volume, x.trade_count), reverse=True)
     
     response_time_ms = (time.time() - start_time) * 1000
     response.headers["X-Response-Time-Ms"] = f"{response_time_ms:.2f}"
@@ -764,13 +734,10 @@ async def get_klines(
     start: Optional[datetime] = Query(default=None, description="Start time"),
     end: Optional[datetime] = Query(default=None, description="End time"),
     query_router: QueryRouter = Depends(get_query_router),
-    minio: MinioStorage = Depends(get_minio),
 ) -> List[KlineResponse]:
-    """Get OHLCV klines for a symbol with multi-tier fallback."""
-    # Validate interval (additional validation beyond regex for explicit error message)
+    """Get OHLCV klines for a symbol with automatic tier selection."""
     validate_interval(interval)
     
-    # Normalize timezone-aware datetimes to naive (UTC)
     start = (start.replace(tzinfo=None) if start and start.tzinfo else start)
     end = (end.replace(tzinfo=None) if end and end.tzinfo else end)
     
@@ -783,7 +750,7 @@ async def get_klines(
     validate_time_range(start, end)
     
     data, data_source = query_klines_with_fallback(
-        query_router, minio, symbol, start, end, interval
+        query_router, symbol, start, end, interval
     )
     
     response.headers["X-Data-Source"] = data_source
@@ -798,7 +765,7 @@ async def get_klines(
             close=record.get("close", 0.0),
             volume=record.get("volume", 0.0),
             quote_volume=record.get("quote_volume"),
-            trades_count=record.get("trades_count"),
+            trade_count=record.get("trade_count"),
             buy_count=record.get("buy_count"),
             sell_count=record.get("sell_count"),
         )
@@ -842,7 +809,7 @@ async def get_trades_count(
         return [
             TradesCountResponse(
                 timestamp=record["timestamp"].replace(tzinfo=timezone.utc),
-                trades_count=record["trades_count"],
+                trade_count=record.get("trade_count", 0),
                 interval=record["interval"],
             )
             for record in data
@@ -864,9 +831,8 @@ async def get_whale_alerts(
     """Get whale alerts (large trades > $100k).
     
     Data source is automatically selected based on time range:
-    - < 1 hour: Redis (hot tier)
-    - < 90 days: PostgreSQL (warm tier)
-    - >= 90 days: MinIO (cold tier)
+    - < 1 hour: Redis (cache)
+    - >= 1 hour: PostgreSQL (permanent storage)
     """
     effective_limit = min(limit, 500)
     whale_alerts = []
@@ -929,9 +895,8 @@ async def get_price_spikes(
     """Get price spike alerts (price change > 2% in 1 minute).
     
     Data source is automatically selected based on time range:
-    - < 1 hour: Redis (hot tier)
-    - < 90 days: PostgreSQL (warm tier)
-    - >= 90 days: MinIO (cold tier)
+    - < 1 hour: Redis (cache)
+    - >= 1 hour: PostgreSQL (permanent storage)
     """
     effective_limit = min(limit, 500)
     price_spikes = []
@@ -993,9 +958,8 @@ async def get_volume_spikes(
     """Get volume spike alerts (quote volume > $1M in 1 minute).
     
     Data source is automatically selected based on time range:
-    - < 1 hour: Redis (hot tier)
-    - < 90 days: PostgreSQL (warm tier)
-    - >= 90 days: MinIO (cold tier)
+    - < 1 hour: Redis (cache)
+    - >= 1 hour: PostgreSQL (permanent storage)
     """
     effective_limit = min(limit, 500)
     volume_spikes = []
@@ -1069,40 +1033,3 @@ async def get_health(
         timestamp=datetime.now(timezone.utc),
         services=[redis_health, postgres_health]
     )
-
-
-@app.get("/api/v1/system/lifecycle-health", response_model=LifecycleHealthResponse, tags=["system"])
-async def get_lifecycle_health(
-    redis: RedisStorage = Depends(get_redis),
-) -> LifecycleHealthResponse:
-    """Get lifecycle cleanup health status."""
-    from src.storage.lifecycle import get_lifecycle_status
-    
-    try:
-        status = get_lifecycle_status(redis.client)
-        
-        tiers = [
-            TierStatusResponse(
-                tier=tier.tier,
-                last_run=tier.last_run,
-                success=tier.success,
-                records_affected=tier.records_affected,
-                bytes_reclaimed=tier.bytes_reclaimed,
-                error=tier.error,
-            )
-            for tier in status.tiers
-        ]
-        
-        return LifecycleHealthResponse(
-            last_run=status.last_run,
-            overall_success=status.overall_success,
-            tiers=tiers,
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to get lifecycle health status: {e}")
-        return LifecycleHealthResponse(
-            last_run=None,
-            overall_success=False,
-            tiers=[],
-        )

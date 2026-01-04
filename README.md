@@ -1,6 +1,6 @@
 # Real-Time Cryptocurrency Data Pipeline
 
-A production-grade data engineering project that ingests, processes, and visualizes real-time cryptocurrency market data from Binance. Built with modern streaming technologies and a three-tier storage architecture for optimal query performance across different time ranges.
+A production-grade data engineering project that ingests, processes, and visualizes real-time cryptocurrency market data from Binance. Built with modern streaming technologies and a two-tier storage architecture for optimal query performance across different time ranges.
 
 ## Table of Contents
 
@@ -24,7 +24,7 @@ This project demonstrates a complete real-time data pipeline designed to handle 
 1. Connects to Binance WebSocket API to receive live trade and ticker data
 2. Streams data through Apache Kafka for reliable message delivery
 3. Processes data using Apache Spark Structured Streaming for aggregations and anomaly detection
-4. Stores data in a three-tier architecture (Redis, PostgreSQL, MinIO) optimized for different query patterns
+4. Stores data in a two-tier architecture (Redis for cache, PostgreSQL for permanent storage)
 5. Exposes data through a FastAPI REST API with automatic tier routing
 6. Visualizes metrics and data through Grafana dashboards
 7. Orchestrates all workflows using Apache Airflow
@@ -37,7 +37,7 @@ The system follows an event-driven architecture with the following components:
 
 - **Data Ingestion Layer**: Binance WebSocket connector pushes real-time data to Kafka
 - **Stream Processing Layer**: Spark Structured Streaming jobs consume from Kafka, compute aggregations, and detect anomalies
-- **Storage Layer**: Three-tier storage with automatic data lifecycle management
+- **Storage Layer**: Two-tier storage (Redis cache + PostgreSQL permanent)
 - **API Layer**: FastAPI service with intelligent query routing based on time range
 - **Orchestration Layer**: Airflow manages all pipeline workflows and health checks
 - **Monitoring Layer**: Prometheus metrics with Grafana dashboards
@@ -48,9 +48,8 @@ The system follows an event-driven architecture with the following components:
 |-----------|------------|---------|
 | Message Broker | Apache Kafka | Real-time event streaming |
 | Stream Processing | Apache Spark (PySpark) | Trade aggregation, anomaly detection |
-| Hot Storage | Redis | Real-time data (< 1 hour) |
-| Warm Storage | PostgreSQL | Interactive analytics (< 90 days) |
-| Cold Storage | MinIO (S3-compatible) | Historical archive (> 90 days) |
+| Cache | Redis | Real-time data cache (< 1 hour) |
+| Permanent Storage | PostgreSQL | All historical data (forever) |
 | API Framework | FastAPI | REST API with OpenAPI docs |
 | Orchestration | Apache Airflow | Workflow management |
 | Monitoring | Prometheus + Grafana | Metrics and visualization |
@@ -73,11 +72,9 @@ The system follows an event-driven architecture with the following components:
   - Volume spikes (quote volume > $1M)
   - Price spikes (> 2% change in 1 minute)
 
-### Three-Tier Storage
-- **Redis (Hot)**: Sub-millisecond access for real-time data
-- **PostgreSQL (Warm)**: SQL queries for 90-day analytics
-- **MinIO (Cold)**: Parquet files for historical analysis
-- Automatic data lifecycle management with daily cleanup jobs
+### Two-Tier Storage
+- **Redis (Cache)**: Sub-millisecond access for real-time data (< 1 hour)
+- **PostgreSQL (Permanent)**: SQL queries for all historical data
 
 ### REST API
 - Automatic query routing based on time range
@@ -96,9 +93,8 @@ The system follows an event-driven architecture with the following components:
 
 | Tier | Storage | Retention | Use Case | Query Latency |
 |------|---------|-----------|----------|---------------|
-| Hot | Redis | 1 hour | Real-time dashboards | < 1ms |
-| Warm | PostgreSQL | 90 days | Interactive analytics | < 100ms |
-| Cold | MinIO (Parquet) | 365+ days | Historical analysis | < 1s |
+| Cache | Redis | 1 hour | Real-time dashboards | < 1ms |
+| Permanent | PostgreSQL | Forever | All analytics & history | < 100ms |
 
 The `QueryRouter` automatically selects the appropriate storage tier based on the requested time range.
 
@@ -117,10 +113,8 @@ The `QueryRouter` automatically selects the appropriate storage tier based on th
 │   ├── storage/
 │   │   ├── redis.py               # Redis storage operations
 │   │   ├── postgres.py            # PostgreSQL storage operations
-│   │   ├── minio.py               # MinIO storage operations
 │   │   ├── storage_writer.py      # Multi-tier write coordinator
-│   │   ├── query_router.py        # Automatic tier selection
-│   │   └── lifecycle.py           # Data lifecycle management
+│   │   └── query_router.py        # Automatic tier selection
 │   ├── streaming/
 │   │   ├── base_spark_job.py      # Base class for Spark jobs
 │   │   ├── trade_aggregation_job.py # OHLCV aggregation
@@ -178,7 +172,6 @@ docker-compose up -d
    - Airflow UI: http://localhost:8080 (admin/admin)
    - Grafana: http://localhost:3000 (admin/admin)
    - API Docs: http://localhost:8000/docs
-   - MinIO Console: http://localhost:9001 (minioadmin/minioadmin)
 
 6. Enable the Airflow DAGs:
    - `binance_connector_dag` - Start data ingestion
@@ -218,7 +211,7 @@ Manages the WebSocket connection to Binance API for real-time data ingestion. Ru
 Orchestrates Spark streaming jobs for data processing. Runs every 5 minutes to aggregate trades and detect anomalies.
 
 **Tasks:**
-- `health_checks`: Verify Redis, PostgreSQL, and MinIO connectivity
+- `health_checks`: Verify Redis and PostgreSQL connectivity
 - `trade_aggregation`: Compute 1-minute OHLCV candles with buy/sell metrics
 - `anomaly_detection`: Detect whale trades, price spikes, and volume anomalies
 - `cleanup_streaming`: Clean up resources after processing
@@ -293,22 +286,16 @@ Key environment variables (see `.env.example` for full list):
 # Kafka
 KAFKA_BOOTSTRAP_SERVERS=kafka:29092
 
-# Redis (Hot Path)
+# Redis (Cache)
 REDIS_HOST=redis
 REDIS_PORT=6379
 
-# PostgreSQL (Warm Path)
+# PostgreSQL (Permanent Storage)
 POSTGRES_HOST=postgres-data
 POSTGRES_PORT=5432
 POSTGRES_USER=crypto
 POSTGRES_PASSWORD=crypto
 POSTGRES_DB=crypto_data
-
-# MinIO (Cold Path)
-MINIO_ENDPOINT=minio:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_BUCKET=crypto-data
 
 # Trading Pairs
 TICKER_SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT,...

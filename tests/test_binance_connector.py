@@ -19,7 +19,7 @@ from datetime import datetime
 
 import websockets.exceptions
 
-from src.binance_kafka_connector.connector import (
+from binance_kafka_connector.connector import (
     BinanceWebSocketClient,
     process_message,
     EnrichedMessage,
@@ -30,7 +30,7 @@ from src.binance_kafka_connector.connector import (
     KAFKA_BOOTSTRAP_SERVERS,
     LOG_LEVEL,
 )
-from src.utils.retry import ExponentialBackoff
+from utils.retry import ExponentialBackoff
 
 
 class TestWebSocketClient:

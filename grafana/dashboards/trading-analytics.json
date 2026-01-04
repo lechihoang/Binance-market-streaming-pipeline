@@ -29,7 +29,7 @@
           "method": "GET",
           "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=1m&start=$__from&end=$__to",
           "fields": [
-            { "jsonPath": "$[*].trades_count", "name": "Trades" }
+            { "jsonPath": "$[*].trade_count", "name": "Trades" }
           ]
         }
       ],

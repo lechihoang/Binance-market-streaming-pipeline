@@ -11,9 +11,9 @@ from websockets.asyncio.client import ClientConnection
 
 import os
 
-from src.utils.logging import setup_logging, get_logger
-from src.utils.retry import ExponentialBackoff
-from src.utils.metrics import record_error
+from utils.logging import setup_logging, get_logger
+from utils.retry import ExponentialBackoff
+from utils.metrics import record_error
 
 logger = get_logger(__name__)
 
@@ -43,31 +43,20 @@ EVENT_MAPPING = {
 }
 
 
-class EnrichedMessage(BaseModel):
-    original_data: Dict[str, Any]
-    ingestion_timestamp: int
-    symbol: str
-    stream_type: str
-    topic: str
-
-
-def process_message(raw_json: str) -> Optional[EnrichedMessage]:
+def process_message(raw_json: str) -> Optional[Dict[str, Any]]:
     try:
         data = json.loads(raw_json)
         actual_data = data['data']
         event_type = actual_data.get('e')
-        
-        if event_type not in EVENT_MAPPING:
-            return None
-        
         stream_type, topic = EVENT_MAPPING[event_type]
-        return EnrichedMessage(
-            original_data=actual_data,
-            ingestion_timestamp=time.time_ns() // 1_000_000,
-            symbol=actual_data.get('s', '').upper(),
-            stream_type=stream_type,
-            topic=topic
-        )
+        return {
+            **actual_data,
+            "metadata": {
+                "ingestion_timestamp": time.time_ns() // 1_000_000,
+                "stream_type": stream_type,
+                "topic": topic,
+            }
+        }
     except Exception:
         return None
 
@@ -158,14 +147,14 @@ class BinanceWebSocketClient:
 
 class BinanceKafkaConnector:
     def __init__(self):
-        from src.utils.kafka import KafkaConnector
+        from utils.kafka import KafkaConnector
         
         self.ws_client = BinanceWebSocketClient(BINANCE_WS_URL, BINANCE_STREAMS)
         self.kafka = KafkaConnector(
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             linger_ms=100,
             batch_size=16384,
-            value_serializer=lambda m: json.dumps(m.model_dump()).encode('utf-8'),
+            value_serializer=lambda m: json.dumps(m).encode('utf-8'),
         )
 
     async def run(self) -> None:
@@ -176,7 +165,9 @@ class BinanceKafkaConnector:
         async for raw_message in self.ws_client.receive_messages():
             enriched = process_message(raw_message)
             if enriched:
-                self.kafka.send(topic=enriched.topic, value=enriched, key=enriched.symbol)
+                topic = enriched["metadata"]["topic"]
+                symbol = enriched.get("s", "")
+                self.kafka.send(topic=topic, value=enriched, key=symbol)
 
 
 def main():

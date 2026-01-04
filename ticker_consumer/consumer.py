@@ -10,9 +10,9 @@ from typing import Any, Dict, List, Optional
 
 import os
 
-from src.utils.logging import setup_logging, get_logger
-from src.utils.metrics import record_message_processed, PROCESSING_LATENCY
-from src.utils.retry import ExponentialBackoff
+from utils.logging import setup_logging, get_logger
+from utils.metrics import record_message_processed, PROCESSING_LATENCY
+from utils.retry import ExponentialBackoff
 
 logger = get_logger(__name__)
 
@@ -121,7 +121,7 @@ class LateDataFilter:
 
 class TickerConsumer:
     def __init__(self, config: TickerConfig):
-        from src.storage.redis import RedisStorage
+        from storage.redis import RedisStorage
         
         self.config = config
         self._configured_symbols = set(s.upper() for s in config.symbols)
@@ -140,7 +140,7 @@ class TickerConsumer:
     
     def _init_redis(self) -> None:
         """Initialize Redis connection."""
-        from src.storage.redis import RedisStorage
+        from storage.redis import RedisStorage
         
         self._redis = RedisStorage(
             host=self.config.redis_host,
@@ -222,11 +222,21 @@ class TickerConsumer:
         logger.info("Ticker Consumer started")
     
     def stop(self) -> None:
-        """Stop the consumer."""
+        """Stop the consumer and release resources."""
         logger.info("Stopping Ticker Consumer...")
         self._shutdown = True
+        
         if self._kafka:
             self._kafka.close()
+            self._kafka = None
+        
+        if self._redis:
+            try:
+                self._redis.close()
+            except Exception as e:
+                logger.warning(f"Error closing Redis: {e}")
+            self._redis = None
+        
         logger.info("Ticker Consumer stopped")
     
     def request_shutdown(self) -> None:
@@ -295,7 +305,7 @@ def health_check_main() -> int:
     Returns 0 if Redis is reachable, 1 otherwise.
     """
     try:
-        from src.storage.redis import RedisStorage
+        from storage.redis import RedisStorage
         
         config = TickerConfig.from_env()
         redis = RedisStorage(

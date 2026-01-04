@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, '/opt/airflow')
 
-from src.utils.cleanup import cleanup_connector_resources
+from utils.cleanup import cleanup_connector_resources
 
 default_args = {
     'owner': 'data-engineering',
@@ -57,7 +57,7 @@ with DAG(
     
     run_binance_connector = BashOperator(
         task_id='run_binance_connector',
-        bash_command='PYTHONPATH=/opt/airflow:$PYTHONPATH /usr/local/bin/python src/binance_kafka_connector/connector.py',
+        bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/binance_kafka_connector/connector.py',
         cwd='/opt/airflow',
         env=connector_env,
     )

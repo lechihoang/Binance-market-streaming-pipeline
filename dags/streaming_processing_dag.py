@@ -9,18 +9,14 @@ from datetime import datetime, timedelta
 import os
 import sys
 
-# Add parent directory to path so 'from src.xxx' imports work
 sys.path.insert(0, '/opt/airflow')
 
-from src.utils.cleanup import cleanup_streaming_resources
+from utils.cleanup import cleanup_streaming_resources
 
-# Import health check functions from storage module
-from src.storage.redis import check_redis_health
-from src.storage.postgres import check_postgres_health
-from src.storage.minio import check_minio_health
+from storage.redis import check_redis_health
+from storage.postgres import check_postgres_health
 
-# Import validation functions
-from src.validators.job_validators import (
+from validators.job_validators import (
     validate_aggregation_output,
     validate_anomaly_output,
 )
@@ -43,12 +39,6 @@ postgres_user = os.getenv('POSTGRES_USER', 'crypto')
 postgres_password = os.getenv('POSTGRES_PASSWORD', 'crypto')
 postgres_db = os.getenv('POSTGRES_DB', 'crypto_data')
 
-minio_endpoint = os.getenv('MINIO_ENDPOINT', 'minio:9000')
-minio_access_key = os.getenv('MINIO_ACCESS_KEY', 'minioadmin')
-minio_secret_key = os.getenv('MINIO_SECRET_KEY', 'minioadmin')
-minio_bucket = os.getenv('MINIO_BUCKET', 'crypto-data')
-minio_secure = os.getenv('MINIO_SECURE', 'false').lower() == 'true'
-
 spark_job_env = {
     'KAFKA_BOOTSTRAP_SERVERS': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092'),
     'REDIS_HOST': redis_host,
@@ -58,11 +48,6 @@ spark_job_env = {
     'POSTGRES_USER': postgres_user,
     'POSTGRES_PASSWORD': postgres_password,
     'POSTGRES_DB': postgres_db,
-    'MINIO_ENDPOINT': minio_endpoint,
-    'MINIO_ACCESS_KEY': minio_access_key,
-    'MINIO_SECRET_KEY': minio_secret_key,
-    'MINIO_BUCKET': minio_bucket,
-    'MINIO_SECURE': str(minio_secure).lower(),
 }
 
 
@@ -100,24 +85,11 @@ with DAG(
                 'max_retries': 3,
             },
         )
-        
-        test_minio_health = PythonOperator(
-            task_id='test_minio_health',
-            python_callable=check_minio_health,
-            op_kwargs={
-                'endpoint': minio_endpoint,
-                'access_key': minio_access_key,
-                'secret_key': minio_secret_key,
-                'bucket': minio_bucket,
-                'secure': minio_secure,
-                'max_retries': 3,
-            },
-        )
     
     with TaskGroup("trade_aggregation") as trade_aggregation:
         run_trade_aggregation_job = BashOperator(
             task_id='run_trade_aggregation_job',
-            bash_command='PYTHONPATH=/opt/airflow:$PYTHONPATH /usr/local/bin/python src/streaming/trade_aggregation_job.py',
+            bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/streaming/trade_aggregation_job.py',
             cwd='/opt/airflow',
             env=spark_job_env,
         )
@@ -133,7 +105,7 @@ with DAG(
     with TaskGroup("anomaly_detection") as anomaly_detection:
         run_anomaly_detection_job = BashOperator(
             task_id='run_anomaly_detection_job',
-            bash_command='PYTHONPATH=/opt/airflow:$PYTHONPATH /usr/local/bin/python src/streaming/anomaly_detection_job.py',
+            bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/streaming/anomaly_detection_job.py',
             cwd='/opt/airflow',
             env=spark_job_env,
         )

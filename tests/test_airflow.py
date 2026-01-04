@@ -82,13 +82,13 @@ class TestStreamingPipelineDAGSyntax:
         assert any('operators' in imp for imp in imports)
     
     def test_dag_has_health_checks(self, dag_file_path):
-        """Test DAG file contains health check tasks for 3-tier storage."""
+        """Test DAG file contains health check tasks for 2-tier storage."""
         with open(dag_file_path, 'r') as f:
             content = f.read()
         
         assert 'test_redis_health' in content
         assert 'test_postgres_health' in content
-        assert 'test_minio_health' in content
+        assert 'test_minio_health' not in content
     
     def test_dag_has_run_tasks(self, dag_file_path):
         """Test DAG has run tasks for streaming jobs.

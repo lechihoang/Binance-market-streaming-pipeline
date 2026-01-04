@@ -167,7 +167,7 @@
             { "jsonPath": "$.tickers[*].low", "name": "Low" },
             { "jsonPath": "$.tickers[*].volume", "name": "Volume" },
             { "jsonPath": "$.tickers[*].quote_volume", "name": "Quote Vol" },
-            { "jsonPath": "$.tickers[*].trades_count", "name": "Trades" },
+            { "jsonPath": "$.tickers[*].trade_count", "name": "Trades" },
             { "jsonPath": "$.tickers[*].updated_at", "name": "Updated" }
           ]
         }
@@ -204,7 +204,7 @@
           "urlPath": "/api/v1/market/top-by-trades?limit=5",
           "fields": [
             { "jsonPath": "$[*].symbol", "name": "Symbol", "type": "string" },
-            { "jsonPath": "$[*].trades_count", "name": "Trades", "type": "number" }
+            { "jsonPath": "$[*].trade_count", "name": "Trades", "type": "number" }
           ]
         }
       ],

@@ -1,5 +1,6 @@
 """Base Spark Job Module."""
 
+import gc
 import logging
 import signal
 import sys
@@ -11,18 +12,17 @@ from pyspark.sql import SparkSession
 
 import os
 
-from src.utils.logging import StructuredFormatter
-from src.utils.shutdown import GracefulShutdown
-from src.storage.redis import RedisStorage
-from src.storage.postgres import PostgresStorage
-from src.storage.minio import MinioStorage
-from src.storage.storage_writer import StorageWriter
+from utils.logging import StructuredFormatter
+from utils.shutdown import GracefulShutdown
+from storage.redis import RedisStorage
+from storage.postgres import PostgresStorage
+from storage.storage_writer import StorageWriter
 
 
 class BaseSparkJob(ABC):
     DEFAULT_EMPTY_BATCH_THRESHOLD = 3
     DEFAULT_MAX_RUNTIME_SECONDS = 180
-    DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT = 60
+    DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT = 15
     
     def __init__(self, job_name: str):
         self.job_name = job_name
@@ -86,14 +86,6 @@ class BaseSparkJob(ABC):
         self.postgres_max_retries = int(os.getenv("POSTGRES_MAX_RETRIES", "3"))
         self.postgres_retry_delay = float(os.getenv("POSTGRES_RETRY_DELAY", "1.0"))
         
-        # MinIO config
-        self.minio_endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-        self.minio_access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-        self.minio_secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-        self.minio_bucket = os.getenv("MINIO_BUCKET", "crypto-data")
-        self.minio_secure = os.getenv("MINIO_SECURE", "false").lower() in ("true", "1", "yes")
-        self.minio_max_retries = int(os.getenv("MINIO_MAX_RETRIES", "3"))
-        
         # Log level
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
 
@@ -132,55 +124,38 @@ class BaseSparkJob(ABC):
     
     def should_stop(self, is_empty_batch: bool) -> bool:
         """Check if job should stop based on shutdown signal, empty batch count or timeout."""
-        # Check if shutdown was requested via signal (SIGTERM/SIGINT)
         if self.shutdown_requested:
-            self.logger.info("Shutdown signal detected, stopping after this batch completes")
+            self.logger.info("Shutdown signal detected, stopping after batch completes")
             return True
         
-        # Check timeout
         if self.start_time and (time.time() - self.start_time) > self.max_runtime_seconds:
             self.logger.info(f"Max runtime {self.max_runtime_seconds}s exceeded, stopping")
             return True
         
-        # Check empty batches
         if is_empty_batch:
             self.empty_batch_count += 1
-            self.logger.info(
-                f"Empty batch detected, count: {self.empty_batch_count}/"
-                f"{self.empty_batch_threshold}"
-            )
             if self.empty_batch_count >= self.empty_batch_threshold:
-                self.logger.info(
-                    f"{self.empty_batch_threshold} consecutive empty batches, stopping"
-                )
+                self.logger.info(f"{self.empty_batch_threshold} consecutive empty batches, stopping")
                 return True
         else:
-            # Reset counter when data is received
-            if self.empty_batch_count > 0:
-                self.logger.info(
-                    f"Non-empty batch received, resetting empty batch counter "
-                    f"from {self.empty_batch_count} to 0"
-                )
             self.empty_batch_count = 0
         
         return False
 
     def _create_spark_session(self) -> SparkSession:
         """Create and configure SparkSession with resource limits."""
-        # Spark requires minimum ~450MB for driver memory
         executor_memory = "512m"
         driver_memory = "512m"
         
-        self.logger.info("Creating SparkSession with configuration:")
-        self.logger.info(f"  Executor memory: {executor_memory}")
-        self.logger.info(f"  Driver memory: {driver_memory}")
-        self.logger.info(f"  Executor cores: {self.spark_executor_cores}")
-        self.logger.info(f"  Shuffle partitions: {self.spark_shuffle_partitions}")
+        self.logger.info(
+            f"Creating SparkSession: executor={executor_memory}, driver={driver_memory}, "
+            f"cores={self.spark_executor_cores}, partitions={self.spark_shuffle_partitions}"
+        )
         
         spark = (SparkSession.builder
                  .appName(self.spark_app_name)
                  .config("spark.jars.packages", 
-                        "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0")
+                        "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3")
                  .config("spark.sql.caseSensitive", "true")
                  .config("spark.executor.memory", executor_memory)
                  .config("spark.driver.memory", driver_memory)
@@ -193,7 +168,6 @@ class BaseSparkJob(ABC):
                         str(self.spark_backpressure_enabled).lower())
                  .config("spark.sql.streaming.checkpointLocation",
                         self.spark_checkpoint_location)
-                 # State store reliability settings
                  .config("spark.sql.streaming.minBatchesToRetain",
                         str(self.spark_state_store_min_batches))
                  .config("spark.sql.streaming.stateStore.maintenanceInterval",
@@ -202,11 +176,8 @@ class BaseSparkJob(ABC):
                  .config("spark.sql.streaming.stateStore.stateSchemaCheck", "false")
                  .getOrCreate())
         
-        # Set log level
         spark.sparkContext.setLogLevel(self.log_level)
-        
         self.logger.info(f"SparkSession created: {spark.sparkContext.applicationId}")
-        self.logger.info(f"Checkpoint location: {self.spark_checkpoint_location}")
         
         return spark
     
@@ -214,63 +185,36 @@ class BaseSparkJob(ABC):
         """Get JVM memory metrics from Spark."""
         try:
             from pyspark import SparkContext
-            
             sc = SparkContext.getOrCreate()
-            jvm = sc._jvm
-            runtime = jvm.java.lang.Runtime.getRuntime()
+            runtime = sc._jvm.java.lang.Runtime.getRuntime()
             
-            max_memory = runtime.maxMemory() / (1024 * 1024)
-            total_memory = runtime.totalMemory() / (1024 * 1024)
-            free_memory = runtime.freeMemory() / (1024 * 1024)
-            used_memory = total_memory - free_memory
-            
-            usage_pct = (used_memory / max_memory) * 100 if max_memory > 0 else 0
+            max_mb = runtime.maxMemory() / (1024 * 1024)
+            total_mb = runtime.totalMemory() / (1024 * 1024)
+            free_mb = runtime.freeMemory() / (1024 * 1024)
+            used_mb = total_mb - free_mb
             
             return {
-                "heap_used_mb": round(used_memory, 2),
-                "heap_max_mb": round(max_memory, 2),
-                "heap_usage_pct": round(usage_pct, 2),
-                "heap_free_mb": round(free_memory, 2),
-                "heap_total_mb": round(total_memory, 2),
+                "heap_used_mb": round(used_mb, 2),
+                "heap_max_mb": round(max_mb, 2),
+                "heap_usage_pct": round((used_mb / max_mb) * 100, 2) if max_mb > 0 else 0,
             }
         except Exception as e:
-            return {
-                "heap_used_mb": 0,
-                "heap_max_mb": 0,
-                "heap_usage_pct": 0,
-                "heap_free_mb": 0,
-                "heap_total_mb": 0,
-                "error": str(e)
-            }
+            return {"heap_used_mb": 0, "heap_max_mb": 0, "heap_usage_pct": 0, "error": str(e)}
     
-    def _log_memory_metrics(
-        self, 
-        batch_id: Optional[int] = None, 
-        alert_threshold_pct: float = 80.0
-    ) -> None:
+    def _log_memory_metrics(self, batch_id: Optional[int] = None, alert_threshold_pct: float = 80.0) -> None:
         """Log JVM memory metrics and alert if usage is high."""
         metrics = self._get_jvm_memory_metrics()
-        
         if "error" in metrics:
-            self.logger.warning(f"Failed to get memory metrics: {metrics['error']}")
             return
         
-        batch_str = f"Batch {batch_id}: " if batch_id is not None else ""
-        
+        prefix = f"Batch {batch_id}: " if batch_id is not None else ""
         self.logger.info(
-            f"{batch_str}Memory usage: "
-            f"{metrics['heap_used_mb']:.0f}MB / {metrics['heap_max_mb']:.0f}MB "
-            f"({metrics['heap_usage_pct']:.1f}%), "
-            f"free={metrics['heap_free_mb']:.0f}MB"
+            f"{prefix}Memory: {metrics['heap_used_mb']:.0f}MB / {metrics['heap_max_mb']:.0f}MB "
+            f"({metrics['heap_usage_pct']:.1f}%)"
         )
         
         if metrics['heap_usage_pct'] >= alert_threshold_pct:
-            self.logger.warning(
-                f"{batch_str}HIGH MEMORY USAGE ALERT: "
-                f"{metrics['heap_usage_pct']:.1f}% "
-                f"(threshold: {alert_threshold_pct}%) - "
-                f"Used: {metrics['heap_used_mb']:.0f}MB / {metrics['heap_max_mb']:.0f}MB"
-            )
+            self.logger.warning(f"{prefix}HIGH MEMORY: {metrics['heap_usage_pct']:.1f}%")
     
     def _log_batch_metrics(
         self,
@@ -288,61 +232,38 @@ class BaseSparkJob(ABC):
         )
 
     def _init_storage_writer(self) -> StorageWriter:
-        """Initialize StorageWriter with all 3 storage tiers."""
-        self.logger.info(
-            "Initializing StorageWriter with 3-tier storage (Redis, PostgreSQL, MinIO)"
-        )
+        """Initialize StorageWriter with 2-tier storage (Redis, PostgreSQL)."""
+        self.logger.info("Initializing StorageWriter (Redis + PostgreSQL)")
         
-        # Initialize Redis storage (hot path)
-        redis_storage = RedisStorage(
-            host=self.redis_host,
-            port=self.redis_port,
-            db=self.redis_db
-        )
-        
-        # Initialize PostgreSQL storage (warm path - supports concurrent writes)
+        redis_storage = RedisStorage(host=self.redis_host, port=self.redis_port, db=self.redis_db)
         postgres_storage = PostgresStorage(
-            host=self.postgres_host,
-            port=self.postgres_port,
-            user=self.postgres_user,
-            password=self.postgres_password,
+            host=self.postgres_host, port=self.postgres_port,
+            user=self.postgres_user, password=self.postgres_password,
             database=self.postgres_database,
-            max_retries=self.postgres_max_retries,
-            retry_delay=self.postgres_retry_delay
+            max_retries=self.postgres_max_retries, retry_delay=self.postgres_retry_delay
         )
         
-        # Initialize MinIO storage (cold path - S3-compatible object storage)
-        minio_storage = MinioStorage(
-            endpoint=self.minio_endpoint,
-            access_key=self.minio_access_key,
-            secret_key=self.minio_secret_key,
-            bucket=self.minio_bucket,
-            secure=self.minio_secure,
-            max_retries=self.minio_max_retries
-        )
-        
-        storage_writer = StorageWriter(
-            redis=redis_storage,
-            postgres=postgres_storage,
-            minio=minio_storage
-        )
-        
-        self.logger.info("StorageWriter initialized successfully with PostgreSQL and MinIO")
-        return storage_writer
+        return StorageWriter(redis=redis_storage, postgres=postgres_storage)
     
     def _cleanup(self) -> None:
-        """Clean up resources on shutdown."""
+        """Clean up resources."""
         self.logger.info("Starting cleanup...")
+        cleanup_start = time.time()
         
         if self.query and self.query.isActive:
-            self.logger.info("Stopping streaming query...")
             self.query.stop()
+            self.query = None
         
         if self.spark:
-            self.logger.info("Stopping SparkSession...")
+            try:
+                self.spark.catalog.clearCache()
+            except Exception:
+                pass
             self.spark.stop()
+            self.spark = None
         
-        self.logger.info("Cleanup completed. Shutdown successful.")
+        gc.collect()
+        self.logger.info(f"Cleanup completed in {time.time() - cleanup_start:.2f}s")
     
     @abstractmethod
     def run(self) -> None:

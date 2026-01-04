@@ -30,7 +30,7 @@ class ShutdownEvent:
 class GracefulShutdown:
     def __init__(
         self,
-        graceful_shutdown_timeout: int = 30,
+        graceful_shutdown_timeout: int = 15,
         shutdown_progress_interval: int = 5,
         logger: Optional[logging.Logger] = None
     ):

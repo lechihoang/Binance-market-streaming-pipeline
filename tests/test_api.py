@@ -20,11 +20,10 @@ from unittest.mock import MagicMock
 from hypothesis import given, settings, strategies as st, HealthCheck
 from fastapi.testclient import TestClient
 
-from src.api.app import app, rate_tracker, RATE_LIMIT_PER_MINUTE, get_redis, get_postgres, get_minio, get_query_router, get_ticker_storage, determine_overall_status
-from src.storage.redis import RedisStorage
-from src.storage.postgres import PostgresStorage
-from src.storage.minio import MinioStorage
-from src.storage.query_router import QueryRouter
+from api.app import app, rate_tracker, RATE_LIMIT_PER_MINUTE, get_redis, get_postgres, get_query_router, get_ticker_storage, determine_overall_status
+from storage.redis import RedisStorage
+from storage.postgres import PostgresStorage
+from storage.query_router import QueryRouter
 
 
 def is_redis_available():
@@ -67,15 +66,6 @@ def create_mock_postgres():
     return mock
 
 
-def create_mock_minio():
-    """Create a mock MinIO storage that returns empty results."""
-    mock = MagicMock()
-    mock.read_klines.return_value = []
-    mock.read_indicators.return_value = []
-    mock.read_alerts.return_value = []
-    return mock
-
-
 def create_mock_ticker_storage():
     """Create a mock RedisStorage that returns empty results."""
     mock = MagicMock()
@@ -107,17 +97,7 @@ def postgres_storage():
 
 
 @pytest.fixture
-def minio_storage():
-    """Create mock MinioStorage instance for testing."""
-    mock = MagicMock(spec=MinioStorage)
-    mock.read_klines.return_value = []
-    mock.read_indicators.return_value = []
-    mock.read_alerts.return_value = []
-    return mock
-
-
-@pytest.fixture
-def test_client(redis_storage, postgres_storage, minio_storage):
+def test_client(redis_storage, postgres_storage):
     """Create test client with mocked storage dependencies."""
     with rate_tracker._lock:
         rate_tracker._requests.clear()
@@ -128,12 +108,8 @@ def test_client(redis_storage, postgres_storage, minio_storage):
     def override_get_postgres():
         return postgres_storage
     
-    def override_get_minio():
-        return minio_storage
-    
     app.dependency_overrides[get_redis] = override_get_redis
     app.dependency_overrides[get_postgres] = override_get_postgres
-    app.dependency_overrides[get_minio] = override_get_minio
     app.dependency_overrides[get_ticker_storage] = create_mock_ticker_storage
     
     client = TestClient(app)
@@ -152,7 +128,6 @@ def fresh_client():
     
     app.dependency_overrides[get_redis] = create_mock_redis
     app.dependency_overrides[get_postgres] = create_mock_postgres
-    app.dependency_overrides[get_minio] = create_mock_minio
     app.dependency_overrides[get_ticker_storage] = create_mock_ticker_storage
     
     client = TestClient(app)
@@ -292,23 +267,20 @@ def mock_query_router():
     """Create a mock QueryRouter for testing tier selection logic."""
     mock_redis = MagicMock()
     mock_postgres = MagicMock()
-    mock_minio = MagicMock()
     
     router = QueryRouter(
         redis=mock_redis,
         postgres=mock_postgres,
-        minio=mock_minio,
     )
     return router
 
 
 class TestQueryTierSelection:
-    """Property tests for query tier selection based on time range."""
+    """Property tests for query tier selection based on time range (2-tier)."""
     
     # Class constants for tier names
     TIER_REDIS = "redis"
     TIER_POSTGRES = "postgres"
-    TIER_MINIO = "minio"
     
     @given(offset_minutes=st.integers(min_value=1, max_value=59))
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
@@ -324,12 +296,13 @@ class TestQueryTierSelection:
         
         assert selected_tier == self.TIER_REDIS
     
-    @given(offset_hours=st.integers(min_value=2, max_value=24 * 89))
+    @given(offset_hours=st.integers(min_value=2, max_value=24 * 365))
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_postgres_tier_selection_for_warm_data(self, mock_query_router, offset_hours):
+    def test_postgres_tier_selection_for_older_data(self, mock_query_router, offset_hours):
         """
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
+        In 2-tier architecture, all data older than 1 hour goes to PostgreSQL.
         """
         now = datetime.now()
         start = now - timedelta(hours=offset_hours)
@@ -337,20 +310,6 @@ class TestQueryTierSelection:
         selected_tier = mock_query_router._select_tier(start)
         
         assert selected_tier == self.TIER_POSTGRES
-    
-    @given(offset_days=st.integers(min_value=91, max_value=364))
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_minio_tier_selection_for_cold_data(self, mock_query_router, offset_days):
-        """
-        Feature: fastapi-backend, Property 4: Query tier selection based on time range
-        Validates: Requirements 2.1
-        """
-        now = datetime.now()
-        start = now - timedelta(days=offset_days)
-        
-        selected_tier = mock_query_router._select_tier(start)
-        
-        assert selected_tier == self.TIER_MINIO
 
 
 @pytest.fixture
@@ -461,8 +420,8 @@ class TestRateLimitEnforcement:
 
 
 @pytest.fixture
-def test_client_with_fallback(redis_storage, postgres_storage, minio_storage):
-    """Create test client with all storage dependencies."""
+def test_client_with_fallback(redis_storage, postgres_storage):
+    """Create test client with all storage dependencies (2-tier)."""
     with rate_tracker._lock:
         rate_tracker._requests.clear()
     
@@ -472,15 +431,11 @@ def test_client_with_fallback(redis_storage, postgres_storage, minio_storage):
     def override_get_postgres():
         return postgres_storage
     
-    def override_get_minio():
-        return minio_storage
-    
     def override_get_query_router():
-        return QueryRouter(redis_storage, postgres_storage, minio_storage)
+        return QueryRouter(redis_storage, postgres_storage)
     
     app.dependency_overrides[get_redis] = override_get_redis
     app.dependency_overrides[get_postgres] = override_get_postgres
-    app.dependency_overrides[get_minio] = override_get_minio
     app.dependency_overrides[get_query_router] = override_get_query_router
     
     client = TestClient(app)
@@ -493,12 +448,12 @@ def test_client_with_fallback(redis_storage, postgres_storage, minio_storage):
 
 @skip_if_no_redis
 class TestFallbackChainExecution:
-    """Property tests for fallback chain execution."""
+    """Property tests for fallback chain execution (2-tier)."""
     
     @given(symbol=symbol_strategy, stats=ticker_stats_strategy)
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_redis_primary_returns_redis_source(
-        self, redis_storage, postgres_storage, minio_storage, test_client_with_fallback, symbol, stats
+        self, redis_storage, postgres_storage, test_client_with_fallback, symbol, stats
     ):
         """
         Feature: fastapi-backend, Property 10: Fallback chain execution
@@ -515,7 +470,7 @@ class TestFallbackChainExecution:
     @given(symbol=symbol_strategy)
     @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_all_sources_empty_returns_404(
-        self, redis_storage, postgres_storage, minio_storage, test_client_with_fallback, symbol
+        self, redis_storage, postgres_storage, test_client_with_fallback, symbol
     ):
         """
         Feature: fastapi-backend, Property 10: Fallback chain execution
@@ -523,7 +478,6 @@ class TestFallbackChainExecution:
         """
         redis_storage.client.flushdb()
         postgres_storage.query_candles.return_value = []
-        minio_storage.read_klines.return_value = []
         
         response = test_client_with_fallback.get(f"/api/v1/market/ticker/{symbol}")
         

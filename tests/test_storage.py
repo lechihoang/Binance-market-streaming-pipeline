@@ -19,11 +19,10 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, MagicMock, patch
 from hypothesis import given, settings, strategies as st, assume, HealthCheck
 
-from src.storage.redis import RedisStorage, check_redis_health
-from src.storage.postgres import PostgresStorage, check_postgres_health
-from src.storage.minio import MinioStorage, check_minio_health
-from src.storage.query_router import QueryRouter
-from src.storage.storage_writer import StorageWriter
+from storage.redis import RedisStorage, check_redis_health
+from storage.postgres import PostgresStorage, check_postgres_health
+from storage.query_router import QueryRouter
+from storage.storage_writer import StorageWriter
 
 
 def is_redis_available():
@@ -158,76 +157,11 @@ class TestPostgresHealthCheck:
         assert "PostgreSQL health check failed after 2 attempts" in str(exc_info.value)
 
 
-class TestMinioHealthCheck:
-    """Tests for MinIO health check (Cold Path)."""
-    
-    @patch('src.storage.minio.Minio')
-    def test_minio_health_check_success_bucket_exists(self, mock_minio_class):
-        """Test successful MinIO health check when bucket exists."""
-        mock_client = Mock()
-        mock_client.list_buckets.return_value = []
-        mock_client.bucket_exists.return_value = True
-        mock_minio_class.return_value = mock_client
-        
-        result = check_minio_health(
-            endpoint='localhost:9000',
-            access_key='minioadmin',
-            secret_key='minioadmin',
-            bucket='crypto-data'
-        )
-        
-        assert result['service'] == 'minio'
-        assert result['tier'] == 'cold'
-        assert result['status'] == 'healthy'
-        assert result['endpoint'] == 'localhost:9000'
-        assert result['bucket'] == 'crypto-data'
-        assert result['attempt'] == 1
-        
-        mock_client.list_buckets.assert_called_once()
-        mock_client.bucket_exists.assert_called_once_with('crypto-data')
-        mock_client.make_bucket.assert_not_called()
-    
-    @patch('src.storage.minio.Minio')
-    def test_minio_health_check_creates_bucket_if_not_exists(self, mock_minio_class):
-        """Test MinIO health check creates bucket if it doesn't exist."""
-        mock_client = Mock()
-        mock_client.list_buckets.return_value = []
-        mock_client.bucket_exists.return_value = False
-        mock_minio_class.return_value = mock_client
-        
-        result = check_minio_health(
-            endpoint='localhost:9000',
-            bucket='new-bucket'
-        )
-        
-        assert result['status'] == 'healthy'
-        mock_client.make_bucket.assert_called_once_with('new-bucket')
-    
-    @patch('src.storage.minio.Minio')
-    def test_minio_health_check_fails_after_max_retries(self, mock_minio_class):
-        """Test MinIO health check fails after max retries."""
-        mock_client = Mock()
-        mock_client.list_buckets.side_effect = Exception("Connection refused")
-        mock_minio_class.return_value = mock_client
-        
-        with pytest.raises(Exception) as exc_info:
-            check_minio_health(
-                endpoint='localhost:9000',
-                max_retries=2,
-                retry_delay=0.01
-            )
-        
-        assert "MinIO health check failed after 2 attempts" in str(exc_info.value)
-
-
 # Strategy for generating time offsets in minutes (for Redis tier: < 60 minutes)
 redis_offset_minutes = st.integers(min_value=0, max_value=59)
 
-# Strategy for generating time offsets in hours (for PostgreSQL tier: 1 hour to < 90 days)
+# Strategy for generating time offsets in hours (for PostgreSQL tier: >= 1 hour)
 postgres_offset_hours = st.integers(min_value=1, max_value=2159)
-
-# Strategy for generating time offsets in days (for MinIO tier: >= 90 days)
-minio_offset_days = st.integers(min_value=90, max_value=365 * 5)
 
 
 @pytest.fixture
@@ -250,22 +184,11 @@ def mock_postgres():
 
 
 @pytest.fixture
-def mock_minio():
-    """Create mock MinioStorage."""
-    mock = MagicMock()
-    mock.read_indicators.return_value = []
-    mock.read_klines.return_value = []
-    mock.read_alerts.return_value = []
-    return mock
-
-
-@pytest.fixture
-def query_router(mock_redis, mock_postgres, mock_minio):
+def query_router(mock_redis, mock_postgres):
     """Create QueryRouter with mock storage instances."""
     return QueryRouter(
         redis=mock_redis,
         postgres=mock_postgres,
-        minio=mock_minio,
     )
 
 
@@ -277,10 +200,8 @@ class TestQueryRoutingCorrectness:
     Validates: Requirements 4.1, 4.2
     """
     
-    # Class constants for tier names
     TIER_REDIS = "redis"
     TIER_POSTGRES = "postgres"
-    TIER_MINIO = "minio"
     
     @given(offset_minutes=redis_offset_minutes)
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
@@ -296,8 +217,8 @@ class TestQueryRoutingCorrectness:
     
     @given(offset_hours=postgres_offset_hours)
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_postgres_tier_selection_for_medium_range_queries(self, query_router, offset_hours):
-        """For any query between 1 hour and 90 days, the router should select PostgreSQL tier."""
+    def test_postgres_tier_selection_for_historical_queries(self, query_router, offset_hours):
+        """For any query >= 1 hour, the router should select PostgreSQL tier."""
         now = datetime.now()
         start = now - timedelta(hours=offset_hours)
         
@@ -305,18 +226,6 @@ class TestQueryRoutingCorrectness:
         
         assert selected_tier == self.TIER_POSTGRES, \
             f"Expected PostgreSQL for {offset_hours} hours ago, got {selected_tier}"
-    
-    @given(offset_days=minio_offset_days)
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_minio_tier_selection_for_historical_queries(self, query_router, offset_days):
-        """For any query >= 90 days, the router should select MinIO tier."""
-        now = datetime.now()
-        start = now - timedelta(days=offset_days)
-        
-        selected_tier = query_router._select_tier(start)
-        
-        assert selected_tier == self.TIER_MINIO, \
-            f"Expected MinIO for {offset_days} days ago, got {selected_tier}"
     
     def test_boundary_exactly_1_hour(self, query_router):
         """Test boundary condition: exactly 1 hour ago should use PostgreSQL."""
@@ -326,15 +235,6 @@ class TestQueryRoutingCorrectness:
         selected_tier = query_router._select_tier(start)
         
         assert selected_tier == self.TIER_POSTGRES
-    
-    def test_boundary_exactly_90_days(self, query_router):
-        """Test boundary condition: exactly 90 days ago should use MinIO."""
-        now = datetime.now()
-        start = now - timedelta(days=90)
-        
-        selected_tier = query_router._select_tier(start)
-        
-        assert selected_tier == self.TIER_MINIO
 
 
 symbol_strategy = st.sampled_from([
@@ -418,7 +318,7 @@ aggregation_strategy = st.fixed_dictionaries({
     "close": price_strategy,
     "volume": volume_strategy,
     "quote_volume": volume_strategy,
-    "trades_count": trades_count_strategy,
+    "trade_count": trades_count_strategy,
 })
 
 indicators_data_strategy = st.fixed_dictionaries({
@@ -451,27 +351,23 @@ class TestPartialFailureResilience:
     
     @given(aggregation=aggregation_strategy, timestamp=recent_timestamp_strategy())
     @settings(max_examples=50, deadline=None)
-    def test_aggregation_redis_failure_continues_to_others(self, aggregation, timestamp):
+    def test_aggregation_redis_failure_continues_to_postgres(self, aggregation, timestamp):
         """
-        Feature: three-tier-storage, Property 8: Partial failure resilience
+        Feature: two-tier-storage, Property 8: Partial failure resilience
         Validates: Requirements 5.4
         
-        For any write operation where Redis fails, PostgreSQL and MinIO
+        For any write operation where Redis fails, PostgreSQL
         should still receive the data successfully.
         """
         mock_postgres = MagicMock(spec=PostgresStorage)
         mock_postgres.upsert_candle.return_value = None
-        
-        mock_minio = MagicMock(spec=MinioStorage)
-        mock_minio.write_klines.return_value = True
         
         mock_redis = MagicMock(spec=RedisStorage)
         mock_redis.write_aggregation.side_effect = Exception("Redis connection failed")
         
         writer = StorageWriter(
             redis=mock_redis,
-            postgres=mock_postgres,
-            minio=mock_minio
+            postgres=mock_postgres
         )
         
         data = {**aggregation, "timestamp": timestamp}
@@ -480,16 +376,14 @@ class TestPartialFailureResilience:
         
         assert results["redis"] is False, "Redis should fail"
         assert results["warm"] is True, "Warm path (PostgreSQL) should succeed despite Redis failure"
-        assert results["cold"] is True, "Cold path (MinIO) should succeed despite Redis failure"
         
         mock_postgres.upsert_candle.assert_called_once()
-        mock_minio.write_klines.assert_called_once()
     
     @given(aggregation=aggregation_strategy, timestamp=recent_timestamp_strategy())
     @settings(max_examples=50, deadline=None)
-    def test_aggregation_postgres_failure_continues_to_others(self, aggregation, timestamp):
+    def test_aggregation_postgres_failure_redis_still_succeeds(self, aggregation, timestamp):
         """
-        Feature: three-tier-storage, Property 8: Partial failure resilience
+        Feature: two-tier-storage, Property 8: Partial failure resilience
         Validates: Requirements 5.4
         """
         redis_storage = RedisStorage(host="localhost", port=6379, db=15)
@@ -499,13 +393,9 @@ class TestPartialFailureResilience:
             mock_postgres = MagicMock(spec=PostgresStorage)
             mock_postgres.upsert_candle.side_effect = Exception("PostgreSQL write failed")
             
-            mock_minio = MagicMock(spec=MinioStorage)
-            mock_minio.write_klines.return_value = True
-            
             writer = StorageWriter(
                 redis=redis_storage,
-                postgres=mock_postgres,
-                minio=mock_minio
+                postgres=mock_postgres
             )
             
             data = {**aggregation, "timestamp": timestamp}
@@ -516,49 +406,8 @@ class TestPartialFailureResilience:
             
             assert results["redis"] is True, "Redis should succeed despite PostgreSQL failure"
             assert results["warm"] is False, "Warm path (PostgreSQL) should fail"
-            assert results["cold"] is True, "Cold path (MinIO) should succeed despite PostgreSQL failure"
             
             redis_data = redis_storage.get_aggregation(symbol, interval)
             assert redis_data is not None, "Data should be in Redis"
-        finally:
-            redis_storage.client.flushdb()
-    
-    @given(aggregation=aggregation_strategy, timestamp=recent_timestamp_strategy())
-    @settings(max_examples=50, deadline=None)
-    def test_aggregation_minio_failure_continues_to_others(self, aggregation, timestamp):
-        """
-        Feature: three-tier-storage, Property 8: Partial failure resilience
-        Validates: Requirements 5.4
-        """
-        redis_storage = RedisStorage(host="localhost", port=6379, db=15)
-        redis_storage.client.flushdb()
-        
-        try:
-            mock_postgres = MagicMock(spec=PostgresStorage)
-            mock_postgres.upsert_candle.return_value = None
-            
-            mock_minio = MagicMock(spec=MinioStorage)
-            mock_minio.write_klines.side_effect = Exception("MinIO write failed")
-            
-            writer = StorageWriter(
-                redis=redis_storage,
-                postgres=mock_postgres,
-                minio=mock_minio
-            )
-            
-            data = {**aggregation, "timestamp": timestamp}
-            symbol = data["symbol"]
-            interval = data["interval"]
-            
-            results = writer.write_aggregation(data)
-            
-            assert results["redis"] is True, "Redis should succeed despite MinIO failure"
-            assert results["warm"] is True, "Warm path (PostgreSQL) should succeed despite MinIO failure"
-            assert results["cold"] is False, "Cold path (MinIO) should fail"
-            
-            redis_data = redis_storage.get_aggregation(symbol, interval)
-            assert redis_data is not None, "Data should be in Redis"
-            
-            mock_postgres.upsert_candle.assert_called_once()
         finally:
             redis_storage.client.flushdb()
