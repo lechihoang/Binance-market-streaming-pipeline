@@ -1,15 +1,14 @@
 """
 Consolidated test module for PySpark Streaming Processor.
-Contains all tests for aggregations, anomaly detection, connectors, indicators, and micro-batch processing.
+Contains all tests for aggregations, anomaly detection, connectors, and micro-batch processing.
 
 Table of Contents:
 - Imports and Setup (line ~20)
 - Aggregation Tests (line ~60)
 - Anomaly Detector Tests (line ~300)
-- Anomaly Detection Property Tests (line ~500)
-- Connector Tests (line ~800)
-- Technical Indicator Tests (line ~1000)
-- Micro-Batch Property Tests (line ~1200)
+- Anomaly Detection Property Tests (line ~400)
+- Connector Tests (line ~500)
+- Micro-Batch Property Tests (line ~600)
 
 Requirements: 6.2
 """
@@ -99,24 +98,6 @@ def is_price_spike(open_price: float, close_price: float, threshold_pct: float =
         return False
     price_change_pct = abs(((close_price - open_price) / open_price) * 100)
     return price_change_pct > threshold_pct
-
-
-def is_rsi_extreme(rsi: float, overbought: float = 70.0, oversold: float = 30.0) -> bool:
-    """Check if RSI is in extreme territory."""
-    return rsi > overbought or rsi < oversold
-
-
-def is_bb_breakout(price: float, bb_upper: float, bb_lower: float) -> bool:
-    """Check if price breaks out of Bollinger Bands."""
-    return price > bb_upper or price < bb_lower
-
-
-def is_macd_crossover(prev_macd: float, prev_signal: float, 
-                      curr_macd: float, curr_signal: float) -> bool:
-    """Check if MACD crosses signal line."""
-    bullish = (prev_macd <= prev_signal) and (curr_macd > curr_signal)
-    bearish = (prev_macd >= prev_signal) and (curr_macd < curr_signal)
-    return bullish or bearish
 
 
 def create_alert(
@@ -352,72 +333,10 @@ class TestPriceSpike:
         assert is_price_spike(0.0, 100.0) == False
 
 
-class TestRSIExtreme:
-    """Test RSI extreme detection logic."""
-    
-    def test_rsi_extreme_at_boundaries(self):
-        """Test RSI extreme at exact boundaries."""
-        assert is_rsi_extreme(70.0) == False
-        assert is_rsi_extreme(30.0) == False
-        assert is_rsi_extreme(70.1) == True
-        assert is_rsi_extreme(29.9) == True
-    
-    def test_rsi_extreme_overbought(self):
-        """Test RSI extreme in overbought territory."""
-        assert is_rsi_extreme(71.0) == True
-        assert is_rsi_extreme(80.0) == True
-    
-    def test_rsi_extreme_oversold(self):
-        """Test RSI extreme in oversold territory."""
-        assert is_rsi_extreme(29.0) == True
-        assert is_rsi_extreme(20.0) == True
-
-
-class TestBBBreakout:
-    """Test Bollinger Band breakout detection logic."""
-    
-    def test_bb_breakout_above_upper(self):
-        """Test BB breakout above upper band."""
-        assert is_bb_breakout(111.0, 110.0, 90.0) == True
-    
-    def test_bb_breakout_below_lower(self):
-        """Test BB breakout below lower band."""
-        assert is_bb_breakout(89.0, 110.0, 90.0) == True
-    
-    def test_bb_breakout_inside_bands(self):
-        """Test BB breakout inside bands."""
-        assert is_bb_breakout(100.0, 110.0, 90.0) == False
-    
-    def test_bb_breakout_at_bands(self):
-        """Test BB breakout at exact band values."""
-        assert is_bb_breakout(110.0, 110.0, 90.0) == False
-        assert is_bb_breakout(90.0, 110.0, 90.0) == False
-
-
-class TestMACDCrossover:
-    """Test MACD crossover detection logic."""
-    
-    def test_macd_crossover_bullish(self):
-        """Test bullish MACD crossover."""
-        assert is_macd_crossover(-1.0, 0.0, 1.0, 0.0) == True
-        assert is_macd_crossover(0.0, 0.0, 1.0, 0.0) == True
-    
-    def test_macd_crossover_bearish(self):
-        """Test bearish MACD crossover."""
-        assert is_macd_crossover(1.0, 0.0, -1.0, 0.0) == True
-        assert is_macd_crossover(0.0, 0.0, -1.0, 0.0) == True
-    
-    def test_macd_crossover_no_cross(self):
-        """Test no MACD crossover."""
-        assert is_macd_crossover(1.0, 0.0, 2.0, 0.0) == False
-        assert is_macd_crossover(-2.0, 0.0, -1.0, 0.0) == False
-
-
 # Strategies for generating test data
 symbol_strategy = st.sampled_from(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"])
 alert_type_strategy = st.sampled_from([
-    "WHALE_ALERT", "VOLUME_SPIKE", "PRICE_SPIKE", 
-    "RSI_EXTREME", "BB_BREAKOUT", "MACD_CROSSOVER"
+    "WHALE_ALERT", "VOLUME_SPIKE", "PRICE_SPIKE"
 ])
 alert_level_strategy = st.sampled_from(["HIGH", "MEDIUM", "LOW"])
 timestamp_strategy = st.datetimes(
@@ -425,17 +344,11 @@ timestamp_strategy = st.datetimes(
     max_value=datetime(2030, 12, 31)
 )
 
-details_strategy = st.one_of(
-    st.fixed_dictionaries({
-        "price": st.floats(min_value=0.01, max_value=1000000.0, allow_nan=False, allow_infinity=False),
-        "quantity": st.floats(min_value=0.001, max_value=10000.0, allow_nan=False, allow_infinity=False),
-        "value": st.floats(min_value=100001.0, max_value=10000000.0, allow_nan=False, allow_infinity=False),
-    }),
-    st.fixed_dictionaries({
-        "rsi_14": st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False),
-        "condition": st.sampled_from(["OVERBOUGHT", "OVERSOLD"]),
-    }),
-)
+details_strategy = st.fixed_dictionaries({
+    "price": st.floats(min_value=0.01, max_value=1000000.0, allow_nan=False, allow_infinity=False),
+    "quantity": st.floats(min_value=0.001, max_value=10000.0, allow_nan=False, allow_infinity=False),
+    "value": st.floats(min_value=100001.0, max_value=10000000.0, allow_nan=False, allow_infinity=False),
+})
 
 
 class TestAlertCompleteness:
@@ -502,19 +415,6 @@ class TestAnomalyTypeCoverage:
         else:
             assert not is_whale, f"Should not detect whale alert for value ${trade_value:,.2f}"
 
-    @settings(max_examples=100)
-    @given(
-        rsi=st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False),
-    )
-    def test_rsi_extreme_detection(self, rsi: float):
-        """RSI extremes should be correctly detected when RSI > 70 or RSI < 30."""
-        is_extreme = is_rsi_extreme(rsi)
-        
-        if rsi > 70.0 or rsi < 30.0:
-            assert is_extreme, f"Should detect RSI extreme for RSI={rsi:.2f}"
-        else:
-            assert not is_extreme, f"Should not detect RSI extreme for RSI={rsi:.2f}"
-
 
 class TestRedisStorage:
     """Test Redis storage operations."""
@@ -523,13 +423,13 @@ class TestRedisStorage:
     @patch('redis.ConnectionPool')
     def test_redis_write_hash_success(self, mock_pool, mock_redis):
         """Test Redis write with hash type."""
-        from storage.redis import RedisStorage
+        from storage.redis import Redis
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
         mock_client.ping.return_value = True
         
-        storage = RedisStorage(host="localhost", port=6379)
+        storage = Redis(host="localhost", port=6379)
         storage.write_to_redis(
             key="test:key",
             value={"field1": "value1", "field2": "value2"},
@@ -547,7 +447,7 @@ class TestRedisStorage:
     @patch('redis.ConnectionPool')
     def test_redis_write_list_success(self, mock_pool, mock_redis):
         """Test Redis write with list type."""
-        from storage.redis import RedisStorage
+        from storage.redis import Redis
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
@@ -555,7 +455,7 @@ class TestRedisStorage:
         mock_pipeline = Mock()
         mock_client.pipeline.return_value = mock_pipeline
         
-        storage = RedisStorage(host="localhost", port=6379)
+        storage = Redis(host="localhost", port=6379)
         storage.write_to_redis(
             key="test:list",
             value=[{"alert": "data"}],
@@ -571,14 +471,14 @@ class TestRedisStorage:
     @patch('redis.ConnectionPool')
     def test_redis_connection_failure(self, mock_pool, mock_redis):
         """Test Redis connection failure handling."""
-        from storage.redis import RedisStorage
+        from storage.redis import Redis
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
         mock_client.ping.side_effect = Exception("Connection refused")
         
         with pytest.raises(Exception) as exc_info:
-            storage = RedisStorage(host="localhost", port=6379)
+            storage = Redis(host="localhost", port=6379)
         
         assert "Connection refused" in str(exc_info.value)
 

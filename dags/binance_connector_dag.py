@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, '/opt/airflow')
 
-from utils.cleanup import cleanup_connector_resources
+from util.cleanup import cleanup_connector_resources
 
 default_args = {
     'owner': 'data-engineering',
@@ -51,15 +51,17 @@ with DAG(
     
     connector_env = {
         'KAFKA_BOOTSTRAP_SERVERS': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092'),
+        'SCHEMA_REGISTRY_URL': os.getenv('SCHEMA_REGISTRY_URL', 'http://schema-registry:8081'),
     }
     if os.getenv('BINANCE_STREAMS'):
         connector_env['BINANCE_STREAMS'] = os.getenv('BINANCE_STREAMS')
     
     run_binance_connector = BashOperator(
         task_id='run_binance_connector',
-        bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/binance_kafka_connector/connector.py',
+        bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/ingestion/connector.py',
         cwd='/opt/airflow',
         env=connector_env,
+        append_env=True,
     )
     
     cleanup_connector_task = PythonOperator(

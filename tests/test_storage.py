@@ -19,10 +19,10 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, MagicMock, patch
 from hypothesis import given, settings, strategies as st, assume, HealthCheck
 
-from storage.redis import RedisStorage, check_redis_health
-from storage.postgres import PostgresStorage, check_postgres_health
-from storage.query_router import QueryRouter
-from storage.storage_writer import StorageWriter
+from storage.redis import Redis, check_redis_health
+from storage.postgres import Postgres, check_postgres_health
+from storage.query_router import Router
+from storage.storage_writer import Writer
 
 
 def is_redis_available():
@@ -166,7 +166,7 @@ postgres_offset_hours = st.integers(min_value=1, max_value=2159)
 
 @pytest.fixture
 def mock_redis():
-    """Create mock RedisStorage."""
+    """Create mock Redis."""
     mock = MagicMock()
     mock.get_aggregation.return_value = None
     mock.get_recent_trades.return_value = []
@@ -176,7 +176,7 @@ def mock_redis():
 
 @pytest.fixture
 def mock_postgres():
-    """Create mock PostgresStorage."""
+    """Create mock Postgres."""
     mock = MagicMock()
     mock.query_candles.return_value = []
     mock.query_alerts.return_value = []
@@ -185,8 +185,8 @@ def mock_postgres():
 
 @pytest.fixture
 def query_router(mock_redis, mock_postgres):
-    """Create QueryRouter with mock storage instances."""
-    return QueryRouter(
+    """Create Router with mock storage instances."""
+    return Router(
         redis=mock_redis,
         postgres=mock_postgres,
     )
@@ -210,7 +210,7 @@ class TestQueryRoutingCorrectness:
         now = datetime.now()
         start = now - timedelta(minutes=offset_minutes)
         
-        selected_tier = query_router._select_tier(start)
+        selected_tier = query_router.select_tier(start)
         
         assert selected_tier == self.TIER_REDIS, \
             f"Expected Redis for {offset_minutes} minutes ago, got {selected_tier}"
@@ -222,7 +222,7 @@ class TestQueryRoutingCorrectness:
         now = datetime.now()
         start = now - timedelta(hours=offset_hours)
         
-        selected_tier = query_router._select_tier(start)
+        selected_tier = query_router.select_tier(start)
         
         assert selected_tier == self.TIER_POSTGRES, \
             f"Expected PostgreSQL for {offset_hours} hours ago, got {selected_tier}"
@@ -232,7 +232,7 @@ class TestQueryRoutingCorrectness:
         now = datetime.now()
         start = now - timedelta(hours=1)
         
-        selected_tier = query_router._select_tier(start)
+        selected_tier = query_router.select_tier(start)
         
         assert selected_tier == self.TIER_POSTGRES
 
@@ -283,9 +283,9 @@ alert_strategy = st.fixed_dictionaries({
 
 @pytest.fixture
 def redis_storage():
-    """Create RedisStorage instance and clean up after test."""
+    """Create Redis instance and clean up after test."""
     import redis as redis_lib
-    storage = RedisStorage(host="localhost", port=6379, db=15)
+    storage = Redis(host="localhost", port=6379, db=15)
     # Use client.flushdb() directly since flush_db method was removed
     storage.client.flushdb()
     yield storage
@@ -295,9 +295,6 @@ def redis_storage():
 
 
 trades_count_strategy = st.integers(min_value=0, max_value=1000000)
-rsi_strategy = st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False)
-macd_strategy = st.floats(min_value=-10000.0, max_value=10000.0, allow_nan=False, allow_infinity=False)
-atr_strategy = st.floats(min_value=0.0, max_value=10000.0, allow_nan=False, allow_infinity=False)
 
 
 def recent_timestamp_strategy():
@@ -319,19 +316,6 @@ aggregation_strategy = st.fixed_dictionaries({
     "volume": volume_strategy,
     "quote_volume": volume_strategy,
     "trade_count": trades_count_strategy,
-})
-
-indicators_data_strategy = st.fixed_dictionaries({
-    "symbol": symbol_strategy,
-    "rsi": rsi_strategy,
-    "macd": macd_strategy,
-    "macd_signal": macd_strategy,
-    "sma_20": price_strategy,
-    "ema_12": price_strategy,
-    "ema_26": price_strategy,
-    "bb_upper": price_strategy,
-    "bb_lower": price_strategy,
-    "atr": atr_strategy,
 })
 
 alert_data_strategy = st.fixed_dictionaries({
@@ -359,13 +343,13 @@ class TestPartialFailureResilience:
         For any write operation where Redis fails, PostgreSQL
         should still receive the data successfully.
         """
-        mock_postgres = MagicMock(spec=PostgresStorage)
+        mock_postgres = MagicMock(spec=Postgres)
         mock_postgres.upsert_candle.return_value = None
         
-        mock_redis = MagicMock(spec=RedisStorage)
+        mock_redis = MagicMock(spec=Redis)
         mock_redis.write_aggregation.side_effect = Exception("Redis connection failed")
         
-        writer = StorageWriter(
+        writer = Writer(
             redis=mock_redis,
             postgres=mock_postgres
         )
@@ -386,14 +370,14 @@ class TestPartialFailureResilience:
         Feature: two-tier-storage, Property 8: Partial failure resilience
         Validates: Requirements 5.4
         """
-        redis_storage = RedisStorage(host="localhost", port=6379, db=15)
+        redis_storage = Redis(host="localhost", port=6379, db=15)
         redis_storage.client.flushdb()
         
         try:
-            mock_postgres = MagicMock(spec=PostgresStorage)
+            mock_postgres = MagicMock(spec=Postgres)
             mock_postgres.upsert_candle.side_effect = Exception("PostgreSQL write failed")
             
-            writer = StorageWriter(
+            writer = Writer(
                 redis=redis_storage,
                 postgres=mock_postgres
             )

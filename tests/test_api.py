@@ -21,9 +21,9 @@ from hypothesis import given, settings, strategies as st, HealthCheck
 from fastapi.testclient import TestClient
 
 from api.app import app, rate_tracker, RATE_LIMIT_PER_MINUTE, get_redis, get_postgres, get_query_router, get_ticker_storage, determine_overall_status
-from storage.redis import RedisStorage
-from storage.postgres import PostgresStorage
-from storage.query_router import QueryRouter
+from storage.redis import Redis
+from storage.postgres import Postgres
+from storage.query_router import Router
 
 
 def is_redis_available():
@@ -60,25 +60,24 @@ def create_mock_postgres():
     """Create a mock PostgreSQL storage that returns empty results."""
     mock = MagicMock()
     mock.query_candles.return_value = []
-    mock.query_indicators.return_value = []
     mock.query_alerts.return_value = []
     mock._execute_with_retry.return_value = [{"result": 1}]
     return mock
 
 
 def create_mock_ticker_storage():
-    """Create a mock RedisStorage that returns empty results."""
+    """Create a mock Redis that returns empty results."""
     mock = MagicMock()
     mock.ping.return_value = True
     mock.get_ticker.return_value = None
-    mock.get_all_tickers.return_value = []
+    mock.get_tickers.return_value = []
     return mock
 
 
 @pytest.fixture
 def redis_storage():
-    """Create RedisStorage instance and clean up after test."""
-    storage = RedisStorage(host="localhost", port=6379, db=15)
+    """Create Redis instance and clean up after test."""
+    storage = Redis(host="localhost", port=6379, db=15)
     # Use client.flushdb() directly since flush_db method was removed
     storage.client.flushdb()
     yield storage
@@ -87,10 +86,9 @@ def redis_storage():
 
 @pytest.fixture
 def postgres_storage():
-    """Create mock PostgresStorage instance for testing."""
-    mock = MagicMock(spec=PostgresStorage)
+    """Create mock Postgres instance for testing."""
+    mock = MagicMock(spec=Postgres)
     mock.query_candles.return_value = []
-    mock.query_indicators.return_value = []
     mock.query_alerts.return_value = []
     mock._execute_with_retry.return_value = [{"result": 1}]
     return mock
@@ -180,10 +178,6 @@ alert_strategy = st.fixed_dictionaries({
     }),
 })
 
-valid_indicators = ["rsi", "macd", "macd_signal", "sma_20", "ema_12", "ema_26", "bb_upper", "bb_lower", "atr"]
-indicator_strategy = st.sampled_from(valid_indicators)
-indicator_subset_strategy = st.lists(indicator_strategy, min_size=1, max_size=5, unique=True)
-
 
 @skip_if_no_redis
 class TestTickerDataConsistency:
@@ -264,11 +258,11 @@ class TestTradesLimitConstraint:
 
 @pytest.fixture
 def mock_query_router():
-    """Create a mock QueryRouter for testing tier selection logic."""
+    """Create a mock Router for testing tier selection logic."""
     mock_redis = MagicMock()
     mock_postgres = MagicMock()
     
-    router = QueryRouter(
+    router = Router(
         redis=mock_redis,
         postgres=mock_postgres,
     )
@@ -292,7 +286,7 @@ class TestQueryTierSelection:
         now = datetime.now()
         start = now - timedelta(minutes=offset_minutes)
         
-        selected_tier = mock_query_router._select_tier(start)
+        selected_tier = mock_query_router.select_tier(start)
         
         assert selected_tier == self.TIER_REDIS
     
@@ -307,7 +301,7 @@ class TestQueryTierSelection:
         now = datetime.now()
         start = now - timedelta(hours=offset_hours)
         
-        selected_tier = mock_query_router._select_tier(start)
+        selected_tier = mock_query_router.select_tier(start)
         
         assert selected_tier == self.TIER_POSTGRES
 
@@ -432,7 +426,7 @@ def test_client_with_fallback(redis_storage, postgres_storage):
         return postgres_storage
     
     def override_get_query_router():
-        return QueryRouter(redis_storage, postgres_storage)
+        return Router(redis_storage, postgres_storage)
     
     app.dependency_overrides[get_redis] = override_get_redis
     app.dependency_overrides[get_postgres] = override_get_postgres

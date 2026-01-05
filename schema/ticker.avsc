@@ -1,0 +1,27 @@
+{
+  "type": "record",
+  "name": "Ticker",
+  "namespace": "com.crypto.pipeline",
+  "fields": [
+    {"name": "event_type", "type": "string", "doc": "Event type (24hrTicker)"},
+    {"name": "event_time", "type": "long", "doc": "Event time in milliseconds"},
+    {"name": "symbol", "type": "string", "doc": "Trading pair symbol"},
+    {"name": "price_change", "type": "string", "doc": "Price change"},
+    {"name": "price_change_percent", "type": "string", "doc": "Price change percent"},
+    {"name": "weighted_avg_price", "type": "string", "doc": "Weighted average price"},
+    {"name": "last_price", "type": "string", "doc": "Last price"},
+    {"name": "last_qty", "type": "string", "doc": "Last quantity"},
+    {"name": "open_price", "type": "string", "doc": "Open price"},
+    {"name": "high_price", "type": "string", "doc": "High price"},
+    {"name": "low_price", "type": "string", "doc": "Low price"},
+    {"name": "volume", "type": "string", "doc": "Base asset volume"},
+    {"name": "quote_volume", "type": "string", "doc": "Quote asset volume"},
+    {"name": "open_time", "type": "long", "doc": "Statistics open time"},
+    {"name": "close_time", "type": "long", "doc": "Statistics close time"},
+    {"name": "first_trade_id", "type": "long", "doc": "First trade ID"},
+    {"name": "last_trade_id", "type": "long", "doc": "Last trade ID"},
+    {"name": "trade_count", "type": "long", "doc": "Total number of trades"},
+    {"name": "ingestion_timestamp", "type": "long", "doc": "Ingestion timestamp in milliseconds"},
+    {"name": "stream_type", "type": "string", "doc": "Stream type identifier"}
+  ]
+}

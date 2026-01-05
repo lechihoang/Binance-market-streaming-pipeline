@@ -21,7 +21,7 @@ def cleanup_connector_resources(**context) -> Dict[str, Any]:
     
     # Kill orphan connector processes
     try:
-        subprocess.run(['pkill', '-f', 'binance_kafka_connector'], 
+        subprocess.run(['pkill', '-f', 'ingestion.connector'], 
                       capture_output=True, text=True, timeout=30)
         logger.info("Killed orphan connector processes")
     except Exception as e:

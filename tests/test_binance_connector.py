@@ -19,7 +19,7 @@ from datetime import datetime
 
 import websockets.exceptions
 
-from binance_kafka_connector.connector import (
+from ingestion.connector import (
     BinanceWebSocketClient,
     process_message,
     EnrichedMessage,
@@ -30,7 +30,7 @@ from binance_kafka_connector.connector import (
     KAFKA_BOOTSTRAP_SERVERS,
     LOG_LEVEL,
 )
-from utils.retry import ExponentialBackoff
+from util.retry import ExponentialBackoff
 
 
 class TestWebSocketClient:
@@ -75,7 +75,7 @@ class TestWebSocketClient:
         
         # Patch sleep to avoid actual delays
         with patch('asyncio.sleep', new_callable=AsyncMock):
-            await client._reconnect()
+            await client.reconnect()
         
         # Verify connect and subscribe were called
         client.connect.assert_called_once()
@@ -102,7 +102,7 @@ class TestWebSocketClient:
         
         # Patch sleep to avoid actual delays
         with patch('asyncio.sleep', new_callable=AsyncMock):
-            await client._reconnect()
+            await client.reconnect()
         
         # Should have tried 3 times
         assert call_count == 3

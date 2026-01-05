@@ -1,22 +1,22 @@
-"""PostgreSQL storage module for warm path data access."""
+"""PostgreSQL storage module."""
 
 import json
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
-from utils.logging import get_logger
-from utils.retry import RetryConfig, retry_operation
-from utils.metrics import track_latency, record_error, record_retry
+from util.logging import get_logger
+from util.retry import RetryConfig, retry_operation
+from util.metrics import track_latency, record_error, record_retry
 
 logger = get_logger(__name__)
 
 
-class PostgresStorage:
+class Postgres:
     def __init__(
         self,
         host: str = "localhost",
@@ -37,7 +37,7 @@ class PostgresStorage:
         self.min_connections = min_connections
         self.max_connections = max_connections
         
-        self._retry_config = RetryConfig(
+        self.retry = RetryConfig(
             max_retries=max_retries,
             initial_delay_ms=int(retry_delay * 1000),
             max_delay_ms=60000,
@@ -46,15 +46,14 @@ class PostgresStorage:
             retryable_exceptions=(psycopg2.OperationalError, psycopg2.InterfaceError),
         )
         
-        self._pool: Optional[pool.ThreadedConnectionPool] = None
-        self._connect_with_retry()
-        self._init_tables()
-        logger.info(f"PostgresStorage initialized at {host}:{port}/{database}")
+        self.pool: Optional[pool.ThreadedConnectionPool] = None
+        self.connect()
+        self.init_tables()
+        logger.info(f"Postgres initialized at {host}:{port}/{database}")
 
-
-    def _connect_with_retry(self) -> None:
+    def connect(self) -> None:
         def create_pool():
-            self._pool = pool.ThreadedConnectionPool(
+            self.pool = pool.ThreadedConnectionPool(
                 self.min_connections,
                 self.max_connections,
                 host=self.host,
@@ -63,75 +62,77 @@ class PostgresStorage:
                 password=self.password,
                 database=self.database
             )
-            return self._pool
+            return self.pool
         
-        def on_retry(attempt: int, delay_ms: int, error: Exception):
-            record_retry("postgres_storage", "connect", "failed")
+        def on_retry_cb(attempt: int, delay_ms: int, error: Exception):
+            record_retry("postgres", "connect", "failed")
         
         try:
             retry_operation(
                 create_pool,
-                config=self._retry_config,
+                config=self.retry,
                 operation_name="PostgreSQL connection",
-                on_retry=on_retry,
+                on_retry=on_retry_cb,
             )
-            record_retry("postgres_storage", "connect", "success")
+            record_retry("postgres", "connect", "success")
         except Exception:
-            record_error("postgres_storage", "connection_error", "critical")
+            record_error("postgres", "connection_error", "critical")
             raise
 
     @contextmanager
-    def _get_connection(self):
-        conn = None
+    def conn(self):
+        c = None
         try:
-            conn = self._pool.getconn()
-            yield conn
-            conn.commit()
+            c = self.pool.getconn()  # type: ignore
+            yield c
+            c.commit()
         except Exception:
-            if conn:
-                conn.rollback()
+            if c and not c.closed:
+                c.rollback()
             raise
         finally:
-            if conn:
-                self._pool.putconn(conn)
+            if c and not c.closed:
+                self.pool.putconn(c)  # type: ignore
 
-    def _execute_with_retry(
+    def run(
         self, 
         query: str, 
-        params: tuple = None,
+        params: Optional[tuple] = None,
         fetch: bool = False
     ) -> Optional[List[Dict[str, Any]]]:
-        def execute_query():
-            with self._get_connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        def do_run():
+            with self.conn() as c:
+                with c.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(query, params)
                     if fetch:
                         return [dict(row) for row in cur.fetchall()]
                     return None
         
-        def on_retry(attempt: int, delay_ms: int, error: Exception):
-            record_retry("postgres_storage", "query", "failed")
+        def on_retry_cb(attempt: int, delay_ms: int, error: Exception):
+            record_retry("postgres", "query", "failed")
         
         try:
-            with track_latency("postgres_storage", "query"):
+            with track_latency("postgres", "query"):
                 result = retry_operation(
-                    execute_query,
-                    config=self._retry_config,
+                    do_run,
+                    config=self.retry,
                     operation_name="PostgreSQL query",
-                    on_retry=on_retry,
+                    on_retry=on_retry_cb,
                 )
-            record_retry("postgres_storage", "query", "success")
+            record_retry("postgres", "query", "success")
             return result
         except Exception:
-            record_error("postgres_storage", "query_error", "error")
+            record_error("postgres", "query_error", "error")
             raise
 
-    def _init_tables(self) -> None:
-        with self._get_connection() as conn:
-            with conn.cursor() as cur:
+    def init_tables(self) -> None:
+        with self.conn() as c:
+            with c.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
+                
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS trades_1m (
-                        timestamp TIMESTAMP NOT NULL,
+                        timestamp TIMESTAMPTZ NOT NULL,
                         symbol VARCHAR(20) NOT NULL,
                         open DOUBLE PRECISION,
                         high DOUBLE PRECISION,
@@ -146,34 +147,33 @@ class PostgresStorage:
                         price_change_percent DOUBLE PRECISION,
                         buy_sell_ratio DOUBLE PRECISION,
                         average_price DOUBLE PRECISION,
-                        price_volatility DOUBLE PRECISION,
-                        PRIMARY KEY (symbol, timestamp)
+                        price_volatility DOUBLE PRECISION
                     )
                 """)
+                
+                cur.execute("""
+                    SELECT create_hypertable(
+                        'trades_1m', 
+                        'timestamp',
+                        if_not_exists => TRUE,
+                        chunk_time_interval => INTERVAL '1 day'
+                    )
+                """)
+                
+                cur.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_1m_symbol_ts 
+                    ON trades_1m(symbol, timestamp)
+                """)
+                
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_trades_1m_ts 
-                    ON trades_1m(timestamp)
+                    ON trades_1m(timestamp DESC)
                 """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS indicators (
-                        timestamp TIMESTAMP NOT NULL,
-                        symbol VARCHAR(20) NOT NULL,
-                        rsi DOUBLE PRECISION,
-                        macd DOUBLE PRECISION,
-                        macd_signal DOUBLE PRECISION,
-                        sma_20 DOUBLE PRECISION,
-                        ema_12 DOUBLE PRECISION,
-                        ema_26 DOUBLE PRECISION,
-                        bb_upper DOUBLE PRECISION,
-                        bb_lower DOUBLE PRECISION,
-                        atr DOUBLE PRECISION,
-                        PRIMARY KEY (symbol, timestamp)
-                    )
-                """)
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_indicators_ts 
-                    ON indicators(timestamp)
-                """)
+                
+                self.setup_policies(cur)
+                self.setup_aggs(cur)
+                self.setup_ml_view(cur)
+                
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS alerts (
                         id SERIAL PRIMARY KEY,
@@ -190,15 +190,156 @@ class PostgresStorage:
                     CREATE INDEX IF NOT EXISTS idx_alerts_ts 
                     ON alerts(timestamp DESC, symbol)
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS validation_errors (
+                        id SERIAL PRIMARY KEY,
+                        source_type VARCHAR(50) NOT NULL,
+                        record_data JSONB NOT NULL,
+                        failed_expectations JSONB NOT NULL,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_validation_errors_created 
+                    ON validation_errors(created_at DESC)
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_validation_errors_source 
+                    ON validation_errors(source_type, created_at DESC)
+                """)
         logger.debug("PostgreSQL tables initialized")
 
+    def setup_policies(self, cur) -> None:
+        try:
+            cur.execute("""
+                ALTER TABLE trades_1m SET (
+                    timescaledb.compress,
+                    timescaledb.compress_segmentby = 'symbol'
+                )
+            """)
+        except Exception as e:
+            if "already has compression" not in str(e).lower():
+                logger.warning(f"Compression setup warning: {e}")
+        
+        try:
+            cur.execute("""
+                SELECT add_compression_policy('trades_1m', INTERVAL '7 days', if_not_exists => TRUE)
+            """)
+        except Exception as e:
+            logger.warning(f"Compression policy warning: {e}")
+        
+        try:
+            cur.execute("""
+                SELECT add_retention_policy('trades_1m', INTERVAL '90 days', if_not_exists => TRUE)
+            """)
+        except Exception as e:
+            logger.warning(f"Retention policy warning: {e}")
+        
+        logger.debug("TimescaleDB policies configured")
+
+    def setup_aggs(self, cur) -> None:
+        aggs = [
+            ("trades_5m", "5 minutes"),
+            ("trades_15m", "15 minutes"),
+            ("trades_1h", "1 hour"),
+        ]
+        
+        for view, interval in aggs:
+            try:
+                cur.execute(f"""
+                    CREATE MATERIALIZED VIEW IF NOT EXISTS {view}
+                    WITH (timescaledb.continuous) AS
+                    SELECT
+                        time_bucket(INTERVAL '{interval}', timestamp) AS timestamp,
+                        symbol,
+                        first(open, timestamp) AS open,
+                        max(high) AS high,
+                        min(low) AS low,
+                        last(close, timestamp) AS close,
+                        sum(volume) AS volume,
+                        sum(quote_volume) AS quote_volume,
+                        sum(trade_count) AS trade_count,
+                        sum(buy_count) AS buy_count,
+                        sum(sell_count) AS sell_count
+                    FROM trades_1m
+                    GROUP BY time_bucket(INTERVAL '{interval}', timestamp), symbol
+                    WITH NO DATA
+                """)
+            except Exception as e:
+                if "already exists" not in str(e).lower():
+                    logger.warning(f"Continuous aggregate {view} warning: {e}")
+        
+        refresh = [
+            ("trades_5m", "1 hour", "1 minute", "1 minute"),
+            ("trades_15m", "2 hours", "1 minute", "5 minutes"),
+            ("trades_1h", "4 hours", "5 minutes", "15 minutes"),
+        ]
+        
+        for view, start, end, schedule in refresh:
+            try:
+                cur.execute(f"""
+                    SELECT add_continuous_aggregate_policy('{view}',
+                        start_offset => INTERVAL '{start}',
+                        end_offset => INTERVAL '{end}',
+                        schedule_interval => INTERVAL '{schedule}',
+                        if_not_exists => TRUE
+                    )
+                """)
+            except Exception as e:
+                logger.warning(f"Refresh policy for {view} warning: {e}")
+        
+        logger.debug("Continuous aggregates configured")
+    
+    def refresh_aggregates(self) -> None:
+        aggs = ["trades_5m", "trades_15m", "trades_1h"]
+        for view in aggs:
+            try:
+                with self.conn() as c:
+                    with c.cursor() as cur:
+                        cur.execute(f"CALL refresh_continuous_aggregate('{view}', NULL, NULL)")
+                logger.info(f"Refreshed {view}")
+            except Exception as e:
+                logger.debug(f"Refresh {view} skipped: {e}")
+
+    def setup_ml_view(self, cur) -> None:
+        """Create ML features view for LSTM anomaly detection."""
+        try:
+            cur.execute("""
+                CREATE OR REPLACE VIEW trades_ml_features AS
+                SELECT 
+                    timestamp,
+                    symbol,
+                    
+                    -- Price features (4)
+                    close,
+                    price_change_percent AS price_change_pct,
+                    price_volatility,
+                    close - LAG(close, 5) OVER w AS price_momentum_5,
+                    
+                    -- Volume features (3)
+                    volume,
+                    quote_volume,
+                    volume / NULLIF(LAG(volume, 1) OVER w, 0) AS volume_ratio,
+                    
+                    -- Trade features (2)
+                    trade_count,
+                    buy_sell_ratio
+                    
+                FROM trades_1m
+                WINDOW w AS (PARTITION BY symbol ORDER BY timestamp)
+            """)
+            logger.debug("ML features view created")
+        except Exception as e:
+            logger.warning(f"ML view setup warning: {e}")
+
     def close(self) -> None:
-        if self._pool:
-            self._pool.closeall()
+        if self.pool:
+            self.pool.closeall()
             logger.info("PostgreSQL connection pool closed")
 
+    # ========== Candles ==========
 
-    def upsert_candle(self, candle: Dict[str, Any]) -> None:
+    def write_candle(self, candle: Dict[str, Any]) -> None:
         query = """
             INSERT INTO trades_1m 
             (timestamp, symbol, open, high, low, close, volume, quote_volume, 
@@ -228,45 +369,9 @@ class PostgresStorage:
             candle.get('average_price'),
             candle.get('price_volatility')
         )
-        self._execute_with_retry(query, params)
+        self.run(query, params)
 
-    def upsert_indicators(self, indicators: Dict[str, Any]) -> None:
-        query = """
-            INSERT INTO indicators
-            (timestamp, symbol, rsi, macd, macd_signal, sma_20, ema_12, ema_26, 
-             bb_upper, bb_lower, atr)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (symbol, timestamp) DO UPDATE SET
-                rsi = EXCLUDED.rsi, macd = EXCLUDED.macd, macd_signal = EXCLUDED.macd_signal,
-                sma_20 = EXCLUDED.sma_20, ema_12 = EXCLUDED.ema_12, ema_26 = EXCLUDED.ema_26,
-                bb_upper = EXCLUDED.bb_upper, bb_lower = EXCLUDED.bb_lower, atr = EXCLUDED.atr
-        """
-        params = (
-            indicators.get('timestamp'), indicators.get('symbol'),
-            indicators.get('rsi'), indicators.get('macd'), indicators.get('macd_signal'),
-            indicators.get('sma_20'), indicators.get('ema_12'), indicators.get('ema_26'),
-            indicators.get('bb_upper'), indicators.get('bb_lower'), indicators.get('atr')
-        )
-        self._execute_with_retry(query, params)
-
-    def insert_alert(self, alert: Dict[str, Any]) -> None:
-        metadata = alert.get('metadata')
-        if isinstance(metadata, dict):
-            metadata = json.dumps(metadata)
-        
-        query = """
-            INSERT INTO alerts
-            (timestamp, symbol, alert_type, severity, message, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """
-        params = (
-            alert.get('timestamp'), alert.get('symbol'),
-            alert.get('alert_type'), alert.get('severity'),
-            alert.get('message'), metadata
-        )
-        self._execute_with_retry(query, params)
-
-    def upsert_candles_batch(self, candles: List[Dict[str, Any]]) -> int:
+    def write_candles(self, candles: List[Dict[str, Any]]) -> int:
         if not candles:
             return 0
         
@@ -292,45 +397,104 @@ class PostgresStorage:
                 price_volatility = EXCLUDED.price_volatility
         """
         
-        def execute_batch():
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
+        def do_run():
+            with self.conn() as c:
+                with c.cursor() as cur:
                     cur.executemany(query, candles)
-                    conn.commit()
+                    c.commit()
                     return len(candles)
         
-        def on_retry(attempt: int, delay_ms: int, error: Exception):
-            record_retry("postgres_storage", "upsert_candles_batch", "failed")
+        def on_retry_cb(attempt: int, delay_ms: int, error: Exception):
+            record_retry("postgres", "write_candles", "failed")
         
         try:
-            with track_latency("postgres_storage", "upsert_candles_batch"):
+            with track_latency("postgres", "write_candles"):
                 result = retry_operation(
-                    execute_batch,
-                    config=self._retry_config,
+                    do_run,
+                    config=self.retry,
                     operation_name="PostgreSQL batch upsert candles",
-                    on_retry=on_retry,
+                    on_retry=on_retry_cb,
                 )
-            record_retry("postgres_storage", "upsert_candles_batch", "success")
-            logger.debug(f"Batch upserted {result} candles")
+            record_retry("postgres", "write_candles", "success")
+            logger.debug(f"Wrote {result} candles")
             return result
         except Exception as e:
-            record_error("postgres_storage", "upsert_candles_batch_error", "error")
-            logger.error(f"Failed to batch upsert candles: {e}")
+            record_error("postgres", "write_candles_error", "error")
+            logger.error(f"Failed to write candles: {e}")
             raise
 
-    def insert_alerts_batch(self, alerts: List[Dict[str, Any]]) -> int:
-        """Batch insert alerts using executemany."""
+    def get_candles(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> List[Dict[str, Any]]:
+        query = """
+            SELECT timestamp, symbol, open, high, low, close, 
+                   volume, quote_volume, trade_count, buy_count, sell_count,
+                   volume_weighted_avg_price, price_change_percent, 
+                   buy_sell_ratio, average_price, price_volatility
+            FROM trades_1m
+            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+            ORDER BY timestamp ASC
+        """
+        result = self.run(query, (symbol, start, end), fetch=True)
+        return result or []
+
+    def get_candles_agg(
+        self, 
+        symbol: str, 
+        start: datetime, 
+        end: datetime, 
+        interval: str = "5m"
+    ) -> List[Dict[str, Any]]:
+        if interval == "1m":
+            return self.get_candles(symbol, start, end)
+        
+        tables = {"5m": "trades_5m", "15m": "trades_15m", "1h": "trades_1h"}
+        
+        if interval not in tables:
+            raise ValueError(f"Invalid interval: {interval}")
+        
+        query = f"""
+            SELECT 
+                timestamp, symbol, open, high, low, close,
+                volume, quote_volume, trade_count, buy_count, sell_count
+            FROM {tables[interval]}
+            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+            ORDER BY timestamp ASC
+        """
+        
+        result = self.run(query, (symbol, start, end), fetch=True)
+        return result or []
+
+    # ========== Alerts ==========
+
+    def write_alert(self, alert: Dict[str, Any]) -> None:
+        metadata = alert.get('metadata')
+        if isinstance(metadata, dict):
+            metadata = json.dumps(metadata)
+        
+        query = """
+            INSERT INTO alerts
+            (timestamp, symbol, alert_type, severity, message, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        params = (
+            alert.get('timestamp'), alert.get('symbol'),
+            alert.get('alert_type'), alert.get('severity'),
+            alert.get('message'), metadata
+        )
+        self.run(query, params)
+
+    def write_alerts(self, alerts: List[Dict[str, Any]]) -> int:
         if not alerts:
             return 0
         
-        # Prepare alerts with JSON-serialized metadata
-        prepared_alerts = []
-        for alert in alerts:
-            prepared = dict(alert)
-            metadata = prepared.get('metadata')
-            if isinstance(metadata, dict):
-                prepared['metadata'] = json.dumps(metadata)
-            prepared_alerts.append(prepared)
+        prepared = []
+        for a in alerts:
+            p = dict(a)
+            meta = p.get('metadata')
+            if isinstance(meta, dict):
+                p['metadata'] = json.dumps(meta)
+            prepared.append(p)
         
         query = """
             INSERT INTO alerts
@@ -343,141 +507,77 @@ class PostgresStorage:
                 metadata = EXCLUDED.metadata
         """
         
-        def execute_batch():
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.executemany(query, prepared_alerts)
-                    conn.commit()
-                    return len(prepared_alerts)
+        def do_run():
+            with self.conn() as c:
+                with c.cursor() as cur:
+                    cur.executemany(query, prepared)
+                    c.commit()
+                    return len(prepared)
         
-        def on_retry(attempt: int, delay_ms: int, error: Exception):
-            record_retry("postgres_storage", "insert_alerts_batch", "failed")
+        def on_retry_cb(attempt: int, delay_ms: int, error: Exception):
+            record_retry("postgres", "write_alerts", "failed")
         
         try:
-            with track_latency("postgres_storage", "insert_alerts_batch"):
+            with track_latency("postgres", "write_alerts"):
                 result = retry_operation(
-                    execute_batch,
-                    config=self._retry_config,
+                    do_run,
+                    config=self.retry,
                     operation_name="PostgreSQL batch insert alerts",
-                    on_retry=on_retry,
+                    on_retry=on_retry_cb,
                 )
-            record_retry("postgres_storage", "insert_alerts_batch", "success")
-            logger.debug(f"Batch inserted {result} alerts")
+            record_retry("postgres", "write_alerts", "success")
+            logger.debug(f"Wrote {result} alerts")
             return result
         except Exception as e:
-            record_error("postgres_storage", "insert_alerts_batch_error", "error")
-            logger.error(f"Failed to batch insert alerts: {e}")
+            record_error("postgres", "write_alerts_error", "error")
+            logger.error(f"Failed to write alerts: {e}")
             raise
 
-    def query_candles(
-        self, symbol: str, start: datetime, end: datetime
-    ) -> List[Dict[str, Any]]:
-        query = """
-            SELECT timestamp, symbol, open, high, low, close, 
-                   volume, quote_volume, trade_count, buy_count, sell_count,
-                   volume_weighted_avg_price, price_change_percent, 
-                   buy_sell_ratio, average_price, price_volatility
-            FROM trades_1m
-            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
-            ORDER BY timestamp ASC
-        """
-        result = self._execute_with_retry(query, (symbol, start, end), fetch=True)
-        return result or []
-
-    def query_candles_aggregated(
-        self, 
-        symbol: str, 
-        start: datetime, 
-        end: datetime, 
-        interval: str = "5m"
-    ) -> List[Dict[str, Any]]:
-        if interval == "1m":
-            return self.query_candles(symbol, start, end)
-        
-        valid_intervals = {"5m", "15m"}
-        if interval not in valid_intervals:
-            raise ValueError(f"Invalid interval: {interval}. Must be one of {valid_intervals | {'1m'}}")
-        
-        interval_minutes = int(interval.replace("m", ""))
-        
-        query = """
-            SELECT 
-                date_trunc('hour', timestamp) + 
-                    INTERVAL '1 minute' * (EXTRACT(MINUTE FROM timestamp)::int / %s * %s) as timestamp,
-                %s as symbol,
-                (array_agg(open ORDER BY timestamp ASC))[1] as open,
-                MAX(high) as high,
-                MIN(low) as low,
-                (array_agg(close ORDER BY timestamp DESC))[1] as close,
-                SUM(volume) as volume,
-                SUM(quote_volume) as quote_volume,
-                SUM(trade_count) as trade_count,
-                SUM(buy_count) as buy_count,
-                SUM(sell_count) as sell_count,
-                SUM(quote_volume) / NULLIF(SUM(volume), 0) as volume_weighted_avg_price,
-                ((array_agg(close ORDER BY timestamp DESC))[1] - (array_agg(open ORDER BY timestamp ASC))[1]) 
-                    / NULLIF((array_agg(open ORDER BY timestamp ASC))[1], 0) * 100 as price_change_percent,
-                SUM(buy_count)::float / NULLIF(SUM(sell_count), 0) as buy_sell_ratio,
-                AVG(average_price) as average_price,
-                AVG(price_volatility) as price_volatility
-            FROM trades_1m
-            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
-            GROUP BY 1
-            ORDER BY 1 ASC
-        """
-        
-        params = (
-            interval_minutes, interval_minutes,
-            symbol,
-            symbol, start, end
-        )
-        
-        result = self._execute_with_retry(query, params, fetch=True)
-        return result or []
-
-    def query_indicators(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
-        query = """
-            SELECT timestamp, symbol, rsi, macd, macd_signal, sma_20,
-                   ema_12, ema_26, bb_upper, bb_lower, atr
-            FROM indicators
-            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
-            ORDER BY timestamp ASC
-        """
-        result = self._execute_with_retry(query, (symbol, start, end), fetch=True)
-        return result or []
-
-    def query_alerts(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
+    def get_alerts(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
         query = """
             SELECT timestamp, symbol, alert_type, severity, message, metadata
             FROM alerts
             WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
             ORDER BY timestamp DESC
         """
-        result = self._execute_with_retry(query, (symbol, start, end), fetch=True)
+        result = self.run(query, (symbol, start, end), fetch=True)
         if not result:
             return []
         
         alerts = []
         for row in result:
-            alert = dict(row)
-            if alert.get('metadata') and isinstance(alert['metadata'], str):
+            a = dict(row)
+            if a.get('metadata') and isinstance(a['metadata'], str):
                 try:
-                    alert['metadata'] = json.loads(alert['metadata'])
+                    a['metadata'] = json.loads(a['metadata'])
                 except (json.JSONDecodeError, TypeError):
                     pass
-            alerts.append(alert)
+            alerts.append(a)
         return alerts
 
-    def query_trades_count(
+    # ========== ML Features ==========
+
+    def get_ml_features(
+        self, 
+        symbol: str, 
+        limit: int = 60
+    ) -> List[Dict[str, Any]]:
+        query = """
+            SELECT * FROM trades_ml_features
+            WHERE symbol = %s
+              AND timestamp > NOW() - INTERVAL '2 hours'
+            ORDER BY timestamp DESC
+            LIMIT %s
+        """
+        result = self.run(query, (symbol, limit), fetch=True)
+        return result[::-1] if result else []
+
+    # ========== Trades Count ==========
+
+    def get_trades_count(
         self, symbol: str, start: datetime, end: datetime, interval: str = "1h"
     ) -> List[Dict[str, Any]]:
-        interval_map = {
-            "1m": "minute",
-            "1h": "hour",
-            "1d": "day",
-        }
-        
-        trunc_interval = interval_map.get(interval, "hour")
+        trunc = {"1m": "minute", "1h": "hour", "1d": "day"}.get(interval, "hour")
         
         query = """
             SELECT 
@@ -489,10 +589,7 @@ class PostgresStorage:
             ORDER BY bucket_timestamp ASC
         """
         
-        result = self._execute_with_retry(
-            query, (trunc_interval, symbol, start, end), fetch=True
-        )
-        
+        result = self.run(query, (trunc, symbol, start, end), fetch=True)
         if not result:
             return []
         
@@ -505,119 +602,157 @@ class PostgresStorage:
             for row in result
         ]
 
-    def cleanup_table(
-        self,
-        table_name: str,
-        retention_days: int,
-        batch_size: int = 1000
-    ) -> int:
-        """Delete records older than retention period from a table."""
-        # Validate table name to prevent SQL injection
-        valid_tables = {"trades_1m", "indicators", "alerts"}
-        if table_name not in valid_tables:
-            raise ValueError(f"Invalid table name: {table_name}. Must be one of {valid_tables}")
+    # ========== Cleanup ==========
+
+    def cleanup(self, table: str, retention_days: int, batch_size: int = 1000) -> int:
+        valid = {"trades_1m", "alerts"}
+        if table not in valid:
+            raise ValueError(f"Invalid table: {table}")
         
-        if retention_days <= 0:
-            raise ValueError(f"retention_days must be positive, got {retention_days}")
+        if retention_days <= 0 or batch_size <= 0:
+            raise ValueError("retention_days and batch_size must be positive")
         
-        if batch_size <= 0:
-            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        total = 0
         
-        total_deleted = 0
-        
-        # Use ctid for efficient batch deletion
-        # ctid is PostgreSQL's internal row identifier
-        if table_name == "alerts":
-            # alerts table uses 'id' as primary key
-            delete_query = f"""
-                DELETE FROM {table_name}
+        if table == "alerts":
+            delete_q = f"""
+                DELETE FROM {table}
                 WHERE id IN (
-                    SELECT id FROM {table_name}
+                    SELECT id FROM {table}
                     WHERE timestamp < NOW() - INTERVAL '%s days'
                     LIMIT %s
                 )
             """
         else:
-            # trades_1m and indicators use (symbol, timestamp) as primary key
-            delete_query = f"""
-                DELETE FROM {table_name}
+            delete_q = f"""
+                DELETE FROM {table}
                 WHERE ctid IN (
-                    SELECT ctid FROM {table_name}
+                    SELECT ctid FROM {table}
                     WHERE timestamp < NOW() - INTERVAL '%s days'
                     LIMIT %s
                 )
             """
         
         def delete_batch():
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(delete_query, (retention_days, batch_size))
+            with self.conn() as c:
+                with c.cursor() as cur:
+                    cur.execute(delete_q, (retention_days, batch_size))
                     deleted = cur.rowcount
-                    conn.commit()
+                    c.commit()
                     return deleted
         
-        def on_retry(attempt: int, delay_ms: int, error: Exception):
-            record_retry("postgres_storage", f"cleanup_{table_name}", "failed")
+        def on_retry_cb(attempt: int, delay_ms: int, error: Exception):
+            record_retry("postgres", f"cleanup_{table}", "failed")
         
         try:
-            with track_latency("postgres_storage", f"cleanup_{table_name}"):
-                # Keep deleting batches until no more records to delete
+            with track_latency("postgres", f"cleanup_{table}"):
                 while True:
                     deleted = retry_operation(
                         delete_batch,
-                        config=self._retry_config,
-                        operation_name=f"PostgreSQL cleanup {table_name}",
-                        on_retry=on_retry,
+                        config=self.retry,
+                        operation_name=f"PostgreSQL cleanup {table}",
+                        on_retry=on_retry_cb,
                     )
-                    total_deleted += deleted
-                    
+                    total += deleted
                     if deleted < batch_size:
-                        # No more records to delete
                         break
-                    
-                    logger.debug(f"Deleted batch of {deleted} records from {table_name}, total: {total_deleted}")
+                    logger.debug(f"Deleted {deleted} from {table}, total: {total}")
             
-            record_retry("postgres_storage", f"cleanup_{table_name}", "success")
-            logger.info(f"Cleanup completed for {table_name}: {total_deleted} records deleted (retention: {retention_days} days)")
-            return total_deleted
-            
+            record_retry("postgres", f"cleanup_{table}", "success")
+            logger.info(f"Cleanup {table}: {total} records deleted")
+            return total
         except Exception as e:
-            record_error("postgres_storage", f"cleanup_{table_name}_error", "error")
-            logger.error(f"Failed to cleanup {table_name}: {e}")
+            record_error("postgres", f"cleanup_{table}_error", "error")
+            logger.error(f"Failed to cleanup {table}: {e}")
             raise
 
-    def cleanup_all_tables(self, retention_days: int, batch_size: int = 1000) -> Dict[str, int]:
-        """Cleanup all tables by deleting records older than retention period."""
-        tables = ["trades_1m", "indicators", "alerts"]
+    def cleanup_all(self, retention_days: int, batch_size: int = 1000) -> Dict[str, int]:
+        tables = ["trades_1m", "alerts"]
         results: Dict[str, int] = {}
         
-        for table in tables:
+        for t in tables:
             try:
-                deleted = self.cleanup_table(table, retention_days, batch_size)
-                results[table] = deleted
+                results[t] = self.cleanup(t, retention_days, batch_size)
             except Exception as e:
-                logger.error(f"Failed to cleanup table {table}: {e}")
-                results[table] = 0
-                # Continue with other tables even if one fails
+                logger.error(f"Failed to cleanup {t}: {e}")
+                results[t] = 0
         
-        total = sum(results.values())
-        logger.info(f"Cleanup all tables completed: {total} total records deleted across {len(tables)} tables")
+        logger.info(f"Cleanup all: {sum(results.values())} total records deleted")
         return results
 
+    # ========== Validation Errors ==========
 
-def check_postgres_health(
+    def write_validation_errors(
+        self, 
+        source: str,
+        records: List[Dict[str, Any]], 
+        failed: List[List[Dict[str, Any]]]
+    ) -> int:
+        if not records:
+            return 0
+        
+        prepared = []
+        for i, rec in enumerate(records):
+            prepared.append({
+                'source_type': source,
+                'record_data': json.dumps(rec, default=str),
+                'failed_expectations': json.dumps(
+                    failed[i] if i < len(failed) else [],
+                    default=str
+                ),
+            })
+        
+        query = """
+            INSERT INTO validation_errors
+            (source_type, record_data, failed_expectations)
+            VALUES (%(source_type)s, %(record_data)s, %(failed_expectations)s)
+        """
+        
+        def do_run():
+            with self.conn() as c:
+                with c.cursor() as cur:
+                    cur.executemany(query, prepared)
+                    c.commit()
+                    return len(prepared)
+        
+        def on_retry_cb(attempt: int, delay_ms: int, error: Exception):
+            record_retry("postgres", "write_validation_errors", "failed")
+        
+        try:
+            with track_latency("postgres", "write_validation_errors"):
+                result = retry_operation(
+                    do_run,
+                    config=self.retry,
+                    operation_name="PostgreSQL batch insert validation errors",
+                    on_retry=on_retry_cb,
+                )
+            record_retry("postgres", "write_validation_errors", "success")
+            logger.info(f"Wrote {result} validation errors for {source}")
+            return result
+        except Exception as e:
+            record_error("postgres", "write_validation_errors_error", "error")
+            logger.error(f"Failed to write validation errors: {e}")
+            raise
+
+
+def check_health(
     host: str = "localhost",
     port: int = 5432,
     user: str = "crypto",
     password: str = "crypto",
     database: str = "crypto_data",
-    max_retries: int = 3,
-    retry_delay: float = 1.0,
+    retries: int = 3,
+    delay: float = 1.0,
+    max_retries: Optional[int] = None,
+    retry_delay: Optional[float] = None,
     **context
 ) -> Dict[str, Any]:
+    actual_retries = max_retries if max_retries is not None else retries
+    actual_delay = retry_delay if retry_delay is not None else delay
+    
     retry_config = RetryConfig(
-        max_retries=max_retries,
-        initial_delay_ms=int(retry_delay * 1000),
+        max_retries=actual_retries,
+        initial_delay_ms=int(actual_delay * 1000),
         max_delay_ms=60000,
         multiplier=2.0,
         jitter_factor=0.1,
@@ -625,35 +760,35 @@ def check_postgres_health(
     
     attempt_count = [0]
     
-    def do_health_check():
+    def do_check():
         attempt_count[0] += 1
-        conn = psycopg2.connect(
+        c = psycopg2.connect(
             host=host, port=port, user=user,
             password=password, database=database, connect_timeout=10
         )
-        with conn.cursor() as cur:
+        with c.cursor() as cur:
             cur.execute("SELECT 1")
             cur.fetchone()
-        conn.close()
+        c.close()
         
         return {
             'service': 'postgresql', 'tier': 'warm', 'status': 'healthy',
             'host': host, 'port': port, 'database': database,
-            'attempt': attempt_count[0], 'timestamp': datetime.now().isoformat()
+            'attempt': attempt_count[0], 'timestamp': datetime.now(timezone.utc).isoformat()
         }
     
-    def on_retry(attempt: int, delay_ms: int, error: Exception):
+    def on_retry_cb(attempt: int, delay_ms: int, error: Exception):
         record_retry("postgres_health", "check", "failed")
     
     try:
         with track_latency("postgres_health", "check"):
             result = retry_operation(
-                do_health_check, config=retry_config,
-                operation_name="PostgreSQL health check", on_retry=on_retry,
+                do_check, config=retry_config,
+                operation_name="PostgreSQL health check", on_retry=on_retry_cb,
             )
         logger.info(f"PostgreSQL health check passed: {host}:{port}/{database}")
         record_retry("postgres_health", "check", "success")
         return result
     except Exception as e:
         record_error("postgres_health", "health_check_error", "critical")
-        raise Exception(f"PostgreSQL health check failed after {max_retries} attempts: {e}")
+        raise Exception(f"PostgreSQL health check failed after {actual_retries} attempts: {e}")

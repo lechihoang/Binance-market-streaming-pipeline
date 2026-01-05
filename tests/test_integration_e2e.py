@@ -16,9 +16,9 @@ from typing import Dict, Any, List
 from unittest.mock import MagicMock, patch
 
 # Import storage classes
-from storage.redis import RedisStorage
-from storage.postgres import PostgresStorage
-from storage.storage_writer import StorageWriter, BatchResult
+from storage.redis import Redis
+from storage.postgres import Postgres
+from storage.storage_writer import Writer, BatchResult
 
 
 def is_redis_available():
@@ -78,8 +78,8 @@ skip_if_no_docker = pytest.mark.skipif(
 
 @pytest.fixture
 def redis_storage():
-    """Create RedisStorage instance for testing."""
-    storage = RedisStorage(
+    """Create Redis instance for testing."""
+    storage = Redis(
         host=os.getenv("REDIS_HOST", "localhost"),
         port=int(os.getenv("REDIS_PORT", 6379)),
         db=15  # Use test database
@@ -93,8 +93,8 @@ def redis_storage():
 
 @pytest.fixture
 def postgres_storage():
-    """Create PostgresStorage instance for testing."""
-    storage = PostgresStorage(
+    """Create Postgres instance for testing."""
+    storage = Postgres(
         host=os.getenv("POSTGRES_HOST", "localhost"),
         port=int(os.getenv("POSTGRES_PORT", 5434)),
         user=os.getenv("POSTGRES_USER", "crypto"),
@@ -107,8 +107,8 @@ def postgres_storage():
 
 @pytest.fixture
 def storage_writer(redis_storage, postgres_storage):
-    """Create StorageWriter with 2-tier storage."""
-    return StorageWriter(
+    """Create Writer with 2-tier storage."""
+    return Writer(
         redis=redis_storage,
         postgres=postgres_storage
     )
@@ -269,14 +269,14 @@ class TestStorageWriterIntegration:
         result = storage_writer.write_aggregations_batch(records)
         
         assert isinstance(result, BatchResult)
-        assert result.total_records == 10
-        assert result.success_count > 0
+        assert result.total == 10
+        assert result.success > 0
         assert result.duration_ms > 0
         
-        assert result.tier_results["redis"] is True, "Redis tier should succeed"
-        assert result.tier_results["warm"] is True, "PostgreSQL tier should succeed"
+        assert result.tiers["redis"] is True, "Redis tier should succeed"
+        assert result.tiers["warm"] is True, "PostgreSQL tier should succeed"
         
-        assert result.failure_count == 0
+        assert result.failed == 0
         assert len(result.failed_records) == 0
     
     def test_write_alerts_batch_all_tiers(self, storage_writer):
@@ -286,44 +286,44 @@ class TestStorageWriterIntegration:
         result = storage_writer.write_alerts_batch(alerts)
         
         assert isinstance(result, BatchResult)
-        assert result.total_records == 5
-        assert result.success_count > 0
+        assert result.total == 5
+        assert result.success > 0
         assert result.duration_ms > 0
         
-        assert result.tier_results["redis"] is True, "Redis tier should succeed"
-        assert result.tier_results["warm"] is True, "PostgreSQL tier should succeed"
+        assert result.tiers["redis"] is True, "Redis tier should succeed"
+        assert result.tiers["warm"] is True, "PostgreSQL tier should succeed"
     
     def test_parallel_write_independence(self, storage_writer, redis_storage):
         """Test that tier failures don't block other tiers."""
         records = generate_aggregation_records(5)
         
-        original_upsert = storage_writer._warm_storage.upsert_candles_batch
-        storage_writer._warm_storage.upsert_candles_batch = MagicMock(
+        original_upsert = storage_writer.pg.upsert_candles_batch
+        storage_writer.pg.upsert_candles_batch = MagicMock(
             side_effect=Exception("Simulated PostgreSQL failure")
         )
         
         try:
             result = storage_writer.write_aggregations_batch(records)
             
-            assert result.tier_results["redis"] is True, "Redis should succeed despite PostgreSQL failure"
-            assert result.tier_results["warm"] is False, "PostgreSQL should fail"
+            assert result.tiers["redis"] is True, "Redis should succeed despite PostgreSQL failure"
+            assert result.tiers["warm"] is False, "PostgreSQL should fail"
             
             for record in records:
                 key = f"market:{record['symbol']}:{record['interval']}"
                 data = redis_storage.client.hgetall(key)
                 assert data is not None, f"Redis should have data for {key}"
         finally:
-            storage_writer._warm_storage.upsert_candles_batch = original_upsert
+            storage_writer.pg.upsert_candles_batch = original_upsert
     
     def test_empty_batch_handling(self, storage_writer):
         """Test that empty batches are handled correctly."""
         result = storage_writer.write_aggregations_batch([])
         
-        assert result.total_records == 0
-        assert result.success_count == 0
-        assert result.failure_count == 0
-        assert result.tier_results["redis"] is True
-        assert result.tier_results["warm"] is True
+        assert result.total == 0
+        assert result.success == 0
+        assert result.failed == 0
+        assert result.tiers["redis"] is True
+        assert result.tiers["warm"] is True
 
 
 @skip_if_no_docker
@@ -337,7 +337,7 @@ class TestDataFlowVerification:
         records = generate_aggregation_records(3, symbol="ETHUSDT")
         
         result = storage_writer.write_aggregations_batch(records)
-        assert all(result.tier_results.values()), "All tiers should succeed"
+        assert all(result.tiers.values()), "All tiers should succeed"
         
         redis_data = redis_storage.get_aggregation("ETHUSDT", "1m")
         assert redis_data is not None, "Redis should have aggregation data"
@@ -358,8 +358,8 @@ class TestDataFlowVerification:
         
         result = storage_writer.write_aggregations_batch(all_records)
         
-        assert result.total_records == 9
-        assert all(result.tier_results.values()), "All tiers should succeed"
+        assert result.total == 9
+        assert all(result.tiers.values()), "All tiers should succeed"
         
         for symbol in symbols:
             redis_data = redis_storage.get_aggregation(symbol, "1m")
@@ -384,7 +384,7 @@ class TestLatencyMeasurement:
         print(f"  Per-record average: {total_time_ms / 100:.2f}ms")
         
         assert total_time_ms < 5000, f"Batch write too slow: {total_time_ms}ms"
-        assert result.success_count == 100
+        assert result.success == 100
     
     def test_parallel_execution_faster_than_sequential(self, storage_writer):
         """Verify parallel writes are faster than sequential would be."""
@@ -395,4 +395,4 @@ class TestLatencyMeasurement:
         print(f"\nParallel write duration: {result.duration_ms:.2f}ms for 50 records")
         
         assert all(result.tier_results.values())
-        assert result.success_count == 50
+        assert result.success == 50

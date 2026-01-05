@@ -11,15 +11,10 @@ import sys
 
 sys.path.insert(0, '/opt/airflow')
 
-from utils.cleanup import cleanup_streaming_resources
+from util.cleanup import cleanup_streaming_resources
 
-from storage.redis import check_redis_health
-from storage.postgres import check_postgres_health
-
-from validators.job_validators import (
-    validate_aggregation_output,
-    validate_anomaly_output,
-)
+from storage.redis import check_health as check_redis_health
+from storage.postgres import check_health as check_postgres_health
 
 default_args = {
     'owner': 'data-engineering',
@@ -89,34 +84,18 @@ with DAG(
     with TaskGroup("trade_aggregation") as trade_aggregation:
         run_trade_aggregation_job = BashOperator(
             task_id='run_trade_aggregation_job',
-            bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/streaming/trade_aggregation_job.py',
+            bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/processing/trade_aggregation_job.py',
             cwd='/opt/airflow',
             env=spark_job_env,
         )
-        
-        validate_aggregation = PythonOperator(
-            task_id='validate_aggregation_output',
-            python_callable=validate_aggregation_output,
-            op_kwargs={'redis_host': redis_host, 'redis_port': redis_port},
-        )
-        
-        run_trade_aggregation_job >> validate_aggregation
     
     with TaskGroup("anomaly_detection") as anomaly_detection:
         run_anomaly_detection_job = BashOperator(
             task_id='run_anomaly_detection_job',
-            bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/streaming/anomaly_detection_job.py',
+            bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/processing/anomaly_detection_job.py',
             cwd='/opt/airflow',
             env=spark_job_env,
         )
-        
-        validate_anomaly = PythonOperator(
-            task_id='validate_anomaly_output',
-            python_callable=validate_anomaly_output,
-            op_kwargs={'redis_host': redis_host, 'redis_port': redis_port},
-        )
-        
-        run_anomaly_detection_job >> validate_anomaly
     
     cleanup_streaming_task = PythonOperator(
         task_id='cleanup_streaming',

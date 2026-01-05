@@ -1,5 +1,3 @@
-"""FastAPI Application - Crypto Data API."""
-
 import json as json_module
 import os
 import time
@@ -8,22 +6,37 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from threading import Lock
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from storage.redis import RedisStorage
-from storage.postgres import PostgresStorage
-from storage.query_router import QueryRouter
-from utils.logging import get_logger
+from api.schemas import (
+    HealthResponse,
+    KlineResponse,
+    LifecycleHealthResponse,
+    MarketSummaryResponse,
+    PriceSpikeResponse,
+    ServiceHealth,
+    TickerDataResponse,
+    TickerHealthResponse,
+    TickerListResponse,
+    TierStatusResponse,
+    TopTradingResponse,
+    TradesCountResponse,
+    VolumeSpikeResponse,
+    WhaleAlertResponse,
+)
+from storage.redis import Redis as RedisStorage
+from storage.postgres import Postgres as PostgresStorage
+from storage.query_router import Router as QueryRouter
+from util.logging import get_logger
 
 
 logger = get_logger(__name__)
@@ -31,6 +44,7 @@ logger = get_logger(__name__)
 
 RATE_LIMIT_PER_MINUTE = 100
 RATE_LIMIT_WINDOW_SECONDS = 60
+ALERT_SYMBOLS = os.getenv("ALERT_SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT").split(",")
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
 
@@ -132,7 +146,7 @@ REST API for cryptocurrency market data from Two-Tier Storage.
 
 ## Features
 
-* **Market Data** - Real-time ticker, price, and trade data from Redis
+* **Market Data** - Real-time ticker, price, and trade data from RedisStorage
 * **Analytics** - Historical klines from PostgreSQL
 * **Alerts** - Whale alerts and anomaly detection results
 * **System Monitoring** - Health checks and Prometheus metrics
@@ -140,7 +154,7 @@ REST API for cryptocurrency market data from Two-Tier Storage.
 ## Data Sources
 
 The API automatically routes queries to the appropriate storage tier:
-- **Redis**: Real-time data (last 1 hour, cache)
+- **RedisStorage**: Real-time data (last 1 hour, cache)
 - **PostgreSQL**: Historical data (permanent storage)
 """,
     version="1.0.0",
@@ -235,135 +249,7 @@ async def root():
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 
-class TickerDataResponse(BaseModel):
-    symbol: str
-    last_price: str
-    price_change: str
-    price_change_pct: str
-    open: str
-    high: str
-    low: str
-    volume: str
-    quote_volume: str
-    trade_count: int
-    updated_at: int
-    complete: bool
 
-
-class TickerListResponse(BaseModel):
-    """Response model for multiple tickers."""
-    tickers: List[TickerDataResponse]
-    count: int
-    timestamp: int
-
-
-class TickerHealthResponse(BaseModel):
-    """Health check response for ticker service."""
-    status: str
-    redis_connected: bool
-    ticker_count: int
-    latency_ms: float
-    timestamp: int
-
-
-class MarketSummaryResponse(BaseModel):
-    """Response model for market summary statistics."""
-    total_symbols: int
-    total_trades: int
-    total_quote_volume: float
-    avg_trade_value: float
-    timestamp: int
-
-
-class TopTradingResponse(BaseModel):
-    """Response model for top trading endpoints."""
-    symbol: str
-    last_price: float
-    trade_count: int
-    quote_volume: float
-
-
-class KlineResponse(BaseModel):
-    """OHLCV candlestick data."""
-    timestamp: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    quote_volume: Optional[float] = None
-    trade_count: Optional[int] = None
-    buy_count: Optional[int] = None
-    sell_count: Optional[int] = None
-
-
-class TradesCountResponse(BaseModel):
-    """Trades count aggregated by time interval."""
-    timestamp: datetime
-    trade_count: int
-    interval: str
-
-
-class WhaleAlertResponse(BaseModel):
-    """Response model for whale alerts."""
-    timestamp: datetime
-    symbol: str
-    side: str
-    amount: float
-    price: float
-    total_value: float
-
-
-class PriceSpikeResponse(BaseModel):
-    """Response model for price spike alerts."""
-    timestamp: datetime
-    symbol: str
-    open_price: float
-    close_price: float
-    price_change_pct: float
-
-
-class VolumeSpikeResponse(BaseModel):
-    """Response model for volume spike alerts."""
-    timestamp: datetime
-    symbol: str
-    volume: float
-    quote_volume: float
-    trade_count: int
-
-
-class ServiceHealth(BaseModel):
-    """Individual service health status."""
-    name: str
-    healthy: bool
-    latency_ms: Optional[float] = None
-    error: Optional[str] = None
-
-
-class HealthResponse(BaseModel):
-    """System health status."""
-    status: str
-    redis: bool
-    postgres: bool
-    timestamp: datetime
-    services: Optional[List[ServiceHealth]] = None
-
-
-class TierStatusResponse(BaseModel):
-    """Status of a single storage tier's last cleanup."""
-    tier: str
-    last_run: Optional[str] = None
-    success: bool
-    records_affected: int = 0
-    bytes_reclaimed: int = 0
-    error: Optional[str] = None
-
-
-class LifecycleHealthResponse(BaseModel):
-    """Lifecycle cleanup health status."""
-    last_run: Optional[str] = None
-    overall_success: bool
-    tiers: List[TierStatusResponse] = []
 
 
 @lru_cache()
@@ -445,7 +331,7 @@ def format_ticker_response(data: dict) -> TickerDataResponse:
 
 
 def check_redis_health(redis: RedisStorage) -> ServiceHealth:
-    """Check Redis connection health."""
+    """Check RedisStorage connection health."""
     start = time.time()
     try:
         healthy = redis.ping()
@@ -470,7 +356,7 @@ def check_postgres_health(postgres: PostgresStorage) -> ServiceHealth:
     """Check PostgreSQL connection health."""
     start = time.time()
     try:
-        postgres._execute_with_retry("SELECT 1", fetch=True)
+        postgres.run("SELECT 1", fetch=True)
         latency_ms = (time.time() - start) * 1000
         return ServiceHealth(
             name="postgres",
@@ -501,14 +387,68 @@ def determine_overall_status(redis_healthy: bool, postgres_healthy: bool, kafka_
         return "degraded"
 
 
-# Klines helper functions
 MAX_TIME_RANGE_DAYS = 365
-# Temporarily disabled 5m, 15m to test performance
-VALID_KLINE_INTERVALS = {"1m"}
+VALID_KLINE_INTERVALS = {"1m", "5m", "15m", "1h"}
+VALID_TRADES_COUNT_INTERVALS = {"1m", "1h", "1d"}
+
+
+def normalize_time_range(
+    start: Optional[datetime],
+    end: Optional[datetime],
+    default_hours: int = 1
+) -> Tuple[datetime, datetime]:
+    now = datetime.now(timezone.utc)
+    if end:
+        end = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+    else:
+        end = now
+    if start:
+        start = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+    else:
+        start = now - timedelta(hours=default_hours)
+    return start, end
+
+
+def parse_alert_details(alert: Dict[str, Any]) -> Dict[str, Any]:
+    details = alert.get("details", alert.get("metadata", {}))
+    if isinstance(details, str):
+        try:
+            return json_module.loads(details)
+        except Exception:
+            return {}
+    return details or {}
+
+
+def query_alerts_by_type(
+    query_router: QueryRouter,
+    alert_types: List[str],
+    start: datetime,
+    end: datetime,
+) -> List[Dict[str, Any]]:
+    alerts = []
+    for symbol in ALERT_SYMBOLS:
+        try:
+            result = query_router.query(
+                data_type=QueryRouter.ALERTS,
+                symbol=symbol,
+                start=start,
+                end=end,
+            )
+            for alert in result:
+                if alert.get("alert_type", "").upper() in alert_types:
+                    alerts.append(alert)
+        except Exception:
+            pass
+    return alerts
+
+
+def ensure_tz(dt: Optional[datetime]) -> datetime:
+    if dt is None:
+        return datetime.now(timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def validate_time_range(start: datetime, end: datetime) -> None:
-    """Validate that time range does not exceed 1 year."""
     if (end - start).days > MAX_TIME_RANGE_DAYS:
         raise HTTPException(
             status_code=400,
@@ -517,7 +457,6 @@ def validate_time_range(start: datetime, end: datetime) -> None:
 
 
 def validate_interval(interval: str) -> None:
-    """Validate that interval is one of the allowed values."""
     if interval not in VALID_KLINE_INTERVALS:
         raise HTTPException(
             status_code=400,
@@ -532,7 +471,7 @@ def query_klines_with_fallback(
     end: datetime,
     interval: str = "1m",
 ) -> tuple[List[dict], str]:
-    """Query klines with automatic tier selection (Redis cache or PostgreSQL)."""
+    """Query klines with automatic tier selection (RedisStorage cache or PostgreSQL)."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     redis_cutoff = now - timedelta(hours=1)
     
@@ -543,7 +482,7 @@ def query_klines_with_fallback(
     
     try:
         data = query_router.query(
-            data_type=QueryRouter.DATA_TYPE_KLINES,
+            data_type=QueryRouter.KLINES,
             symbol=symbol,
             start=start,
             end=end,
@@ -557,10 +496,6 @@ def query_klines_with_fallback(
     return [], "none"
 
 
-# Trades count intervals
-VALID_TRADES_COUNT_INTERVALS = {"1m", "1h", "1d"}
-
-
 @app.get("/api/v1/market/ticker-health", response_model=TickerHealthResponse, tags=["market"])
 async def get_ticker_health(
     storage: RedisStorage = Depends(get_ticker_storage),
@@ -569,7 +504,7 @@ async def get_ticker_health(
     start_time = time.time()
     
     redis_connected = storage.ping()
-    ticker_count = len(storage.get_all_tickers()) if redis_connected else 0
+    ticker_count = len(storage.get_tickers()) if redis_connected else 0
     latency_ms = (time.time() - start_time) * 1000
     
     if redis_connected and ticker_count > 0:
@@ -596,7 +531,7 @@ async def get_market_summary(
     """Get real-time market summary statistics."""
     start_time = time.time()
     
-    all_tickers = storage.get_all_tickers()
+    all_tickers = storage.get_tickers()
     
     total_symbols = len(all_tickers)
     total_trades = 0
@@ -632,7 +567,7 @@ async def get_all_realtime_tickers(
     """Get all available ticker data."""
     start_time = time.time()
     
-    tickers_data = storage.get_all_tickers()
+    tickers_data = storage.get_tickers()
     tickers = [format_ticker_response(data) for data in tickers_data]
     
     response_time_ms = (time.time() - start_time) * 1000
@@ -655,7 +590,7 @@ async def get_top_by_trades(
     """Get top symbols by trades count."""
     start_time = time.time()
     
-    all_tickers = storage.get_all_tickers()
+    all_tickers = storage.get_tickers()
     
     results = []
     for ticker in all_tickers:
@@ -695,7 +630,7 @@ async def get_top_by_volume(
     """Get top symbols by quote volume."""
     start_time = time.time()
     
-    all_tickers = storage.get_all_tickers()
+    all_tickers = storage.get_tickers()
     
     results = []
     for ticker in all_tickers:
@@ -730,7 +665,7 @@ async def get_top_by_volume(
 async def get_klines(
     symbol: str,
     response: Response,
-    interval: str = Query(default="1m", pattern="^(1m)$", description="Time interval (1m only - 5m/15m temporarily disabled)"),
+    interval: str = Query(default="1m", pattern="^(1m|5m|15m|1h)$", description="Time interval (1m, 5m, 15m, 1h)"),
     start: Optional[datetime] = Query(default=None, description="Start time"),
     end: Optional[datetime] = Query(default=None, description="End time"),
     query_router: QueryRouter = Depends(get_query_router),
@@ -800,7 +735,7 @@ async def get_trades_count(
     end = now
     
     try:
-        data = postgres.query_trades_count(symbol.upper(), start, end, interval)
+        data = postgres.get_trades_count(symbol.upper(), start, end, interval)
         response.headers["X-Data-Source"] = "postgres"
         
         if len(data) > limit:
@@ -828,60 +763,24 @@ async def get_whale_alerts(
     end: Optional[datetime] = Query(default=None, description="End time (default: now)"),
     query_router: QueryRouter = Depends(get_query_router),
 ) -> List[WhaleAlertResponse]:
-    """Get whale alerts (large trades > $100k).
+    start, end = normalize_time_range(start, end)
+    raw_alerts = query_alerts_by_type(query_router, ["WHALE", "WHALE_ALERT"], start, end)
     
-    Data source is automatically selected based on time range:
-    - < 1 hour: Redis (cache)
-    - >= 1 hour: PostgreSQL (permanent storage)
-    """
-    effective_limit = min(limit, 500)
     whale_alerts = []
-    
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    
-    # Normalize time range
-    if end:
-        end = end.replace(tzinfo=None) if end.tzinfo else end
-    else:
-        end = now
-    
-    if start:
-        start = start.replace(tzinfo=None) if start.tzinfo else start
-    else:
-        start = now - timedelta(hours=1)  # Default to 1 hour ago
-    
-    # Query alerts using QueryRouter (auto tier selection)
-    for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]:
-        try:
-            alerts = query_router.query(
-                data_type=QueryRouter.DATA_TYPE_ALERTS,
-                symbol=symbol,
-                start=start,
-                end=end,
-            )
-            for alert in alerts:
-                if alert.get("alert_type", "").upper() in ("WHALE", "WHALE_ALERT"):
-                    details = alert.get("details", alert.get("metadata", {}))
-                    if isinstance(details, str):
-                        try:
-                            details = json_module.loads(details)
-                        except:
-                            details = {}
-                    
-                    ts = alert.get("timestamp")
-                    whale_alerts.append(WhaleAlertResponse(
-                        timestamp=ts.replace(tzinfo=timezone.utc) if ts else datetime.now(timezone.utc),
-                        symbol=alert.get("symbol", "UNKNOWN"),
-                        side=details.get("side", "BUY"),
-                        amount=float(details.get("quantity", details.get("amount", 0))),
-                        price=float(details.get("price", 0)),
-                        total_value=float(details.get("value", details.get("total_value", 0))),
-                    ))
-        except Exception:
-            pass
+    for alert in raw_alerts:
+        details = parse_alert_details(alert)
+        ts = ensure_tz(alert.get("timestamp"))
+        whale_alerts.append(WhaleAlertResponse(
+            timestamp=ts,
+            symbol=alert.get("symbol", "UNKNOWN"),
+            side=details.get("side", "BUY"),
+            amount=float(details.get("quantity", details.get("amount", 0))),
+            price=float(details.get("price", 0)),
+            total_value=float(details.get("value", details.get("total_value", 0))),
+        ))
     
     whale_alerts.sort(key=lambda x: x.timestamp, reverse=True)
-    return whale_alerts[:effective_limit]
+    return whale_alerts[:min(limit, 500)]
 
 
 @app.get("/api/v1/analytics/alerts/price-spikes", response_model=List[PriceSpikeResponse], tags=["alerts"])
@@ -892,59 +791,23 @@ async def get_price_spikes(
     end: Optional[datetime] = Query(default=None, description="End time (default: now)"),
     query_router: QueryRouter = Depends(get_query_router),
 ) -> List[PriceSpikeResponse]:
-    """Get price spike alerts (price change > 2% in 1 minute).
+    start, end = normalize_time_range(start, end)
+    raw_alerts = query_alerts_by_type(query_router, ["PRICE_SPIKE"], start, end)
     
-    Data source is automatically selected based on time range:
-    - < 1 hour: Redis (cache)
-    - >= 1 hour: PostgreSQL (permanent storage)
-    """
-    effective_limit = min(limit, 500)
     price_spikes = []
-    
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    
-    # Normalize time range
-    if end:
-        end = end.replace(tzinfo=None) if end.tzinfo else end
-    else:
-        end = now
-    
-    if start:
-        start = start.replace(tzinfo=None) if start.tzinfo else start
-    else:
-        start = now - timedelta(hours=1)  # Default to 1 hour ago
-    
-    # Query alerts using QueryRouter (auto tier selection)
-    for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]:
-        try:
-            alerts = query_router.query(
-                data_type=QueryRouter.DATA_TYPE_ALERTS,
-                symbol=symbol,
-                start=start,
-                end=end,
-            )
-            for alert in alerts:
-                if alert.get("alert_type", "").upper() == "PRICE_SPIKE":
-                    details = alert.get("details", alert.get("metadata", {}))
-                    if isinstance(details, str):
-                        try:
-                            details = json_module.loads(details)
-                        except:
-                            details = {}
-                    
-                    ts = alert.get("timestamp")
-                    price_spikes.append(PriceSpikeResponse(
-                        timestamp=ts.replace(tzinfo=timezone.utc) if ts else datetime.now(timezone.utc),
-                        symbol=alert.get("symbol", "UNKNOWN"),
-                        open_price=float(details.get("open", 0)),
-                        close_price=float(details.get("close", 0)),
-                        price_change_pct=float(details.get("price_change_pct", 0)),
-                    ))
-        except Exception:
-            pass
+    for alert in raw_alerts:
+        details = parse_alert_details(alert)
+        ts = ensure_tz(alert.get("timestamp"))
+        price_spikes.append(PriceSpikeResponse(
+            timestamp=ts,
+            symbol=alert.get("symbol", "UNKNOWN"),
+            open_price=float(details.get("open", 0)),
+            close_price=float(details.get("close", 0)),
+            price_change_pct=float(details.get("price_change_pct", 0)),
+        ))
     
     price_spikes.sort(key=lambda x: x.timestamp, reverse=True)
-    return price_spikes[:effective_limit]
+    return price_spikes[:min(limit, 500)]
 
 
 @app.get("/api/v1/analytics/alerts/volume-spikes", response_model=List[VolumeSpikeResponse], tags=["alerts"])
@@ -955,59 +818,23 @@ async def get_volume_spikes(
     end: Optional[datetime] = Query(default=None, description="End time (default: now)"),
     query_router: QueryRouter = Depends(get_query_router),
 ) -> List[VolumeSpikeResponse]:
-    """Get volume spike alerts (quote volume > $1M in 1 minute).
+    start, end = normalize_time_range(start, end)
+    raw_alerts = query_alerts_by_type(query_router, ["VOLUME_SPIKE"], start, end)
     
-    Data source is automatically selected based on time range:
-    - < 1 hour: Redis (cache)
-    - >= 1 hour: PostgreSQL (permanent storage)
-    """
-    effective_limit = min(limit, 500)
     volume_spikes = []
-    
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    
-    # Normalize time range
-    if end:
-        end = end.replace(tzinfo=None) if end.tzinfo else end
-    else:
-        end = now
-    
-    if start:
-        start = start.replace(tzinfo=None) if start.tzinfo else start
-    else:
-        start = now - timedelta(hours=1)  # Default to 1 hour ago
-    
-    # Query alerts using QueryRouter (auto tier selection)
-    for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]:
-        try:
-            alerts = query_router.query(
-                data_type=QueryRouter.DATA_TYPE_ALERTS,
-                symbol=symbol,
-                start=start,
-                end=end,
-            )
-            for alert in alerts:
-                if alert.get("alert_type", "").upper() == "VOLUME_SPIKE":
-                    details = alert.get("details", alert.get("metadata", {}))
-                    if isinstance(details, str):
-                        try:
-                            details = json_module.loads(details)
-                        except:
-                            details = {}
-                    
-                    ts = alert.get("timestamp")
-                    volume_spikes.append(VolumeSpikeResponse(
-                        timestamp=ts.replace(tzinfo=timezone.utc) if ts else datetime.now(timezone.utc),
-                        symbol=alert.get("symbol", "UNKNOWN"),
-                        volume=float(details.get("volume", 0)),
-                        quote_volume=float(details.get("quote_volume", 0)),
-                        trade_count=int(details.get("trade_count", 0)),
-                    ))
-        except Exception:
-            pass
+    for alert in raw_alerts:
+        details = parse_alert_details(alert)
+        ts = ensure_tz(alert.get("timestamp"))
+        volume_spikes.append(VolumeSpikeResponse(
+            timestamp=ts,
+            symbol=alert.get("symbol", "UNKNOWN"),
+            volume=float(details.get("volume", 0)),
+            quote_volume=float(details.get("quote_volume", 0)),
+            trade_count=int(details.get("trade_count", 0)),
+        ))
     
     volume_spikes.sort(key=lambda x: x.timestamp, reverse=True)
-    return volume_spikes[:effective_limit]
+    return volume_spikes[:min(limit, 500)]
 
 
 @app.get("/api/v1/system/health", response_model=HealthResponse, tags=["system"])

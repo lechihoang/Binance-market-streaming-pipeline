@@ -1,0 +1,17 @@
+{
+  "type": "record",
+  "name": "Trade",
+  "namespace": "com.crypto.pipeline",
+  "fields": [
+    {"name": "event_type", "type": "string", "doc": "Event type (trade)"},
+    {"name": "event_time", "type": "long", "doc": "Event time in milliseconds"},
+    {"name": "symbol", "type": "string", "doc": "Trading pair symbol"},
+    {"name": "trade_id", "type": "long", "doc": "Unique trade ID"},
+    {"name": "price", "type": "string", "doc": "Trade price"},
+    {"name": "quantity", "type": "string", "doc": "Trade quantity"},
+    {"name": "trade_time", "type": "long", "doc": "Trade time in milliseconds"},
+    {"name": "is_buyer_maker", "type": "boolean", "doc": "Is buyer the maker"},
+    {"name": "ingestion_timestamp", "type": "long", "doc": "Ingestion timestamp in milliseconds"},
+    {"name": "stream_type", "type": "string", "doc": "Stream type identifier"}
+  ]
+}

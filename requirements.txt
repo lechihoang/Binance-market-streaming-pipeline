@@ -3,6 +3,8 @@
 # Core - WebSocket and Kafka
 websockets>=12.0
 kafka-python-ng>=2.2.0
+confluent-kafka[avro]>=2.3.0
+fastavro>=1.9.0
 python-snappy>=0.6.1
 pydantic>=2.0.0
 cityhash>=0.4.0
@@ -30,6 +32,9 @@ email-validator>=2.0.0
 
 # Airflow compatibility
 flask-session>=0.5.0,<0.8
+
+# Data Validation
+great-expectations>=1.0.0
 
 # Testing
 hypothesis>=6.0.0

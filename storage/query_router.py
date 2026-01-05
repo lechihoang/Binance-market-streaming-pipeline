@@ -1,107 +1,98 @@
-"""QueryRouter - Automatic tier selection for queries based on time range."""
+"""Auto tier selection for queries based on time range."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from .redis import RedisStorage
-from .postgres import PostgresStorage
-from utils.logging import get_logger
+from .redis import Redis
+from .postgres import Postgres
+from util.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-class QueryRouter:
+class Router:
+    CACHE_HOURS = 1
+    TIERS = ["redis", "postgres"]
+    KLINES = "klines"
+    ALERTS = "alerts"
+    TRADES = "trades"
+    VALID_INTERVALS = {"1m", "5m", "15m", "1h"}
     
-    REDIS_THRESHOLD_HOURS = 1
-    TIER_ORDER = ["redis", "postgres"]
-    
-    DATA_TYPE_KLINES = "klines"
-    DATA_TYPE_ALERTS = "alerts"
-    DATA_TYPE_TRADES = "trades"
-    
-    VALID_INTERVALS = {"1m", "5m", "15m"}
-    
-    def __init__(self, redis: RedisStorage, postgres: PostgresStorage):
+    def __init__(self, redis: Redis, postgres: Postgres):
         self.redis = redis
-        self.postgres = postgres
+        self.pg = postgres
         
-        self._query_map = {
+        self.query_map = {
             "redis": {
-                "klines": (lambda s, st, en: self._get_redis_candles(s), False),
-                "trades": (lambda s, st, en: self.redis.get_recent_trades(s, limit=1000), False),
-                "alerts": (lambda s, st, en: self.redis.get_recent_alerts(limit=1000), False),
+                "klines": (lambda s, st, en: self.redis_candles(s), False),
+                "trades": (lambda s, st, en: self.redis.get_trades(s, limit=1000), False),
+                "alerts": (lambda s, st, en: self.redis.get_alerts(limit=1000), False),
             },
             "postgres": {
-                "klines": (lambda s, st, en: self.postgres.query_candles(s, st, en), True),
-                "alerts": (lambda s, st, en: self.postgres.query_alerts(s, st, en), True),
+                "klines": (lambda s, st, en: self.pg.get_candles(s, st, en), True),
+                "alerts": (lambda s, st, en: self.pg.get_alerts(s, st, en), True),
             },
         }
 
-    def _wrap_single(self, result: Any) -> List[Dict[str, Any]]:
+    def wrap_single(self, result: Any) -> List[Dict[str, Any]]:
         return [result] if result else []
     
-    def _get_redis_candles(self, symbol: str, interval: str = "1m") -> List[Dict[str, Any]]:
+    def redis_candles(self, symbol: str, interval: str = "1m") -> List[Dict[str, Any]]:
         if interval == "1m":
-            result = self.redis.get_aggregation(symbol, "1m")
-            return [result] if result else []
-        else:
-            return self.redis.get_aggregations_multi(symbol, interval)
+            r = self.redis.get_agg(symbol, "1m")
+            return [r] if r else []
+        return self.redis.get_aggs(symbol, interval)
     
-    def _select_tier(self, start: datetime) -> str:
-        """Select storage tier based on start time.
-        
-        < 1 hour: Redis (cache)
-        >= 1 hour: PostgreSQL (permanent storage)
-        """
-        now = datetime.now()
-        start_local = start.replace(tzinfo=None) if start.tzinfo else start
-        if start_local > now - timedelta(hours=self.REDIS_THRESHOLD_HOURS):
+    def select_tier(self, start: datetime) -> str:
+        now = datetime.now(timezone.utc)
+        start_utc = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+        if start_utc > now - timedelta(hours=self.CACHE_HOURS):
             return "redis"
         return "postgres"
     
-    def _query_tier(
+    def query_tier(
         self, tier: str, data_type: str, symbol: str, start: datetime, end: datetime,
         interval: str = "1m"
     ) -> List[Dict[str, Any]]:
-        if data_type == self.DATA_TYPE_KLINES:
-            return self._query_klines_tier(tier, symbol, start, end, interval)
+        if data_type == self.KLINES:
+            return self.query_klines_tier(tier, symbol, start, end, interval)
         
-        tier_map = self._query_map.get(tier, {})
-        query_fn = tier_map.get(data_type)
-        if not query_fn:
+        tier_map = self.query_map.get(tier, {})
+        fn = tier_map.get(data_type)
+        if not fn:
             return []
-        return query_fn[0](symbol, start, end)
+        return fn[0](symbol, start, end)
     
-    def _query_klines_tier(
+    def query_klines_tier(
         self, tier: str, symbol: str, start: datetime, end: datetime, interval: str = "1m"
     ) -> List[Dict[str, Any]]:
         if tier == "redis":
-            return self._get_redis_candles(symbol, interval)
-        
+            return self.redis_candles(symbol, interval)
         elif tier == "postgres":
             if interval == "1m":
-                return self.postgres.query_candles(symbol, start, end)
-            else:
-                return self.postgres.query_candles_aggregated(symbol, start, end, interval)
-        
+                return self.pg.get_candles(symbol, start, end)
+            return self.pg.get_candles_agg(symbol, start, end, interval)
         return []
     
     def query(
         self, data_type: str, symbol: str, start: datetime, end: datetime,
         interval: str = "1m"
     ) -> List[Dict[str, Any]]:
-        """Query data with automatic tier selection and fallback."""
-        selected_tier = self._select_tier(start)
-        start_idx = self.TIER_ORDER.index(selected_tier)
+        """Query with auto tier selection and fallback."""
+        tier = self.select_tier(start)
+        idx = self.TIERS.index(tier)
         
-        for tier in self.TIER_ORDER[start_idx:]:
+        for t in self.TIERS[idx:]:
             try:
-                result = self._query_tier(tier, data_type, symbol, start, end, interval)
+                result = self.query_tier(t, data_type, symbol, start, end, interval)
                 if result:
-                    logger.debug(f"Query succeeded on {tier}: {data_type}, {symbol}, interval={interval}")
+                    logger.debug(f"Query OK on {t}: {data_type}, {symbol}, interval={interval}")
                     return result
-                logger.debug(f"{tier} returned empty, trying next tier")
+                logger.debug(f"{t} empty, trying next")
             except Exception as e:
-                logger.warning(f"{tier} query failed: {e}, trying next tier")
+                logger.warning(f"{t} query failed: {e}, trying next")
         
         return []
+
+
+

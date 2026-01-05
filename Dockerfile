@@ -30,12 +30,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application modules
 COPY api/ ./api/
-COPY binance_kafka_connector/ ./binance_kafka_connector/
+COPY ingestion/ ./ingestion/
 COPY storage/ ./storage/
-COPY streaming/ ./streaming/
-COPY ticker_consumer/ ./ticker_consumer/
-COPY utils/ ./utils/
-COPY validators/ ./validators/
+COPY processing/ ./processing/
+COPY util/ ./util/
+COPY validator/ ./validator/
 
 # Set Airflow home
 ENV AIRFLOW_HOME=/opt/airflow
@@ -51,4 +50,4 @@ RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app /opt/airflow
 
 # Default command (overridden in docker-compose)
-CMD ["python", "-m", "binance_kafka_connector"]
+CMD ["python", "-m", "ingestion.connector"]

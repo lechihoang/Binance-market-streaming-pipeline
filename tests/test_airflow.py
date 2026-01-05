@@ -214,7 +214,7 @@ class TestStreamingPipelineDAG:
     def test_dag_has_correct_properties(self, dag):
         """Test DAG has correct configuration."""
         assert dag.dag_id == 'streaming_processing_dag'
-        assert dag.schedule_interval == '* * * * *'
+        assert dag.schedule_interval == '*/5 * * * *'
         assert dag.catchup is False
         assert 'streaming' in dag.tags
     
@@ -242,17 +242,16 @@ class TestStreamingPipelineDAG:
         """Test DAG has the expected TaskGroups after simplify-indicators refactoring.
         
         Expected structure:
-        - health_checks: test_redis_health, test_postgres_health, test_minio_health
+        - health_checks: test_redis_health, test_postgres_health
         - trade_aggregation: run_trade_aggregation_job, validate_aggregation_output
         - anomaly_detection: run_anomaly_detection_job, validate_anomaly_output
         - cleanup_streaming (standalone task)
         """
         task_ids = [t.task_id for t in dag.tasks]
         
-        # Verify health_checks tasks
+        # Verify health_checks tasks (2-tier: Redis + PostgreSQL only, no MinIO)
         assert any('test_redis_health' in tid for tid in task_ids), "Missing test_redis_health task"
         assert any('test_postgres_health' in tid for tid in task_ids), "Missing test_postgres_health task"
-        assert any('test_minio_health' in tid for tid in task_ids), "Missing test_minio_health task"
         
         # Verify trade_aggregation tasks
         assert any('run_trade_aggregation_job' in tid for tid in task_ids), "Missing run_trade_aggregation_job task"

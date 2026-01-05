@@ -105,30 +105,29 @@ The `QueryRouter` automatically selects the appropriate storage tier based on th
 ├── dags/                          # Airflow DAG definitions
 │   ├── binance_connector_dag.py   # WebSocket connector orchestration
 │   └── streaming_processing_dag.py # Spark jobs orchestration
-├── src/
-│   ├── api/
-│   │   └── app.py                 # FastAPI application
-│   ├── binance_kafka_connector/
-│   │   └── connector.py           # Binance WebSocket client
-│   ├── storage/
-│   │   ├── redis.py               # Redis storage operations
-│   │   ├── postgres.py            # PostgreSQL storage operations
-│   │   ├── storage_writer.py      # Multi-tier write coordinator
-│   │   └── query_router.py        # Automatic tier selection
-│   ├── streaming/
-│   │   ├── base_spark_job.py      # Base class for Spark jobs
-│   │   ├── trade_aggregation_job.py # OHLCV aggregation
-│   │   └── anomaly_detection_job.py # Alert generation
-│   ├── ticker_consumer/
-│   │   └── consumer.py            # Kafka to Redis ticker consumer
-│   ├── utils/
-│   │   ├── kafka.py               # Kafka utilities
-│   │   ├── logging.py             # Structured logging
-│   │   ├── metrics.py             # Prometheus metrics
-│   │   ├── retry.py               # Retry with backoff
-│   │   └── shutdown.py            # Graceful shutdown handling
-│   └── validators/
-│       └── job_validators.py      # Output validation
+├── api/
+│   └── app.py                     # FastAPI application
+├── ingestion/                     # Data ingestion layer
+│   ├── connector.py               # Binance WebSocket → Kafka (producer)
+│   └── ticker_consumer.py         # Kafka → Redis (consumer)
+├── processing/                    # Stream processing layer
+│   ├── base_spark_job.py          # Base class for Spark jobs
+│   ├── trade_aggregation_job.py   # OHLCV aggregation
+│   └── anomaly_detection_job.py   # Alert generation
+├── storage/
+│   ├── redis.py                   # Redis storage operations
+│   ├── postgres.py                # PostgreSQL storage operations
+│   ├── storage_writer.py          # Multi-tier write coordinator
+│   └── query_router.py            # Automatic tier selection
+├── util/
+│   ├── kafka.py                   # Kafka utilities
+│   ├── logging.py                 # Structured logging
+│   ├── metrics.py                 # Prometheus metrics
+│   ├── retry.py                   # Retry with backoff
+│   └── shutdown.py                # Graceful shutdown handling
+├── validator/
+│   ├── aggregation_validator.py   # Aggregation output validation
+│   └── anomaly_validator.py       # Anomaly output validation
 ├── grafana/
 │   ├── dashboards/                # Pre-configured dashboards
 │   └── provisioning/              # Auto-provisioning config
