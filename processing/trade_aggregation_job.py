@@ -2,28 +2,29 @@
 
 import os
 import signal
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import requests
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, window, count, sum as spark_sum, avg, min as spark_min,
-    max as spark_max, first, last, stddev, when, to_json, struct, lit, expr,
+    max as spark_max, first, last, stddev, when, lit, expr,
 )
 from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.types import DoubleType, TimestampType
 
 from storage.redis import Redis
 from storage.postgres import Postgres
-from storage.storage_writer import Writer
 from util.shutdown import GracefulShutdown
 from util.metrics import record_error, record_message_processed
+from util.logging import get_logger
 from validator.aggregation_validator import validate_aggregation_records
+
+logger = get_logger(__name__)
 
 KAFKA_BROKERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL", "http://schema-registry:8081")
 TOPIC_TRADES = os.getenv("TOPIC_RAW_TRADES", "raw_trades")
-TOPIC_AGGS = os.getenv("TOPIC_PROCESSED_AGGREGATIONS", "processed_aggregations")
 CHECKPOINT = os.getenv("SPARK_CHECKPOINT_LOCATION", "/opt/airflow/data/spark-checkpoints/trade-agg")
 MAX_RUNTIME = int(os.getenv("SPARK_MAX_RUNTIME", "180"))
 
@@ -35,6 +36,15 @@ PG_USER = os.getenv("POSTGRES_USER", "crypto")
 PG_PASS = os.getenv("POSTGRES_PASSWORD", "crypto")
 PG_DB = os.getenv("POSTGRES_DB", "crypto_data")
 
+JDBC_URL = f"jdbc:postgresql://{PG_HOST}:{PG_PORT}/{PG_DB}"
+
+# Columns to write to PostgreSQL
+PG_COLUMNS = [
+    "timestamp", "symbol", "open", "high", "low", "close", "volume", "quote_volume",
+    "trade_count", "buy_count", "sell_count", "volume_weighted_avg_price",
+    "price_change_percent", "buy_sell_ratio", "average_price", "price_volatility",
+]
+
 
 class TradeAggJob:
     """1-minute OHLCV aggregation from trades."""
@@ -43,7 +53,8 @@ class TradeAggJob:
         self.shutdown = GracefulShutdown(graceful_shutdown_timeout=15)
         self.spark: Optional[SparkSession] = None
         self.query: Any = None
-        self.writer: Optional[Writer] = None
+        self.redis: Optional[Redis] = None
+        self.pg: Optional[Postgres] = None
         self.schema_cache = ""
         signal.signal(signal.SIGTERM, lambda sig, _: self.shutdown.request_shutdown(sig))
         signal.signal(signal.SIGINT, lambda sig, _: self.shutdown.request_shutdown(sig))
@@ -97,47 +108,92 @@ class TradeAggJob:
             .withColumn("price_change_percent", ((col("close") - col("open")) / col("open")) * 100)
             .withColumn("buy_sell_ratio", when(col("sell_count") > 0, col("buy_count") / col("sell_count"))))
 
+    def write_to_postgres(self, df: DataFrame) -> None:
+        df.select(*PG_COLUMNS).write \
+            .format("jdbc") \
+            .option("url", JDBC_URL) \
+            .option("dbtable", "staging_trades_1m") \
+            .option("user", PG_USER) \
+            .option("password", PG_PASS) \
+            .option("driver", "org.postgresql.Driver") \
+            .mode("overwrite") \
+            .save()
+        
+        if self.pg:
+            self.pg.merge_staging_to_trades()
+
+    def write_to_redis(self, records: List[dict]) -> int:
+        """Write records to Redis cache."""
+        if not self.redis or not records:
+            return 0
+        
+        # Convert timestamp to ISO string for Redis
+        redis_records = []
+        for r in records:
+            record = dict(r)
+            ts = record.get("timestamp")
+            if ts and hasattr(ts, "isoformat"):
+                record["timestamp"] = ts.isoformat()
+            redis_records.append(record)
+        
+        return self.redis.write_aggs(redis_records)
+
     def write_batch(self, batch_df: DataFrame, batch_id: int) -> None:
         if self.shutdown.shutdown_requested:
             raise InterruptedError("Shutdown requested")
         if batch_df.isEmpty():
             return
 
+        # Validate records
         records = [row.asDict() for row in batch_df.collect()]
+        valid, invalid, _ = validate_aggregation_records(records, None)
+        
+        if not valid:
+            logger.warning(f"Batch {batch_id}: No valid records to write")
+            return
 
+        # Filter DataFrame to only valid records (by symbol+timestamp)
+        valid_keys = {(r["symbol"], r["timestamp"]) for r in valid}
+        valid_df = batch_df.filter(
+            col("symbol").isin([k[0] for k in valid_keys])
+        )
+
+        # 1. Write to PostgreSQL via staging + MERGE (primary storage)
         try:
-            kafka_df = batch_df.select(
-                col("symbol").cast("string").alias("key"),
-                to_json(struct(*[col(c) for c in batch_df.columns])).alias("value"),
-            )
-            (kafka_df.write.format("kafka")
-                .option("kafka.bootstrap.servers", KAFKA_BROKERS)
-                .option("topic", TOPIC_AGGS)
-                .save())
-        except Exception:
-            pass
+            self.write_to_postgres(valid_df)
+            logger.info(f"Batch {batch_id}: Wrote {len(valid)} records to PostgreSQL")
+        except Exception as e:
+            logger.error(f"Batch {batch_id}: Failed to write to PostgreSQL: {e}")
+            record_error("spark_trade_aggregation", "postgres_write_error", "error")
 
-        valid, invalid, _ = validate_aggregation_records(records, self.writer.pg if self.writer else None)
-        if valid and self.writer:
-            self.writer.write_aggs(valid)
-            for _ in valid:
-                record_message_processed("spark_trade_aggregation", "processed_aggregations", "success")
+        # 2. Write to Redis cache (for real-time queries)
+        try:
+            redis_count = self.write_to_redis(valid)
+            logger.info(f"Batch {batch_id}: Wrote {redis_count} records to Redis")
+        except Exception as e:
+            logger.error(f"Batch {batch_id}: Failed to write to Redis: {e}")
+            record_error("spark_trade_aggregation", "redis_write_error", "error")
+
+        # Record metrics
+        for _ in valid:
+            record_message_processed("spark_trade_aggregation", "processed_aggregations", "success")
 
     def run(self) -> None:
         try:
             self.spark = (SparkSession.builder
                 .appName("TradeAggJob")
                 .config("spark.jars.packages",
-                        "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,"
-                        "org.apache.spark:spark-avro_2.12:3.5.3")
+                        "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.0,"
+                        "org.apache.spark:spark-avro_2.13:4.1.0,"
+                        "org.postgresql:postgresql:42.7.4")
                 .config("spark.sql.shuffle.partitions", "2")
                 .config("spark.sql.streaming.checkpointLocation", CHECKPOINT)
+                .config("spark.pyspark.python", "/usr/local/bin/python")
+                .config("spark.pyspark.driver.python", "/usr/local/bin/python")
                 .getOrCreate())
 
-            self.writer = Writer(
-                redis=Redis(host=REDIS_HOST, port=REDIS_PORT),
-                postgres=Postgres(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, database=PG_DB),
-            )
+            self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT)
+            self.pg = Postgres(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, database=PG_DB)
 
             raw = (self.spark.readStream
                 .format("kafka")
@@ -158,8 +214,13 @@ class TradeAggJob:
             self.query.awaitTermination(timeout=MAX_RUNTIME)
         except Exception as e:
             record_error("spark_trade_aggregation", "job_failure", "critical")
+            logger.error(f"Trade aggregation job failed: {e}")
             raise
         finally:
+            if self.pg:
+                self.pg.close()
+            if self.redis:
+                self.redis.close()
             if self.query and self.query.isActive:
                 self.query.stop()
             if self.spark:

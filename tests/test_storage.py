@@ -1,13 +1,12 @@
 """
 Consolidated test module for Storage Layer.
-Contains all tests for Redis, PostgreSQL, MinIO storage, health checks, query router, and storage writer.
+Contains all tests for Redis, PostgreSQL, health checks, and query router.
 
 Table of Contents:
 - Imports and Setup (line ~20)
 - Health Check Tests (line ~80)
 - Query Router Property Tests (line ~250)
 - Redis Storage Property Tests (line ~400)
-- Storage Writer Property Tests (line ~600)
 
 Requirements: 6.3
 """
@@ -19,10 +18,9 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, MagicMock, patch
 from hypothesis import given, settings, strategies as st, assume, HealthCheck
 
-from storage.redis import Redis, check_redis_health
-from storage.postgres import Postgres, check_postgres_health
+from storage.redis import Redis, check_health as check_redis_health
+from storage.postgres import Postgres, check_health as check_postgres_health
 from storage.query_router import Router
-from storage.storage_writer import Writer
 
 
 def is_redis_available():
@@ -327,71 +325,3 @@ alert_data_strategy = st.fixed_dictionaries({
         "actual": st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False),
     }),
 })
-
-
-@skip_if_no_redis
-class TestPartialFailureResilience:
-    """Property tests for partial failure resilience using mocks."""
-    
-    @given(aggregation=aggregation_strategy, timestamp=recent_timestamp_strategy())
-    @settings(max_examples=50, deadline=None)
-    def test_aggregation_redis_failure_continues_to_postgres(self, aggregation, timestamp):
-        """
-        Feature: two-tier-storage, Property 8: Partial failure resilience
-        Validates: Requirements 5.4
-        
-        For any write operation where Redis fails, PostgreSQL
-        should still receive the data successfully.
-        """
-        mock_postgres = MagicMock(spec=Postgres)
-        mock_postgres.upsert_candle.return_value = None
-        
-        mock_redis = MagicMock(spec=Redis)
-        mock_redis.write_aggregation.side_effect = Exception("Redis connection failed")
-        
-        writer = Writer(
-            redis=mock_redis,
-            postgres=mock_postgres
-        )
-        
-        data = {**aggregation, "timestamp": timestamp}
-        
-        results = writer.write_aggregation(data)
-        
-        assert results["redis"] is False, "Redis should fail"
-        assert results["warm"] is True, "Warm path (PostgreSQL) should succeed despite Redis failure"
-        
-        mock_postgres.upsert_candle.assert_called_once()
-    
-    @given(aggregation=aggregation_strategy, timestamp=recent_timestamp_strategy())
-    @settings(max_examples=50, deadline=None)
-    def test_aggregation_postgres_failure_redis_still_succeeds(self, aggregation, timestamp):
-        """
-        Feature: two-tier-storage, Property 8: Partial failure resilience
-        Validates: Requirements 5.4
-        """
-        redis_storage = Redis(host="localhost", port=6379, db=15)
-        redis_storage.client.flushdb()
-        
-        try:
-            mock_postgres = MagicMock(spec=Postgres)
-            mock_postgres.upsert_candle.side_effect = Exception("PostgreSQL write failed")
-            
-            writer = Writer(
-                redis=redis_storage,
-                postgres=mock_postgres
-            )
-            
-            data = {**aggregation, "timestamp": timestamp}
-            symbol = data["symbol"]
-            interval = data["interval"]
-            
-            results = writer.write_aggregation(data)
-            
-            assert results["redis"] is True, "Redis should succeed despite PostgreSQL failure"
-            assert results["warm"] is False, "Warm path (PostgreSQL) should fail"
-            
-            redis_data = redis_storage.get_aggregation(symbol, interval)
-            assert redis_data is not None, "Data should be in Redis"
-        finally:
-            redis_storage.client.flushdb()

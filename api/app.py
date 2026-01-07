@@ -22,6 +22,8 @@ from api.schemas import (
     KlineResponse,
     LifecycleHealthResponse,
     MarketSummaryResponse,
+    MLPredictionResponse,
+    MLStatusResponse,
     PriceSpikeResponse,
     ServiceHealth,
     TickerDataResponse,
@@ -44,7 +46,7 @@ logger = get_logger(__name__)
 
 RATE_LIMIT_PER_MINUTE = 100
 RATE_LIMIT_WINDOW_SECONDS = 60
-ALERT_SYMBOLS = os.getenv("ALERT_SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT").split(",")
+ALERT_SYMBOLS = os.getenv("ALERT_SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT,XRPUSDT,SOLUSDT,ADAUSDT,DOGEUSDT,TRXUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,MATICUSDT,SHIBUSDT,LTCUSDT,ATOMUSDT").split(",")
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
 
@@ -859,4 +861,64 @@ async def get_health(
         postgres=postgres_health.healthy,
         timestamp=datetime.now(timezone.utc),
         services=[redis_health, postgres_health]
+    )
+
+
+def classify_volatility_level(volatility: float) -> str:
+    """Classify volatility into LOW/MEDIUM/HIGH levels."""
+    if volatility < 0.5:
+        return "LOW"
+    elif volatility <= 1.5:
+        return "MEDIUM"
+    else:
+        return "HIGH"
+
+
+@app.get("/api/v1/ml/predict/{symbol}", response_model=MLPredictionResponse, tags=["ml"])
+async def get_ml_prediction(
+    symbol: str,
+    response: Response,
+    postgres: PostgresStorage = Depends(get_postgres),
+) -> MLPredictionResponse:
+    prediction = postgres.get_latest_volatility_prediction(symbol.upper())
+    
+    if not prediction:
+        raise HTTPException(status_code=404, detail=f"No volatility prediction available for {symbol}")
+    
+    response.headers["X-Data-Source"] = "postgres"
+    
+    predicted_volatility = prediction["predicted_volatility_5m"]
+    
+    return MLPredictionResponse(
+        symbol=prediction["symbol"],
+        timestamp=str(prediction["timestamp"]),
+        current_volatility=prediction["current_volatility"],
+        predicted_volatility_5m=predicted_volatility,
+        volatility_level=classify_volatility_level(predicted_volatility),
+    )
+
+
+@app.get("/api/v1/ml/status", response_model=MLStatusResponse, tags=["ml"])
+async def get_ml_status() -> MLStatusResponse:
+    import json
+    from pathlib import Path
+    
+    model_dir = Path(os.getenv("MODEL_DIR", "models"))
+    model_path = model_dir / "volatility_predictor.txt"
+    meta_path = model_dir / "volatility_predictor_meta.json"
+    
+    if not model_path.exists():
+        return MLStatusResponse(
+            model_loaded=False,
+            error="Volatility model file not found",
+        )
+    
+    model_info = {}
+    if meta_path.exists():
+        with open(meta_path, "r") as f:
+            model_info = json.load(f)
+    
+    return MLStatusResponse(
+        model_loaded=True,
+        model_info=model_info,
     )

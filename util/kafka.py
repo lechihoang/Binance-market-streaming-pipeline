@@ -32,6 +32,9 @@ class KafkaProducer:
         self._producer = SerializingProducer({
             "bootstrap.servers": bootstrap_servers,
             "linger.ms": linger_ms,
+            "queue.buffering.max.messages": 500000,
+            "queue.buffering.max.kbytes": 2097152,
+            "batch.size": 2000000,
             "value.serializer": avro_serializer,
             "key.serializer": lambda k, ctx: k.encode("utf-8") if k else None,
         })

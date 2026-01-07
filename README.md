@@ -1,6 +1,6 @@
 # Real-Time Cryptocurrency Data Pipeline
 
-A production-grade data engineering project that ingests, processes, and visualizes real-time cryptocurrency market data from Binance. Built with modern streaming technologies and a two-tier storage architecture for optimal query performance across different time ranges.
+A production-grade data engineering project that ingests, processes, and visualizes real-time cryptocurrency market data from Binance. Built with modern streaming technologies using PostgreSQL/TimescaleDB for persistent storage and Redis for real-time caching.
 
 ## Table of Contents
 
@@ -24,7 +24,9 @@ This project demonstrates a complete real-time data pipeline designed to handle 
 1. Connects to Binance WebSocket API to receive live trade and ticker data
 2. Streams data through Apache Kafka for reliable message delivery
 3. Processes data using Apache Spark Structured Streaming for aggregations and anomaly detection
-4. Stores data in a two-tier architecture (Redis for cache, PostgreSQL for permanent storage)
+4. Stores data in a **two-tier storage architecture**:
+   - **PostgreSQL/TimescaleDB**: Primary storage with staging + MERGE pattern for reliable upserts
+   - **Redis**: Real-time cache for sub-millisecond access
 5. Exposes data through a FastAPI REST API with automatic tier routing
 6. Visualizes metrics and data through Grafana dashboards
 7. Orchestrates all workflows using Apache Airflow
@@ -37,7 +39,7 @@ The system follows an event-driven architecture with the following components:
 
 - **Data Ingestion Layer**: Binance WebSocket connector pushes real-time data to Kafka
 - **Stream Processing Layer**: Spark Structured Streaming jobs consume from Kafka, compute aggregations, and detect anomalies
-- **Storage Layer**: Two-tier storage (Redis cache + PostgreSQL permanent)
+- **Storage Layer**: PostgreSQL/TimescaleDB (primary) + Redis (cache)
 - **API Layer**: FastAPI service with intelligent query routing based on time range
 - **Orchestration Layer**: Airflow manages all pipeline workflows and health checks
 - **Monitoring Layer**: Prometheus metrics with Grafana dashboards
@@ -49,7 +51,7 @@ The system follows an event-driven architecture with the following components:
 | Message Broker | Apache Kafka | Real-time event streaming |
 | Stream Processing | Apache Spark (PySpark) | Trade aggregation, anomaly detection |
 | Cache | Redis | Real-time data cache (< 1 hour) |
-| Permanent Storage | PostgreSQL | All historical data (forever) |
+| Database | PostgreSQL/TimescaleDB | Primary storage with staging + MERGE |
 | API Framework | FastAPI | REST API with OpenAPI docs |
 | Orchestration | Apache Airflow | Workflow management |
 | Monitoring | Prometheus + Grafana | Metrics and visualization |
@@ -72,9 +74,9 @@ The system follows an event-driven architecture with the following components:
   - Volume spikes (quote volume > $1M)
   - Price spikes (> 2% change in 1 minute)
 
-### Two-Tier Storage
+### Storage Architecture
+- **PostgreSQL/TimescaleDB**: Primary storage with staging table + MERGE pattern for handling late-arriving data
 - **Redis (Cache)**: Sub-millisecond access for real-time data (< 1 hour)
-- **PostgreSQL (Permanent)**: SQL queries for all historical data
 
 ### REST API
 - Automatic query routing based on time range
@@ -91,10 +93,25 @@ The system follows an event-driven architecture with the following components:
 
 ## Storage Architecture
 
-| Tier | Storage | Retention | Use Case | Query Latency |
-|------|---------|-----------|----------|---------------|
-| Cache | Redis | 1 hour | Real-time dashboards | < 1ms |
-| Permanent | PostgreSQL | Forever | All analytics & history | < 100ms |
+The pipeline implements a **two-tier storage architecture**:
+
+```
+Kafka → Spark Streaming ─┬→ PostgreSQL/TimescaleDB (Primary - staging + MERGE)
+                         └→ Redis (Cache - Real-time)
+```
+
+| Tier | Storage | Purpose | Features | Query Latency |
+|------|---------|---------|----------|---------------|
+| Primary | PostgreSQL/TimescaleDB | API queries, analytics | SQL, Indexing, UPSERT via staging, hypertables | < 50ms |
+| Cache | Redis | Real-time dashboards | In-memory, TTL-based expiry | < 1ms |
+
+### Why This Architecture?
+
+1. **Staging + MERGE Pattern**: Reliable upserts without duplicate key errors
+2. **TimescaleDB Hypertables**: Optimized time-series storage with automatic partitioning
+3. **Compression**: TimescaleDB native compression for historical data
+4. **Continuous Aggregates**: Materialized views for faster queries
+5. **Redis Cache**: Sub-millisecond access for real-time dashboards
 
 The `QueryRouter` automatically selects the appropriate storage tier based on the requested time range.
 
@@ -117,7 +134,6 @@ The `QueryRouter` automatically selects the appropriate storage tier based on th
 ├── storage/
 │   ├── redis.py                   # Redis storage operations
 │   ├── postgres.py                # PostgreSQL storage operations
-│   ├── storage_writer.py          # Multi-tier write coordinator
 │   └── query_router.py            # Automatic tier selection
 ├── util/
 │   ├── kafka.py                   # Kafka utilities
@@ -289,7 +305,7 @@ KAFKA_BOOTSTRAP_SERVERS=kafka:29092
 REDIS_HOST=redis
 REDIS_PORT=6379
 
-# PostgreSQL (Permanent Storage)
+# PostgreSQL (Primary Storage)
 POSTGRES_HOST=postgres-data
 POSTGRES_PORT=5432
 POSTGRES_USER=crypto

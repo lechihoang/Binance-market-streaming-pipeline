@@ -170,9 +170,31 @@ class Postgres:
                     ON trades_1m(timestamp DESC)
                 """)
                 
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS staging_trades_1m (
+                        timestamp TIMESTAMPTZ NOT NULL,
+                        symbol VARCHAR(20) NOT NULL,
+                        open DOUBLE PRECISION,
+                        high DOUBLE PRECISION,
+                        low DOUBLE PRECISION,
+                        close DOUBLE PRECISION,
+                        volume DOUBLE PRECISION,
+                        quote_volume DOUBLE PRECISION,
+                        trade_count INTEGER,
+                        buy_count INTEGER,
+                        sell_count INTEGER,
+                        volume_weighted_avg_price DOUBLE PRECISION,
+                        price_change_percent DOUBLE PRECISION,
+                        buy_sell_ratio DOUBLE PRECISION,
+                        average_price DOUBLE PRECISION,
+                        price_volatility DOUBLE PRECISION
+                    )
+                """)
+                
                 self.setup_policies(cur)
                 self.setup_aggs(cur)
-                self.setup_ml_view(cur)
+                self.setup_ml_features_table(cur)
+                self.setup_predictions_table(cur)
                 
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS alerts (
@@ -182,7 +204,7 @@ class Postgres:
                         alert_type VARCHAR(50) NOT NULL,
                         severity VARCHAR(20) NOT NULL,
                         message TEXT,
-                        metadata JSONB,
+                        metadata TEXT,
                         UNIQUE (timestamp, symbol, alert_type)
                     )
                 """)
@@ -206,6 +228,20 @@ class Postgres:
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_validation_errors_source 
                     ON validation_errors(source_type, created_at DESC)
+                """)
+                
+                # Job checkpoints table for incremental processing
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS job_checkpoints (
+                        job_name VARCHAR(100) PRIMARY KEY,
+                        last_processed_timestamp TIMESTAMPTZ NOT NULL,
+                        records_processed BIGINT DEFAULT 0,
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_job_checkpoints_updated
+                    ON job_checkpoints(updated_at DESC)
                 """)
         logger.debug("PostgreSQL tables initialized")
 
@@ -301,95 +337,154 @@ class Postgres:
             except Exception as e:
                 logger.debug(f"Refresh {view} skipped: {e}")
 
-    def setup_ml_view(self, cur) -> None:
-        """Create ML features view for LSTM anomaly detection."""
+    def setup_ml_features_table(self, cur) -> None:
+        """Create ml_features table matching notebook training features."""
         try:
             cur.execute("""
-                CREATE OR REPLACE VIEW trades_ml_features AS
-                SELECT 
-                    timestamp,
-                    symbol,
+                CREATE TABLE IF NOT EXISTS ml_features (
+                    timestamp TIMESTAMPTZ NOT NULL,
+                    symbol VARCHAR(20) NOT NULL,
                     
-                    -- Price features (4)
-                    close,
-                    price_change_percent AS price_change_pct,
-                    price_volatility,
-                    close - LAG(close, 5) OVER w AS price_momentum_5,
+                    -- Base data
+                    close DOUBLE PRECISION,
+                    volume DOUBLE PRECISION,
+                    quote_volume DOUBLE PRECISION,
+                    trade_count INTEGER,
                     
-                    -- Volume features (3)
-                    volume,
-                    quote_volume,
-                    volume / NULLIF(LAG(volume, 1) OVER w, 0) AS volume_ratio,
+                    -- Selected features matching notebook model (15 features)
+                    return_5m DOUBLE PRECISION,
+                    return_15m DOUBLE PRECISION,
+                    volatility_5m DOUBLE PRECISION,
+                    volatility_15m DOUBLE PRECISION,
+                    volatility_30m DOUBLE PRECISION,
+                    volatility_60m DOUBLE PRECISION,
+                    volatility_ratio DOUBLE PRECISION,
+                    candle_range DOUBLE PRECISION,
+                    volume_ratio_60m DOUBLE PRECISION,
+                    buy_ratio DOUBLE PRECISION,
+                    buy_sell_imbalance DOUBLE PRECISION,
+                    price_vs_ma_15m DOUBLE PRECISION,
+                    price_vs_ma_60m DOUBLE PRECISION,
+                    hour INTEGER,
+                    symbol_encoded INTEGER,
                     
-                    -- Trade features (2)
-                    trade_count,
-                    buy_sell_ratio
+                    -- Target for training (future volatility)
+                    volatility_next_5m DOUBLE PRECISION,
                     
-                FROM trades_1m
-                WINDOW w AS (PARTITION BY symbol ORDER BY timestamp)
+                    computed_at TIMESTAMPTZ DEFAULT NOW(),
+                    
+                    PRIMARY KEY (symbol, timestamp)
+                )
             """)
-            logger.debug("ML features view created")
+            
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ml_features_ts
+                ON ml_features(timestamp DESC)
+            """)
+            
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ml_features_symbol_ts
+                ON ml_features(symbol, timestamp DESC)
+            """)
+            
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ml_features_training
+                ON ml_features(timestamp DESC)
+                WHERE volatility_next_5m IS NOT NULL
+            """)
+            
+            logger.debug("ML features table created")
         except Exception as e:
-            logger.warning(f"ML view setup warning: {e}")
+            logger.warning(f"ML features table setup warning: {e}")
+
+    def setup_predictions_table(self, cur) -> None:
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS volatility_predictions (
+                    timestamp TIMESTAMPTZ NOT NULL,
+                    symbol VARCHAR(20) NOT NULL,
+                    current_volatility DOUBLE PRECISION,
+                    predicted_volatility_5m DOUBLE PRECISION,
+                    computed_at TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (symbol, timestamp)
+                )
+            """)
+            
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_volatility_predictions_ts
+                ON volatility_predictions(timestamp DESC)
+            """)
+            
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_volatility_predictions_symbol_ts
+                ON volatility_predictions(symbol, timestamp DESC)
+            """)
+            
+            logger.debug("Volatility predictions table created")
+        except Exception as e:
+            logger.warning(f"Volatility predictions table setup warning: {e}")
+
+    # ========== Job Checkpoints ==========
+
+    def get_checkpoint(self, job_name: str) -> Optional[Dict[str, Any]]:
+        query = """
+            SELECT job_name, last_processed_timestamp, records_processed, updated_at
+            FROM job_checkpoints
+            WHERE job_name = %s
+        """
+        result = self.run(query, (job_name,), fetch=True)
+        return result[0] if result else None
+
+    def update_checkpoint(
+        self,
+        job_name: str,
+        last_processed_timestamp: datetime,
+        records_processed: int = 0
+    ) -> None:
+        query = """
+            INSERT INTO job_checkpoints (job_name, last_processed_timestamp, records_processed, updated_at)
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (job_name) DO UPDATE SET
+                last_processed_timestamp = EXCLUDED.last_processed_timestamp,
+                records_processed = job_checkpoints.records_processed + EXCLUDED.records_processed,
+                updated_at = NOW()
+        """
+        self.run(query, (job_name, last_processed_timestamp, records_processed))
+        logger.debug(f"Checkpoint updated: {job_name} -> {last_processed_timestamp}")
+
+    def delete_checkpoint(self, job_name: str) -> bool:
+        query = "DELETE FROM job_checkpoints WHERE job_name = %s"
+        self.run(query, (job_name,))
+        logger.debug(f"Checkpoint deleted: {job_name}")
+        return True
 
     def close(self) -> None:
         if self.pool:
             self.pool.closeall()
             logger.info("PostgreSQL connection pool closed")
 
-    # ========== Candles ==========
-
-    def write_candle(self, candle: Dict[str, Any]) -> None:
-        query = """
-            INSERT INTO trades_1m 
-            (timestamp, symbol, open, high, low, close, volume, quote_volume, 
-             trade_count, buy_count, sell_count, volume_weighted_avg_price,
-             price_change_percent, buy_sell_ratio, average_price, price_volatility)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    def merge_staging_to_trades(self) -> int:
+        merge_sql = """
+            INSERT INTO trades_1m (
+                timestamp, symbol, open, high, low, close, volume, quote_volume,
+                trade_count, buy_count, sell_count, volume_weighted_avg_price,
+                price_change_percent, buy_sell_ratio, average_price, price_volatility
+            )
+            SELECT 
+                timestamp, symbol, open, high, low, close, volume, quote_volume,
+                trade_count, buy_count, sell_count, volume_weighted_avg_price,
+                price_change_percent, buy_sell_ratio, average_price, price_volatility
+            FROM staging_trades_1m
             ON CONFLICT (symbol, timestamp) DO UPDATE SET
-                open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-                close = EXCLUDED.close, volume = EXCLUDED.volume,
-                quote_volume = EXCLUDED.quote_volume, trade_count = EXCLUDED.trade_count,
-                buy_count = EXCLUDED.buy_count, sell_count = EXCLUDED.sell_count,
-                volume_weighted_avg_price = EXCLUDED.volume_weighted_avg_price,
-                price_change_percent = EXCLUDED.price_change_percent,
-                buy_sell_ratio = EXCLUDED.buy_sell_ratio,
-                average_price = EXCLUDED.average_price,
-                price_volatility = EXCLUDED.price_volatility
-        """
-        params = (
-            candle.get('timestamp'), candle.get('symbol'),
-            candle.get('open'), candle.get('high'), candle.get('low'),
-            candle.get('close'), candle.get('volume'),
-            candle.get('quote_volume'), candle.get('trade_count'),
-            candle.get('buy_count'), candle.get('sell_count'),
-            candle.get('volume_weighted_avg_price'),
-            candle.get('price_change_percent'),
-            candle.get('buy_sell_ratio'),
-            candle.get('average_price'),
-            candle.get('price_volatility')
-        )
-        self.run(query, params)
-
-    def write_candles(self, candles: List[Dict[str, Any]]) -> int:
-        if not candles:
-            return 0
-        
-        query = """
-            INSERT INTO trades_1m 
-            (timestamp, symbol, open, high, low, close, volume, quote_volume, 
-             trade_count, buy_count, sell_count, volume_weighted_avg_price,
-             price_change_percent, buy_sell_ratio, average_price, price_volatility)
-            VALUES (%(timestamp)s, %(symbol)s, %(open)s, %(high)s, %(low)s, 
-                    %(close)s, %(volume)s, %(quote_volume)s, %(trade_count)s, 
-                    %(buy_count)s, %(sell_count)s, %(volume_weighted_avg_price)s,
-                    %(price_change_percent)s, %(buy_sell_ratio)s, 
-                    %(average_price)s, %(price_volatility)s)
-            ON CONFLICT (symbol, timestamp) DO UPDATE SET
-                open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-                close = EXCLUDED.close, volume = EXCLUDED.volume,
-                quote_volume = EXCLUDED.quote_volume, trade_count = EXCLUDED.trade_count,
-                buy_count = EXCLUDED.buy_count, sell_count = EXCLUDED.sell_count,
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume,
+                quote_volume = EXCLUDED.quote_volume,
+                trade_count = EXCLUDED.trade_count,
+                buy_count = EXCLUDED.buy_count,
+                sell_count = EXCLUDED.sell_count,
                 volume_weighted_avg_price = EXCLUDED.volume_weighted_avg_price,
                 price_change_percent = EXCLUDED.price_change_percent,
                 buy_sell_ratio = EXCLUDED.buy_sell_ratio,
@@ -397,31 +492,16 @@ class Postgres:
                 price_volatility = EXCLUDED.price_volatility
         """
         
-        def do_run():
-            with self.conn() as c:
-                with c.cursor() as cur:
-                    cur.executemany(query, candles)
-                    c.commit()
-                    return len(candles)
+        with self.conn() as c:
+            with c.cursor() as cur:
+                cur.execute(merge_sql)
+                merged_count = cur.rowcount
+                cur.execute("TRUNCATE staging_trades_1m")
         
-        def on_retry_cb(attempt: int, delay_ms: int, error: Exception):
-            record_retry("postgres", "write_candles", "failed")
-        
-        try:
-            with track_latency("postgres", "write_candles"):
-                result = retry_operation(
-                    do_run,
-                    config=self.retry,
-                    operation_name="PostgreSQL batch upsert candles",
-                    on_retry=on_retry_cb,
-                )
-            record_retry("postgres", "write_candles", "success")
-            logger.debug(f"Wrote {result} candles")
-            return result
-        except Exception as e:
-            record_error("postgres", "write_candles_error", "error")
-            logger.error(f"Failed to write candles: {e}")
-            raise
+        logger.info(f"Merged {merged_count} records from staging to trades_1m")
+        return merged_count
+
+    # ========== Candles (Read) ==========
 
     def get_candles(
         self, symbol: str, start: datetime, end: datetime
@@ -465,73 +545,7 @@ class Postgres:
         result = self.run(query, (symbol, start, end), fetch=True)
         return result or []
 
-    # ========== Alerts ==========
-
-    def write_alert(self, alert: Dict[str, Any]) -> None:
-        metadata = alert.get('metadata')
-        if isinstance(metadata, dict):
-            metadata = json.dumps(metadata)
-        
-        query = """
-            INSERT INTO alerts
-            (timestamp, symbol, alert_type, severity, message, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """
-        params = (
-            alert.get('timestamp'), alert.get('symbol'),
-            alert.get('alert_type'), alert.get('severity'),
-            alert.get('message'), metadata
-        )
-        self.run(query, params)
-
-    def write_alerts(self, alerts: List[Dict[str, Any]]) -> int:
-        if not alerts:
-            return 0
-        
-        prepared = []
-        for a in alerts:
-            p = dict(a)
-            meta = p.get('metadata')
-            if isinstance(meta, dict):
-                p['metadata'] = json.dumps(meta)
-            prepared.append(p)
-        
-        query = """
-            INSERT INTO alerts
-            (timestamp, symbol, alert_type, severity, message, metadata)
-            VALUES (%(timestamp)s, %(symbol)s, %(alert_type)s, %(severity)s, 
-                    %(message)s, %(metadata)s)
-            ON CONFLICT (timestamp, symbol, alert_type) DO UPDATE SET
-                severity = EXCLUDED.severity,
-                message = EXCLUDED.message,
-                metadata = EXCLUDED.metadata
-        """
-        
-        def do_run():
-            with self.conn() as c:
-                with c.cursor() as cur:
-                    cur.executemany(query, prepared)
-                    c.commit()
-                    return len(prepared)
-        
-        def on_retry_cb(attempt: int, delay_ms: int, error: Exception):
-            record_retry("postgres", "write_alerts", "failed")
-        
-        try:
-            with track_latency("postgres", "write_alerts"):
-                result = retry_operation(
-                    do_run,
-                    config=self.retry,
-                    operation_name="PostgreSQL batch insert alerts",
-                    on_retry=on_retry_cb,
-                )
-            record_retry("postgres", "write_alerts", "success")
-            logger.debug(f"Wrote {result} alerts")
-            return result
-        except Exception as e:
-            record_error("postgres", "write_alerts_error", "error")
-            logger.error(f"Failed to write alerts: {e}")
-            raise
+    # ========== Alerts (Read) ==========
 
     def get_alerts(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
         query = """
@@ -555,22 +569,70 @@ class Postgres:
             alerts.append(a)
         return alerts
 
-    # ========== ML Features ==========
+    # ========== ML Features (Read) ==========
 
-    def get_ml_features(
+    def get_ml_features_for_training(
         self, 
-        symbol: str, 
-        limit: int = 60
+        start: datetime,
+        end: datetime,
+        symbols: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        if symbols:
+            query = """
+                SELECT * FROM ml_features
+                WHERE volatility_next_5m IS NOT NULL
+                  AND timestamp >= %s AND timestamp <= %s
+                  AND symbol = ANY(%s)
+                ORDER BY timestamp
+            """
+            result = self.run(query, (start, end, symbols), fetch=True)
+        else:
+            query = """
+                SELECT * FROM ml_features
+                WHERE volatility_next_5m IS NOT NULL
+                  AND timestamp >= %s AND timestamp <= %s
+                ORDER BY timestamp
+            """
+            result = self.run(query, (start, end), fetch=True)
+        return result or []
+
+    def get_ml_features_latest(self, symbol: str) -> Optional[Dict[str, Any]]:
+        query = """
+            SELECT * FROM ml_features
+            WHERE symbol = %s
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """
+        result = self.run(query, (symbol,), fetch=True)
+        return result[0] if result else None
+
+    # ========== Volatility Predictions (Read) ==========
+
+    def get_latest_volatility_prediction(self, symbol: str) -> Optional[Dict[str, Any]]:
+        query = """
+            SELECT timestamp, symbol, current_volatility, predicted_volatility_5m, computed_at
+            FROM volatility_predictions
+            WHERE symbol = %s
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """
+        result = self.run(query, (symbol,), fetch=True)
+        return result[0] if result else None
+
+    def get_volatility_predictions(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
     ) -> List[Dict[str, Any]]:
         query = """
-            SELECT * FROM trades_ml_features
-            WHERE symbol = %s
-              AND timestamp > NOW() - INTERVAL '2 hours'
-            ORDER BY timestamp DESC
-            LIMIT %s
+            SELECT timestamp, symbol, current_volatility, predicted_volatility_5m, computed_at
+            FROM volatility_predictions
+            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+            ORDER BY timestamp ASC
         """
-        result = self.run(query, (symbol, limit), fetch=True)
-        return result[::-1] if result else []
+        result = self.run(query, (symbol, start, end), fetch=True)
+        return result or []
 
     # ========== Trades Count ==========
 

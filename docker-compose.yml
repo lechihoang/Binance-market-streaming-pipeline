@@ -103,6 +103,21 @@ services:
         reservations:
           memory: 64M
 
+  # Schema Init - Register Avro schemas to Schema Registry
+  schema-init:
+    image: curlimages/curl:latest
+    container_name: schema-init
+    depends_on:
+      schema-registry:
+        condition: service_healthy
+    volumes:
+      - ./schema:/app/schema:ro
+      - ./script:/app/script:ro
+    entrypoint: ["/bin/sh", "-c", "sleep 30 && /bin/sh /app/script/register_schema.sh"]
+    networks:
+      - streaming-network
+    restart: "no"
+
   # Redis - Hot cache for real-time data
   redis:
     image: redis:7-alpine
@@ -131,8 +146,6 @@ services:
     hostname: postgres
     container_name: airflow-postgres
     environment:
-      TZ: ${TZ:-Asia/Ho_Chi_Minh}
-      PGTZ: ${TZ:-Asia/Ho_Chi_Minh}
       POSTGRES_USER: ${AIRFLOW_POSTGRES_USER:-airflow}
       POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD:-airflow}
       POSTGRES_DB: ${AIRFLOW_POSTGRES_DB:-airflow}
@@ -160,8 +173,6 @@ services:
     hostname: postgres-data
     container_name: postgres-data
     environment:
-      TZ: ${TZ:-Asia/Ho_Chi_Minh}
-      PGTZ: ${TZ:-Asia/Ho_Chi_Minh}
       POSTGRES_USER: ${POSTGRES_USER:-crypto}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
       POSTGRES_DB: ${POSTGRES_DB:-crypto_data}
@@ -248,9 +259,6 @@ services:
       airflow-init:
         condition: service_completed_successfully
     environment:
-      TZ: ${TZ:-Asia/Ho_Chi_Minh}
-      AIRFLOW__CORE__DEFAULT_TIMEZONE: ${TIMEZONE:-Asia/Ho_Chi_Minh}
-      AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: ${TIMEZONE:-Asia/Ho_Chi_Minh}
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER:-airflow}:${AIRFLOW_POSTGRES_PASSWORD:-airflow}@postgres/${AIRFLOW_POSTGRES_DB:-airflow}
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg=}
@@ -315,9 +323,9 @@ services:
         condition: service_completed_successfully
       airflow-webserver:
         condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
     environment:
-      TZ: ${TZ:-Asia/Ho_Chi_Minh}
-      AIRFLOW__CORE__DEFAULT_TIMEZONE: ${TIMEZONE:-Asia/Ho_Chi_Minh}
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER:-airflow}:${AIRFLOW_POSTGRES_PASSWORD:-airflow}@postgres/${AIRFLOW_POSTGRES_DB:-airflow}
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg=}
@@ -342,6 +350,8 @@ services:
       - ./ingestion:/opt/airflow/ingestion
       - ./util:/opt/airflow/util
       - ./validator:/opt/airflow/validator
+      - ./ml:/opt/airflow/ml
+      - ./models:/opt/airflow/models
       - spark-checkpoints:/opt/airflow/data/spark-checkpoints
       # /app mounts for BashOperator commands
       - ./ingestion:/app/ingestion
@@ -350,6 +360,8 @@ services:
       - ./util:/app/util
       - ./schema:/app/schema
       - ./validator:/app/validator
+      - ./ml:/app/ml
+      - ./models:/app/models
     command: airflow scheduler
     networks:
       - streaming-network
@@ -457,7 +469,6 @@ services:
     ports:
       - "8000:8000"
     environment:
-      TZ: ${TZ:-Asia/Ho_Chi_Minh}
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
       PARQUET_PATH: /app/data/parquet
@@ -471,6 +482,8 @@ services:
       - ./storage:/app/storage
       - ./util:/app/util
       - ./data:/app/data
+      - ./ml:/app/ml
+      - ./models:/app/models
     command: uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload
     networks:
       - streaming-network

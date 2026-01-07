@@ -120,3 +120,17 @@ class LifecycleHealthResponse(BaseModel):
     last_run: Optional[str] = None
     overall_success: bool
     tiers: List[TierStatusResponse] = []
+
+
+class MLPredictionResponse(BaseModel):
+    symbol: str
+    timestamp: str
+    current_volatility: float
+    predicted_volatility_5m: float
+    volatility_level: str  # LOW / MEDIUM / HIGH
+
+
+class MLStatusResponse(BaseModel):
+    model_loaded: bool
+    model_info: Optional[dict] = None
+    error: Optional[str] = None

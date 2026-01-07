@@ -89,6 +89,14 @@ with DAG(
             env=spark_job_env,
         )
     
+    with TaskGroup("volatility_prediction") as volatility_prediction:
+        run_volatility_prediction_job = BashOperator(
+            task_id='run_volatility_prediction_job',
+            bash_command='PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/processing/volatility_prediction_job.py',
+            cwd='/opt/airflow',
+            env=spark_job_env,
+        )
+    
     with TaskGroup("anomaly_detection") as anomaly_detection:
         run_anomaly_detection_job = BashOperator(
             task_id='run_anomaly_detection_job',
@@ -107,4 +115,6 @@ with DAG(
         trigger_rule=TriggerRule.ALL_DONE,
     )
     
-    health_checks >> trade_aggregation >> anomaly_detection >> cleanup_streaming_task
+    health_checks >> trade_aggregation
+    trade_aggregation >> volatility_prediction >> cleanup_streaming_task
+    trade_aggregation >> anomaly_detection >> cleanup_streaming_task

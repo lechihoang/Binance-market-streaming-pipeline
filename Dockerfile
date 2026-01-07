@@ -5,7 +5,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies including Java for PySpark
+# Install system dependencies including Java 21 for PySpark 4.x
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
@@ -17,9 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Java environment
+# Set Java environment with Arrow compatibility flags for Java 21
 ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
+ENV _JAVA_OPTIONS="--add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED"
 
 # Install Python dependencies
 COPY requirements.txt ./

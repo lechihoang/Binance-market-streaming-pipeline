@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 WS_URL = os.getenv("BINANCE_WS_URL", "wss://stream.binance.com:9443/stream")
 KAFKA_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL", "http://schema-registry:8081")
-SYMBOLS = os.getenv("SYMBOLS", "btcusdt,ethusdt,bnbusdt,solusdt,xrpusdt").lower().split(",")
+SYMBOLS = os.getenv("TICKER_SYMBOLS", "").lower().split(",")
 
 
 class BinanceConnector:
@@ -43,8 +43,8 @@ class BinanceConnector:
                     logger.info(f"Connected, streaming {len(SYMBOLS)} symbols")
                     async for msg in ws:
                         data = json.loads(msg).get("data", {})
-                        ts = time.time_ns() // 1_000_000
                         event = data.get("e")
+                        ts = time.time_ns() // 1_000_000
 
                         if event == "trade":
                             self.trades.send(key=data["s"], value=self.to_trade(data, ts))
