@@ -9,12 +9,13 @@ from components.api import get_klines, get_available_symbols
 st.set_page_config(page_title="Symbol Deep Dive", page_icon="🔍", layout="wide")
 
 COLORS = {
-    "green": "#73BF69",
-    "blue": "#5794F2", 
-    "orange": "#FF9830",
-    "red": "#F2495C",
-    "bg": "#111111",
-    "card": "#1E1E1E"
+    "green": "#2E7D32",
+    "blue": "#1976D2", 
+    "orange": "#F57C00",
+    "red": "#D32F2F",
+    "bg": "#FFFFFF",
+    "card": "#F5F5F5",
+    "grid": "#E0E0E0"
 }
 
 def create_price_chart(data, symbol):
@@ -23,77 +24,97 @@ def create_price_chart(data, symbol):
     df = pd.DataFrame(data)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     
+    # Calculate y-axis range with padding
+    price_min = df["low"].min()
+    price_max = df["high"].max()
+    price_range = price_max - price_min
+    padding = price_range * 0.1 if price_range > 0 else price_max * 0.01
+    
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=df["timestamp"], y=df["close"],
         mode="lines", name="Price",
         line=dict(color=COLORS["green"], width=2),
-        fill="tozeroy", fillcolor="rgba(115,191,105,0.15)"
+        hovertemplate="<b>%{x|%H:%M}</b><br>" +
+                      "Close: $%{y:,.2f}<br>" +
+                      "<extra></extra>"
     ))
     fig.update_layout(
         title=f"Price - {symbol}",
-        template="plotly_dark",
+        template="plotly_white",
         paper_bgcolor=COLORS["bg"],
         plot_bgcolor=COLORS["bg"],
         height=300,
         margin=dict(l=50, r=30, t=40, b=30),
         yaxis_title="Price (USD)",
-        xaxis=dict(showgrid=True, gridcolor="#333"),
-        yaxis=dict(showgrid=True, gridcolor="#333")
+        xaxis=dict(showgrid=True, gridcolor=COLORS["grid"]),
+        yaxis=dict(showgrid=True, gridcolor=COLORS["grid"], range=[price_min - padding, price_max + padding]),
+        hovermode="x unified"
     )
     return fig
 
 def create_volume_chart(data, symbol):
     if not data:
-        return go.Figure().update_layout(title=f"Volume - {symbol}", template="plotly_dark")
+        return go.Figure().update_layout(title=f"Volume - {symbol}", template="plotly_white")
     df = pd.DataFrame(data)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=df["timestamp"], y=df["volume"],
-        name="Volume", marker_color=COLORS["blue"], opacity=0.7
+        name="Volume", marker_color=COLORS["blue"], opacity=0.7,
+        hovertemplate="<b>%{x|%H:%M}</b><br>" +
+                      "Volume: %{y:,.4f}<br>" +
+                      "<extra></extra>"
     ))
     fig.update_layout(
         title=f"Volume - {symbol}",
-        template="plotly_dark",
+        template="plotly_white",
         paper_bgcolor=COLORS["bg"],
         plot_bgcolor=COLORS["bg"],
         height=300,
         margin=dict(l=50, r=30, t=40, b=30),
         yaxis_title="Volume",
-        xaxis=dict(showgrid=True, gridcolor="#333"),
-        yaxis=dict(showgrid=True, gridcolor="#333")
+        xaxis=dict(showgrid=True, gridcolor=COLORS["grid"]),
+        yaxis=dict(showgrid=True, gridcolor=COLORS["grid"]),
+        hovermode="x unified"
     )
     return fig
 
 def create_trades_chart(data, symbol):
     if not data:
-        return go.Figure().update_layout(title=f"Trades - {symbol}", template="plotly_dark")
+        return go.Figure().update_layout(title=f"Trades - {symbol}", template="plotly_white")
     df = pd.DataFrame(data)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=df["timestamp"], y=df["trade_count"],
-        name="Trades", marker_color=COLORS["orange"], opacity=0.7
+        name="Trades", marker_color=COLORS["orange"], opacity=0.7,
+        customdata=df[["buy_count", "sell_count"]].values,
+        hovertemplate="<b>%{x|%H:%M}</b><br>" +
+                      "Total: %{y:,} trades<br>" +
+                      "Buy: %{customdata[0]:,}<br>" +
+                      "Sell: %{customdata[1]:,}<br>" +
+                      "<extra></extra>"
     ))
     fig.update_layout(
         title=f"Trades Count - {symbol}",
-        template="plotly_dark",
+        template="plotly_white",
         paper_bgcolor=COLORS["bg"],
         plot_bgcolor=COLORS["bg"],
         height=300,
         margin=dict(l=50, r=30, t=40, b=30),
         yaxis_title="Trades",
-        xaxis=dict(showgrid=True, gridcolor="#333"),
-        yaxis=dict(showgrid=True, gridcolor="#333")
+        xaxis=dict(showgrid=True, gridcolor=COLORS["grid"]),
+        yaxis=dict(showgrid=True, gridcolor=COLORS["grid"]),
+        hovermode="x unified"
     )
     return fig
 
 def create_buysell_chart(data, symbol):
     if not data:
-        return go.Figure().update_layout(title=f"Buy/Sell - {symbol}", template="plotly_dark")
+        return go.Figure().update_layout(title=f"Buy/Sell - {symbol}", template="plotly_white")
     df = pd.DataFrame(data)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     
@@ -105,25 +126,34 @@ def create_buysell_chart(data, symbol):
         x=df["timestamp"], y=df["buy_pct"],
         mode="lines", name="Buy %",
         line=dict(color=COLORS["green"], width=0),
-        fill="tozeroy", fillcolor="rgba(115,191,105,0.8)",
-        stackgroup="one"
+        fill="tozeroy", fillcolor="rgba(46,125,50,0.7)",
+        stackgroup="one",
+        customdata=df[["buy_count", "trade_count"]].values,
+        hovertemplate="<b>Buy</b>: %{y:.1f}%<br>" +
+                      "(%{customdata[0]:,} / %{customdata[1]:,})<br>" +
+                      "<extra></extra>"
     ))
     fig.add_trace(go.Scatter(
         x=df["timestamp"], y=df["sell_pct"],
         mode="lines", name="Sell %",
         line=dict(color=COLORS["red"], width=0),
-        fill="tonexty", fillcolor="rgba(242,73,92,0.8)",
-        stackgroup="one"
+        fill="tonexty", fillcolor="rgba(211,47,47,0.7)",
+        stackgroup="one",
+        customdata=df[["sell_count", "trade_count"]].values,
+        hovertemplate="<b>Sell</b>: %{y:.1f}%<br>" +
+                      "(%{customdata[0]:,} / %{customdata[1]:,})<br>" +
+                      "<extra></extra>"
     ))
     fig.update_layout(
         title=f"Buy/Sell Ratio - {symbol}",
-        template="plotly_dark",
+        template="plotly_white",
         paper_bgcolor=COLORS["bg"],
         plot_bgcolor=COLORS["bg"],
         height=300,
         margin=dict(l=50, r=30, t=40, b=30),
-        yaxis=dict(range=[0, 100], showgrid=True, gridcolor="#333"),
-        xaxis=dict(showgrid=True, gridcolor="#333")
+        yaxis=dict(range=[0, 100], showgrid=True, gridcolor=COLORS["grid"], title="Percentage"),
+        xaxis=dict(showgrid=True, gridcolor=COLORS["grid"]),
+        hovermode="x unified"
     )
     return fig
 

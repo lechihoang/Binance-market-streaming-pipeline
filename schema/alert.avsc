@@ -6,7 +6,7 @@
     {"name": "alert_id", "type": "string"},
     {"name": "timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}},
     {"name": "symbol", "type": "string"},
-    {"name": "alert_type", "type": {"type": "enum", "name": "AlertType", "symbols": ["WHALE_ALERT", "VOLUME_SPIKE", "PRICE_SPIKE"]}},
+    {"name": "alert_type", "type": {"type": "enum", "name": "AlertType", "symbols": ["VOLUME_SPIKE", "PRICE_SPIKE", "TRADE_COUNT_SPIKE", "BUY_SELL_IMBALANCE"]}},
     {"name": "alert_level", "type": {"type": "enum", "name": "AlertLevel", "symbols": ["HIGH", "MEDIUM", "LOW"]}},
     {"name": "details", "type": "string"},
     {"name": "created_at", "type": {"type": "long", "logicalType": "timestamp-millis"}}

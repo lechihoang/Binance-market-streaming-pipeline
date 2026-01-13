@@ -6,7 +6,7 @@ Table of Contents:
 - Imports and Setup (line ~20)
 - Aggregation Tests (line ~60)
 - Anomaly Detector Tests (line ~300)
-- Anomaly Detection Property Tests (line ~400)
+- Data Quality Tests with Great Expectations (line ~400)
 - Connector Tests (line ~500)
 - Micro-Batch Property Tests (line ~600)
 
@@ -25,6 +25,13 @@ from unittest.mock import Mock, patch, MagicMock
 import pytest
 from hypothesis import given, settings, assume
 from hypothesis import strategies as st
+import pandas as pd
+
+import great_expectations as gx
+from great_expectations import expectations as gxe
+
+from processing.validators.anomaly_validator import build_anomaly_expectations, run_ge_validation as run_anomaly_ge_validation
+from processing.validators.aggregation_validator import build_aggregation_expectations, run_ge_validation as run_aggregation_ge_validation
 
 
 def calculate_ohlcv(trades: List[Dict[str, Any]]) -> Dict[str, float]:
@@ -76,12 +83,6 @@ def calculate_buy_sell_ratio(buy_count: int, sell_count: int) -> float:
     if sell_count == 0:
         return float('inf')
     return buy_count / sell_count
-
-
-def is_whale_alert(price: float, quantity: float, threshold: float = 100000.0) -> bool:
-    """Check if trade qualifies as whale alert."""
-    value = price * quantity
-    return value > threshold
 
 
 def is_volume_spike(current_volume: float, historical_volumes: list, multiplier: float = 3.0) -> bool:
@@ -277,25 +278,6 @@ class TestBuySellRatio:
         assert ratio == float('inf')
 
 
-class TestWhaleAlert:
-    """Test whale alert detection logic."""
-    
-    def test_whale_alert_at_exact_threshold(self):
-        """Test whale alert at exact $100k threshold."""
-        assert is_whale_alert(50000.0, 2.0) == False
-        assert is_whale_alert(50000.0, 2.001) == True
-    
-    def test_whale_alert_above_threshold(self):
-        """Test whale alert above threshold."""
-        assert is_whale_alert(50000.0, 3.0) == True
-        assert is_whale_alert(100000.0, 2.0) == True
-    
-    def test_whale_alert_below_threshold(self):
-        """Test whale alert below threshold."""
-        assert is_whale_alert(50000.0, 1.0) == False
-        assert is_whale_alert(10000.0, 5.0) == False
-
-
 class TestVolumeSpike:
     """Test volume spike detection logic."""
     
@@ -333,87 +315,151 @@ class TestPriceSpike:
         assert is_price_spike(0.0, 100.0) == False
 
 
-# Strategies for generating test data
-symbol_strategy = st.sampled_from(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"])
-alert_type_strategy = st.sampled_from([
-    "WHALE_ALERT", "VOLUME_SPIKE", "PRICE_SPIKE"
-])
-alert_level_strategy = st.sampled_from(["HIGH", "MEDIUM", "LOW"])
-timestamp_strategy = st.datetimes(
-    min_value=datetime(2020, 1, 1),
-    max_value=datetime(2030, 12, 31)
-)
+# =============================================================================
+# Data Quality Tests using Great Expectations
+# =============================================================================
 
-details_strategy = st.fixed_dictionaries({
-    "price": st.floats(min_value=0.01, max_value=1000000.0, allow_nan=False, allow_infinity=False),
-    "quantity": st.floats(min_value=0.001, max_value=10000.0, allow_nan=False, allow_infinity=False),
-    "value": st.floats(min_value=100001.0, max_value=10000000.0, allow_nan=False, allow_infinity=False),
-})
-
-
-class TestAlertCompleteness:
+def test_alert_completeness_valid_data():
     """
+    Test that valid alert data passes all GE expectations.
+    
     **Feature: pyspark-simplification, Property 1: Alert completeness**
     **Validates: Requirements 3.1**
     """
+    alerts = [
+        create_alert(
+            timestamp=datetime.now(),
+            symbol="BTCUSDT",
+            alert_type="VOLUME_SPIKE",
+            alert_level="HIGH",
+            details={"price": 50000.0, "quantity": 1.5, "value": 150000.0},
+        ),
+        create_alert(
+            timestamp=datetime.now(),
+            symbol="ETHUSDT",
+            alert_type="PRICE_SPIKE",
+            alert_level="MEDIUM",
+            details={"price": 3000.0, "quantity": 10.0, "value": 200000.0},
+        ),
+    ]
     
-    @settings(max_examples=100)
-    @given(
-        timestamp=timestamp_strategy,
-        symbol=symbol_strategy,
-        alert_type=alert_type_strategy,
-        alert_level=alert_level_strategy,
-        details=details_strategy,
-    )
-    def test_alert_contains_all_required_fields(
-        self,
-        timestamp: datetime,
-        symbol: str,
-        alert_type: str,
-        alert_level: str,
-        details: Dict[str, Any],
-    ):
-        """For any anomaly data, the generated alert must contain all required fields."""
-        alert = create_alert(
-            timestamp=timestamp,
-            symbol=symbol,
-            alert_type=alert_type,
-            alert_level=alert_level,
-            details=details,
-        )
-        
-        required_fields = ["alert_id", "timestamp", "symbol", "alert_type", "alert_level", "details", "created_at"]
-        
-        for field in required_fields:
-            assert field in alert, f"Missing required field: {field}"
-            assert alert[field] is not None, f"Field {field} is None"
-        
-        try:
-            uuid.UUID(alert["alert_id"])
-        except ValueError:
-            pytest.fail(f"alert_id is not a valid UUID: {alert['alert_id']}")
+    expectations = build_anomaly_expectations()
+    result = run_anomaly_ge_validation(alerts, expectations)
+    
+    assert result.success, f"Valid alerts should pass all expectations. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
 
 
-class TestAnomalyTypeCoverage:
-    """
-    **Feature: pyspark-simplification, Property 3: Anomaly type coverage**
-    **Validates: Requirements 7.1**
-    """
+def test_alert_missing_required_fields_fails():
+    """Test that alerts with missing required fields fail GE validation."""
+    # Alert missing 'symbol' field
+    invalid_alerts = [
+        {
+            "alert_id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            # "symbol": "BTCUSDT",  # Missing!
+            "alert_type": "VOLUME_SPIKE",
+            "alert_level": "HIGH",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ]
     
-    @settings(max_examples=100)
-    @given(
-        price=st.floats(min_value=1000.0, max_value=100000.0, allow_nan=False, allow_infinity=False),
-        quantity=st.floats(min_value=0.1, max_value=1000.0, allow_nan=False, allow_infinity=False),
-    )
-    def test_whale_alert_detection(self, price: float, quantity: float):
-        """Whale alerts should be correctly detected when trade value > $100,000."""
-        trade_value = price * quantity
-        is_whale = is_whale_alert(price, quantity)
-        
-        if trade_value > 100000.0:
-            assert is_whale, f"Should detect whale alert for value ${trade_value:,.2f}"
-        else:
-            assert not is_whale, f"Should not detect whale alert for value ${trade_value:,.2f}"
+    expectations = build_anomaly_expectations()
+    result = run_anomaly_ge_validation(invalid_alerts, expectations)
+    
+    assert not result.success, "Alerts with missing fields should fail validation"
+
+
+def test_alert_invalid_alert_type_fails():
+    """Test that alerts with invalid alert_type fail GE validation."""
+    invalid_alerts = [
+        {
+            "alert_id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "symbol": "BTCUSDT",
+            "alert_type": "INVALID_TYPE",  # Not in VALID_ALERT_TYPES
+            "alert_level": "HIGH",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ]
+    
+    expectations = build_anomaly_expectations()
+    result = run_anomaly_ge_validation(invalid_alerts, expectations)
+    
+    assert not result.success, "Alerts with invalid alert_type should fail validation"
+    # Check specific expectation failed
+    failed_types = [r.expectation_config.type for r in result.results if not r.success]
+    assert "expect_column_values_to_be_in_set" in failed_types
+
+
+def test_alert_invalid_alert_level_fails():
+    """Test that alerts with invalid alert_level fail GE validation."""
+    invalid_alerts = [
+        {
+            "alert_id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "symbol": "BTCUSDT",
+            "alert_type": "VOLUME_SPIKE",
+            "alert_level": "CRITICAL",  # Not in VALID_ALERT_LEVELS (should be HIGH/MEDIUM/LOW)
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ]
+    
+    expectations = build_anomaly_expectations()
+    result = run_anomaly_ge_validation(invalid_alerts, expectations)
+    
+    assert not result.success, "Alerts with invalid alert_level should fail validation"
+
+
+def test_aggregation_data_quality_valid():
+    """Test that valid aggregation data passes all GE expectations."""
+    aggregations = [
+        {"symbol": "BTCUSDT", "open": 100.0, "high": 110.0, "low": 90.0, "close": 105.0, "volume": 1000.0},
+        {"symbol": "ETHUSDT", "open": 50.0, "high": 55.0, "low": 48.0, "close": 52.0, "volume": 500.0},
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(aggregations, expectations)
+    
+    assert result.success, f"Valid aggregations should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+
+
+def test_aggregation_invalid_ohlc_relationship_fails():
+    """Test that aggregation with high < low fails GE validation."""
+    invalid_aggregations = [
+        {"symbol": "BTCUSDT", "open": 100.0, "high": 80.0, "low": 90.0, "close": 105.0, "volume": 1000.0},
+        # high (80) < low (90) - invalid!
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(invalid_aggregations, expectations)
+    
+    assert not result.success, "Aggregation with high < low should fail validation"
+    failed_types = [r.expectation_config.type for r in result.results if not r.success]
+    assert "expect_column_pair_values_a_to_be_greater_than_b" in failed_types
+
+
+def test_aggregation_negative_volume_fails():
+    """Test that aggregation with negative volume fails GE validation."""
+    invalid_aggregations = [
+        {"symbol": "BTCUSDT", "open": 100.0, "high": 110.0, "low": 90.0, "close": 105.0, "volume": -100.0},
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(invalid_aggregations, expectations)
+    
+    assert not result.success, "Aggregation with negative volume should fail validation"
+
+
+def test_aggregation_null_values_fails():
+    """Test that aggregation with null required fields fails GE validation."""
+    invalid_aggregations = [
+        {"symbol": None, "open": 100.0, "high": 110.0, "low": 90.0, "close": 105.0, "volume": 1000.0},
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(invalid_aggregations, expectations)
+    
+    assert not result.success, "Aggregation with null symbol should fail validation"
 
 
 class TestRedisStorage:

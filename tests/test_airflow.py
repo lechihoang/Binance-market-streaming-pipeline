@@ -239,13 +239,15 @@ class TestStreamingPipelineDAG:
                 f"Found technical_indicators task '{task_id}' which should have been removed"
     
     def test_dag_has_correct_task_groups(self, dag):
-        """Test DAG has the expected TaskGroups after simplify-indicators refactoring.
+        """Test DAG has the expected TaskGroups.
         
         Expected structure:
         - health_checks: test_redis_health, test_postgres_health
-        - trade_aggregation: run_trade_aggregation_job, validate_aggregation_output
-        - anomaly_detection: run_anomaly_detection_job, validate_anomaly_output
+        - trade_aggregation: run_trade_aggregation_job
+        - anomaly_detection: run_anomaly_detection_job
         - cleanup_streaming (standalone task)
+        
+        Note: Validation now happens inline within Spark jobs, not as separate DAG tasks.
         """
         task_ids = [t.task_id for t in dag.tasks]
         
@@ -255,11 +257,9 @@ class TestStreamingPipelineDAG:
         
         # Verify trade_aggregation tasks
         assert any('run_trade_aggregation_job' in tid for tid in task_ids), "Missing run_trade_aggregation_job task"
-        assert any('validate_aggregation_output' in tid for tid in task_ids), "Missing validate_aggregation_output task"
         
         # Verify anomaly_detection tasks
         assert any('run_anomaly_detection_job' in tid for tid in task_ids), "Missing run_anomaly_detection_job task"
-        assert any('validate_anomaly_output' in tid for tid in task_ids), "Missing validate_anomaly_output task"
         
         # Verify cleanup task
         assert 'cleanup_streaming' in task_ids, "Missing cleanup_streaming task"

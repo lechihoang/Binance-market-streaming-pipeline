@@ -67,15 +67,6 @@ class TradesCountResponse(BaseModel):
     interval: str
 
 
-class WhaleAlertResponse(BaseModel):
-    timestamp: datetime
-    symbol: str
-    side: str
-    amount: float
-    price: float
-    total_value: float
-
-
 class PriceSpikeResponse(BaseModel):
     timestamp: datetime
     symbol: str
@@ -90,6 +81,23 @@ class VolumeSpikeResponse(BaseModel):
     volume: float
     quote_volume: float
     trade_count: int
+
+
+class TradeCountSpikeResponse(BaseModel):
+    timestamp: datetime
+    symbol: str
+    trade_count: int
+    buy_count: int
+    sell_count: int
+
+
+class BuySellImbalanceResponse(BaseModel):
+    timestamp: datetime
+    symbol: str
+    buy_count: int
+    sell_count: int
+    buy_sell_ratio: float
+    imbalance_direction: str  # BUY_HEAVY or SELL_HEAVY
 
 
 class ServiceHealth(BaseModel):

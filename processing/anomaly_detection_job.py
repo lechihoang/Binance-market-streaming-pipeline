@@ -3,9 +3,8 @@
 import json
 import os
 import signal
-import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
+from typing import Optional
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
@@ -15,7 +14,7 @@ from storage.postgres import Postgres
 from util.shutdown import GracefulShutdown
 from util.metrics import record_error, record_message_processed
 from util.logging import get_logger
-from validator.anomaly_validator import validate_alert_records
+from processing.validators.anomaly_validator import validate_alert_records
 
 logger = get_logger(__name__)
 
@@ -36,6 +35,7 @@ TRADE_COUNT_MULTIPLIER = 3.0
 BUY_RATIO_LOW = 0.3
 BUY_RATIO_HIGH = 0.7
 
+BATCH_SIZE = 100
 JOB_NAME = "anomaly_detection"
 
 
@@ -67,7 +67,7 @@ class AnomalyJob:
             .load())
 
     def detect_anomalies(self, df: DataFrame, start: datetime) -> DataFrame:
-        """Detect all anomalies in one pass."""
+        """Detect all anomalies in one pass and return DataFrame ready for writing."""
         current = df.filter(F.col("timestamp") > start)
         
         # Volume spike
@@ -126,57 +126,63 @@ class AnomalyJob:
                 F.to_json(F.struct("buy_sell_ratio", "buy_count", "sell_count", "trade_count", "pressure")).alias("details")
             ))
         
-        return volume_spike.union(price_spike).union(trade_spike).union(imbalance)
-
-    def to_alert_records(self, df: DataFrame) -> list[dict[str, Any]]:
-        """Convert DataFrame to alert records."""
-        return [{
-            "alert_id": str(uuid.uuid4()),
-            "timestamp": row["timestamp"],
-            "symbol": row["symbol"],
-            "alert_type": row["alert_type"],
-            "alert_level": row["alert_level"],
-            "details": json.loads(row["details"]) if row["details"] else {},
-            "created_at": datetime.now(timezone.utc),
-        } for row in df.collect()]
-
-    def write_to_postgres(self, alerts: list[dict]) -> None:
-        """Write alerts to PostgreSQL."""
-        if not alerts:
-            return
-        records = [{
-            "timestamp": a["timestamp"],
-            "symbol": a["symbol"],
-            "alert_type": a["alert_type"],
-            "severity": a["alert_level"],
-            "message": f"{a['alert_type']}: {a['symbol']}",
-            "metadata": json.dumps(a["details"]),
-        } for a in alerts]
+        # Union all and add alert_id, created_at for direct write
+        all_alerts = volume_spike.union(price_spike).union(trade_spike).union(imbalance)
         
-        self.spark.createDataFrame(records).write \
+        return all_alerts.withColumn(
+            "alert_id", F.expr("uuid()")
+        ).withColumn(
+            "created_at", F.current_timestamp()
+        )
+
+    def write_alerts_to_postgres(self, records: list) -> int:
+        if not records:
+            return 0
+        
+        pg_records = []
+        for r in records:
+            pg_records.append({
+                "timestamp": r["timestamp"],
+                "symbol": r["symbol"],
+                "alert_type": r["alert_type"],
+                "severity": r["alert_level"],
+                "message": f"{r['alert_type']}: {r['symbol']}",
+                "metadata": r["details"],
+            })
+        
+        staging_df = self.spark.createDataFrame(pg_records)
+        
+        staging_df.write \
             .format("jdbc") \
             .option("url", JDBC_URL) \
-            .option("dbtable", "alerts") \
+            .option("dbtable", "staging_alerts") \
             .option("user", PG_USER) \
             .option("password", PG_PASS) \
             .option("driver", "org.postgresql.Driver") \
-            .mode("append") \
+            .mode("overwrite") \
             .save()
+        
+        if self.pg:
+            return self.pg.merge_staging_to_alerts()
+        return 0
 
-    def write_to_redis(self, alerts: list[dict]) -> None:
-        """Write alerts to Redis."""
-        if not alerts or not self.redis:
+    def write_alerts_to_redis(self, records: list) -> None:
+        if not self.redis or not records:
             return
-        records = [{
-            "alert_id": a["alert_id"],
-            "timestamp": a["timestamp"].isoformat() if isinstance(a["timestamp"], datetime) else str(a["timestamp"]),
-            "symbol": a["symbol"],
-            "alert_type": a["alert_type"],
-            "alert_level": a["alert_level"],
-            "created_at": a["created_at"].isoformat(),
-            "details": a["details"],
-        } for a in alerts]
-        self.redis.write_alerts(records)
+        
+        redis_records = []
+        for r in records:
+            redis_records.append({
+                "alert_id": r["alert_id"],
+                "timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], 'isoformat') else str(r["timestamp"]),
+                "symbol": r["symbol"],
+                "alert_type": r["alert_type"],
+                "alert_level": r["alert_level"],
+                "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], 'isoformat') else str(r["created_at"]),
+                "details": json.loads(r["details"]) if isinstance(r["details"], str) else r["details"],
+            })
+        
+        self.redis.write_alerts(redis_records)
 
     def run(self) -> None:
         logger.info("Starting AnomalyJob")
@@ -185,8 +191,9 @@ class AnomalyJob:
                 .appName("AnomalyJob")
                 .config("spark.jars.packages", "org.postgresql:postgresql:42.7.4")
                 .config("spark.sql.shuffle.partitions", "2")
-                .config("spark.pyspark.python", "/usr/local/bin/python")
-                .config("spark.pyspark.driver.python", "/usr/local/bin/python")
+                .config("spark.pyspark.python", "/usr/local/bin/python3.11")
+                .config("spark.pyspark.driver.python", "/usr/local/bin/python3.11")
+                .config("spark.executorEnv.PYSPARK_PYTHON", "/usr/local/bin/python3.11")
                 .getOrCreate())
 
             self.pg = Postgres(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, database=PG_DB)
@@ -208,30 +215,66 @@ class AnomalyJob:
                 self.pg.update_checkpoint(JOB_NAME, end, 0)
                 return
 
-            # Detect & convert
+            # Detect anomalies - returns DataFrame with alert_id, created_at columns
             alerts_df = self.detect_anomalies(df, start)
-            alerts = self.to_alert_records(alerts_df)
+            alerts_df = alerts_df.cache()
+            alert_count = alerts_df.count()
             df.unpersist()
             
-            logger.info(f"Found {len(alerts)} alerts")
-            if not alerts:
+            logger.info(f"Found {alert_count} alerts")
+            if alert_count == 0:
+                alerts_df.unpersist()
                 self.pg.update_checkpoint(JOB_NAME, end, 0)
                 return
 
-            # Validate & write
-            valid, invalid, _ = validate_alert_records(alerts, self.pg)
-            logger.info(f"Valid: {len(valid)}, Invalid: {len(invalid)}")
+            # Process in batches using toLocalIterator (memory efficient)
+            total_valid = 0
+            total_invalid = 0
+            max_ts = None
+            batch = []
             
-            self.write_to_postgres(valid)
-            self.write_to_redis(valid)
+            for row in alerts_df.toLocalIterator():
+                batch.append(row.asDict())
+                
+                if len(batch) >= BATCH_SIZE:
+                    valid, invalid, _ = validate_alert_records(batch, self.pg)
+                    
+                    if valid:
+                        self.write_alerts_to_postgres(valid)
+                        self.write_alerts_to_redis(valid)
+                        batch_max_ts = max(r["timestamp"] for r in valid)
+                        max_ts = batch_max_ts if max_ts is None else max(max_ts, batch_max_ts)
+                        total_valid += len(valid)
+                    
+                    total_invalid += len(invalid)
+                    logger.info(f"Batch processed: {len(valid)} valid, {len(invalid)} invalid")
+                    batch = []
             
-            for _ in valid:
+            # Process remaining batch
+            if batch:
+                valid, invalid, _ = validate_alert_records(batch, self.pg)
+                
+                if valid:
+                    self.write_alerts_to_postgres(valid)
+                    self.write_alerts_to_redis(valid)
+                    batch_max_ts = max(r["timestamp"] for r in valid)
+                    max_ts = batch_max_ts if max_ts is None else max(max_ts, batch_max_ts)
+                    total_valid += len(valid)
+                
+                total_invalid += len(invalid)
+                logger.info(f"Final batch processed: {len(valid)} valid, {len(invalid)} invalid")
+            
+            alerts_df.unpersist()
+            
+            for _ in range(total_valid):
                 record_message_processed("spark_anomaly_detection", "alerts", "success")
 
-            # Checkpoint
-            max_ts = max(a["timestamp"] for a in valid) if valid else end
-            self.pg.update_checkpoint(JOB_NAME, max_ts, len(valid))
-            logger.info("AnomalyJob completed")
+            if max_ts:
+                self.pg.update_checkpoint(JOB_NAME, max_ts, total_valid)
+            else:
+                self.pg.update_checkpoint(JOB_NAME, end, 0)
+            
+            logger.info(f"AnomalyJob completed: {total_valid} valid, {total_invalid} invalid")
 
         except Exception:
             record_error("spark_anomaly_detection", "job_failure", "critical")

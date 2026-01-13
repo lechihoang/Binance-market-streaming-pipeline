@@ -43,10 +43,6 @@ def get_trades_count(symbol: str, interval: str = "1h", hours: int = 24) -> list
     return _get("/api/v1/analytics/trades-count", {"symbol": symbol, "interval": interval, "hours": hours}) or []
 
 
-def get_whale_alerts(hours: int = 24) -> list[dict]:
-    return _get("/api/v1/analytics/alerts/whale-alerts", {"hours": hours}) or []
-
-
 def get_system_health() -> dict:
     return _get("/api/v1/system/health") or {}
 
@@ -58,3 +54,27 @@ def get_ticker_health() -> dict:
 def get_available_symbols() -> list[str]:
     tickers = get_realtime_tickers()
     return sorted([t.get("symbol", "") for t in tickers if t.get("symbol")])
+
+
+def get_ml_status() -> dict:
+    return _get("/api/v1/ml/status") or {}
+
+
+def get_ml_prediction(symbol: str) -> dict:
+    return _get(f"/api/v1/ml/predict/{symbol}") or {}
+
+
+def get_price_spikes(limit: int = 20) -> list[dict]:
+    return _get("/api/v1/analytics/alerts/price-spikes", {"limit": limit}) or []
+
+
+def get_volume_spikes(limit: int = 20) -> list[dict]:
+    return _get("/api/v1/analytics/alerts/volume-spikes", {"limit": limit}) or []
+
+
+def get_trade_count_spikes(limit: int = 20) -> list[dict]:
+    return _get("/api/v1/analytics/alerts/trade-count-spikes", {"limit": limit}) or []
+
+
+def get_buy_sell_imbalance(limit: int = 20) -> list[dict]:
+    return _get("/api/v1/analytics/alerts/buy-sell-imbalance", {"limit": limit}) or []

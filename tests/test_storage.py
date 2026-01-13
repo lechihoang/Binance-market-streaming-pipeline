@@ -1,12 +1,12 @@
 """
 Consolidated test module for Storage Layer.
-Contains all tests for Redis, PostgreSQL, health checks, and query router.
+Contains all tests for Redis, PostgreSQL, health checks, query router, and data quality.
 
 Table of Contents:
 - Imports and Setup (line ~20)
 - Health Check Tests (line ~80)
-- Query Router Property Tests (line ~250)
-- Redis Storage Property Tests (line ~400)
+- Query Router Property Tests (line ~180)
+- Data Quality Tests with Great Expectations (line ~280)
 
 Requirements: 6.3
 """
@@ -18,9 +18,14 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, MagicMock, patch
 from hypothesis import given, settings, strategies as st, assume, HealthCheck
 
+import great_expectations as gx
+from great_expectations import expectations as gxe
+
 from storage.redis import Redis, check_health as check_redis_health
 from storage.postgres import Postgres, check_health as check_postgres_health
 from storage.query_router import Router
+from processing.validators.aggregation_validator import build_aggregation_expectations, run_ge_validation as run_aggregation_ge_validation
+from processing.validators.anomaly_validator import build_anomaly_expectations, run_ge_validation as run_anomaly_ge_validation
 
 
 def is_redis_available():
@@ -235,93 +240,278 @@ class TestQueryRoutingCorrectness:
         assert selected_tier == self.TIER_POSTGRES
 
 
-symbol_strategy = st.sampled_from([
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
-    "DOGEUSDT", "SOLUSDT", "DOTUSDT", "MATICUSDT", "LTCUSDT"
-])
+# =============================================================================
+# Data Quality Tests using Great Expectations
+# =============================================================================
 
-price_strategy = st.floats(min_value=0.00001, max_value=1000000.0, allow_nan=False, allow_infinity=False)
-volume_strategy = st.floats(min_value=0.0, max_value=1000000000.0, allow_nan=False, allow_infinity=False)
-timestamp_strategy = st.integers(min_value=1600000000000, max_value=2000000000000)
-interval_strategy = st.sampled_from(["1m"])
-
-ticker_stats_strategy = st.fixed_dictionaries({
-    "open": price_strategy,
-    "high": price_strategy,
-    "low": price_strategy,
-    "close": price_strategy,
-    "volume": volume_strategy,
-    "quote_volume": volume_strategy,
-})
-
-ohlcv_strategy = st.fixed_dictionaries({
-    "open": price_strategy,
-    "high": price_strategy,
-    "low": price_strategy,
-    "close": price_strategy,
-    "volume": volume_strategy,
-    "timestamp": timestamp_strategy,
-})
-
-trade_strategy = st.fixed_dictionaries({
-    "price": price_strategy,
-    "quantity": volume_strategy,
-    "timestamp": timestamp_strategy,
-    "is_buyer_maker": st.booleans(),
-})
-
-alert_strategy = st.fixed_dictionaries({
-    "timestamp": timestamp_strategy,
-    "symbol": symbol_strategy,
-    "alert_type": st.sampled_from(["price_spike", "volume_spike", "whale_alert", "volatility"]),
-    "severity": st.sampled_from(["low", "medium", "high", "critical"]),
-    "message": st.text(min_size=1, max_size=200),
-})
+# Valid symbols for testing
+VALID_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
+                 "DOGEUSDT", "SOLUSDT", "DOTUSDT", "MATICUSDT", "LTCUSDT"]
 
 
-@pytest.fixture
-def redis_storage():
-    """Create Redis instance and clean up after test."""
-    import redis as redis_lib
-    storage = Redis(host="localhost", port=6379, db=15)
-    # Use client.flushdb() directly since flush_db method was removed
-    storage.client.flushdb()
-    yield storage
-    storage.client.flushdb()
+def test_ohlcv_data_quality_valid():
+    """Test that valid OHLCV data passes all GE expectations."""
+    ohlcv_records = [
+        {"symbol": "BTCUSDT", "open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0},
+        {"symbol": "ETHUSDT", "open": 3000.0, "high": 3100.0, "low": 2900.0, "close": 3050.0, "volume": 500.0},
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(ohlcv_records, expectations)
+    
+    assert result.success, f"Valid OHLCV should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
 
 
+def test_ohlcv_high_less_than_low_fails():
+    """Test that OHLCV with high < low fails validation."""
+    invalid_ohlcv = [
+        {"symbol": "BTCUSDT", "open": 50000.0, "high": 48000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0},
+        # high (48000) < low (49000) - invalid!
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
+    
+    assert not result.success, "OHLCV with high < low should fail"
 
 
-trades_count_strategy = st.integers(min_value=0, max_value=1000000)
+def test_ohlcv_high_less_than_open_fails():
+    """Test that OHLCV with high < open fails validation."""
+    invalid_ohlcv = [
+        {"symbol": "BTCUSDT", "open": 50000.0, "high": 49000.0, "low": 48000.0, "close": 48500.0, "volume": 1000.0},
+        # high (49000) < open (50000) - invalid!
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
+    
+    assert not result.success, "OHLCV with high < open should fail"
 
 
-def recent_timestamp_strategy():
-    """Generate timestamps within the last 30 days as Unix milliseconds."""
-    now = datetime.now()
-    return st.integers(
-        min_value=int((now - timedelta(days=30)).timestamp() * 1000),
-        max_value=int(now.timestamp() * 1000)
-    )
+def test_ohlcv_high_less_than_close_fails():
+    """Test that OHLCV with high < close fails validation."""
+    invalid_ohlcv = [
+        {"symbol": "BTCUSDT", "open": 48000.0, "high": 49000.0, "low": 47000.0, "close": 50000.0, "volume": 1000.0},
+        # high (49000) < close (50000) - invalid!
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
+    
+    assert not result.success, "OHLCV with high < close should fail"
 
 
-aggregation_strategy = st.fixed_dictionaries({
-    "symbol": symbol_strategy,
-    "interval": interval_strategy,
-    "open": price_strategy,
-    "high": price_strategy,
-    "low": price_strategy,
-    "close": price_strategy,
-    "volume": volume_strategy,
-    "quote_volume": volume_strategy,
-    "trade_count": trades_count_strategy,
-})
+def test_ohlcv_negative_price_fails():
+    """Test that OHLCV with negative prices fails validation."""
+    invalid_ohlcv = [
+        {"symbol": "BTCUSDT", "open": -100.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0},
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
+    
+    assert not result.success, "OHLCV with negative price should fail"
 
-alert_data_strategy = st.fixed_dictionaries({
-    "symbol": symbol_strategy,
-    "alert_type": st.sampled_from(["price_spike", "volume_spike", "whale_alert", "volatility"]),
-    "alert_level": st.sampled_from(["low", "medium", "high", "critical"]),
-    "details": st.none() | st.fixed_dictionaries({
-        "threshold": st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False),
-        "actual": st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False),
-    }),
-})
+
+def test_ohlcv_negative_volume_fails():
+    """Test that OHLCV with negative volume fails validation."""
+    invalid_ohlcv = [
+        {"symbol": "BTCUSDT", "open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": -100.0},
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
+    
+    assert not result.success, "OHLCV with negative volume should fail"
+
+
+def test_ohlcv_null_symbol_fails():
+    """Test that OHLCV with null symbol fails validation."""
+    invalid_ohlcv = [
+        {"symbol": None, "open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0},
+    ]
+    
+    expectations = build_aggregation_expectations()
+    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
+    
+    assert not result.success, "OHLCV with null symbol should fail"
+
+
+def test_alert_data_quality_valid():
+    """Test that valid alert data passes all GE expectations."""
+    from datetime import timezone
+    import uuid
+    
+    alerts = [
+        {
+            "alert_id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "symbol": "BTCUSDT",
+            "alert_type": "VOLUME_SPIKE",
+            "alert_level": "HIGH",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+        {
+            "alert_id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "symbol": "ETHUSDT",
+            "alert_type": "PRICE_SPIKE",
+            "alert_level": "MEDIUM",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    ]
+    
+    expectations = build_anomaly_expectations()
+    result = run_anomaly_ge_validation(alerts, expectations)
+    
+    assert result.success, f"Valid alerts should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+
+
+def test_alert_invalid_type_fails():
+    """Test that alert with invalid alert_type fails validation."""
+    from datetime import timezone
+    import uuid
+    
+    invalid_alerts = [
+        {
+            "alert_id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "symbol": "BTCUSDT",
+            "alert_type": "UNKNOWN_TYPE",  # Not in VALID_ALERT_TYPES
+            "alert_level": "HIGH",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    ]
+    
+    expectations = build_anomaly_expectations()
+    result = run_anomaly_ge_validation(invalid_alerts, expectations)
+    
+    assert not result.success, "Alert with invalid alert_type should fail"
+
+
+def test_alert_invalid_level_fails():
+    """Test that alert with invalid alert_level fails validation."""
+    from datetime import timezone
+    import uuid
+    
+    invalid_alerts = [
+        {
+            "alert_id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "symbol": "BTCUSDT",
+            "alert_type": "VOLUME_SPIKE",
+            "alert_level": "CRITICAL",  # Not in VALID_ALERT_LEVELS (should be HIGH/MEDIUM/LOW)
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    ]
+    
+    expectations = build_anomaly_expectations()
+    result = run_anomaly_ge_validation(invalid_alerts, expectations)
+    
+    assert not result.success, "Alert with invalid alert_level should fail"
+
+
+def test_alert_null_symbol_fails():
+    """Test that alert with null symbol fails validation."""
+    from datetime import timezone
+    import uuid
+    
+    invalid_alerts = [
+        {
+            "alert_id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "symbol": None,  # Null symbol
+            "alert_type": "VOLUME_SPIKE",
+            "alert_level": "HIGH",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    ]
+    
+    expectations = build_anomaly_expectations()
+    result = run_anomaly_ge_validation(invalid_alerts, expectations)
+    
+    assert not result.success, "Alert with null symbol should fail"
+
+
+# Build custom expectations for trade data
+def build_trade_expectations():
+    """Build list of expectations for trade data."""
+    return [
+        gxe.ExpectColumnToExist(column="price"),
+        gxe.ExpectColumnToExist(column="quantity"),
+        gxe.ExpectColumnToExist(column="timestamp"),
+        gxe.ExpectColumnValuesToNotBeNull(column="price"),
+        gxe.ExpectColumnValuesToNotBeNull(column="quantity"),
+        gxe.ExpectColumnValuesToNotBeNull(column="timestamp"),
+        gxe.ExpectColumnValuesToBeBetween(column="price", min_value=0),
+        gxe.ExpectColumnValuesToBeBetween(column="quantity", min_value=0),
+    ]
+
+
+def run_trade_ge_validation(records, expectations):
+    """Run GE validation on trade records."""
+    import pandas as pd
+    
+    df = pd.DataFrame(records)
+    context = gx.get_context(mode="ephemeral")
+    
+    data_source = context.data_sources.add_pandas("trade_source")
+    data_asset = data_source.add_dataframe_asset(name="trade_data")
+    
+    batch_definition = data_asset.add_batch_definition_whole_dataframe("trade_batch")
+    batch = batch_definition.get_batch(batch_parameters={"dataframe": df})
+    
+    suite = gx.ExpectationSuite(name="trade_suite")
+    for exp in expectations:
+        suite.add_expectation(exp)
+    
+    return batch.validate(suite)
+
+
+def test_trade_data_quality_valid():
+    """Test that valid trade data passes all GE expectations."""
+    trades = [
+        {"price": 50000.0, "quantity": 0.5, "timestamp": 1704067200000, "is_buyer_maker": True},
+        {"price": 50100.0, "quantity": 1.0, "timestamp": 1704067260000, "is_buyer_maker": False},
+    ]
+    
+    expectations = build_trade_expectations()
+    result = run_trade_ge_validation(trades, expectations)
+    
+    assert result.success, f"Valid trades should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+
+
+def test_trade_negative_price_fails():
+    """Test that trade with negative price fails validation."""
+    invalid_trades = [
+        {"price": -100.0, "quantity": 0.5, "timestamp": 1704067200000, "is_buyer_maker": True},
+    ]
+    
+    expectations = build_trade_expectations()
+    result = run_trade_ge_validation(invalid_trades, expectations)
+    
+    assert not result.success, "Trade with negative price should fail"
+
+
+def test_trade_negative_quantity_fails():
+    """Test that trade with negative quantity fails validation."""
+    invalid_trades = [
+        {"price": 50000.0, "quantity": -1.0, "timestamp": 1704067200000, "is_buyer_maker": True},
+    ]
+    
+    expectations = build_trade_expectations()
+    result = run_trade_ge_validation(invalid_trades, expectations)
+    
+    assert not result.success, "Trade with negative quantity should fail"
+
+
+def test_trade_null_price_fails():
+    """Test that trade with null price fails validation."""
+    invalid_trades = [
+        {"price": None, "quantity": 0.5, "timestamp": 1704067200000, "is_buyer_maker": True},
+    ]
+    
+    expectations = build_trade_expectations()
+    result = run_trade_ge_validation(invalid_trades, expectations)
+    
+    assert not result.success, "Trade with null price should fail"

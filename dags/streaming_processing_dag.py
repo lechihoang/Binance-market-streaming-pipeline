@@ -43,6 +43,8 @@ spark_job_env = {
     'POSTGRES_USER': postgres_user,
     'POSTGRES_PASSWORD': postgres_password,
     'POSTGRES_DB': postgres_db,
+    'PYSPARK_PYTHON': '/usr/local/bin/python3.11',
+    'PYSPARK_DRIVER_PYTHON': '/usr/local/bin/python3.11',
 }
 
 

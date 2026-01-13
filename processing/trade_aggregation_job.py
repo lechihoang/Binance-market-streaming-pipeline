@@ -18,7 +18,7 @@ from storage.postgres import Postgres
 from util.shutdown import GracefulShutdown
 from util.metrics import record_error, record_message_processed
 from util.logging import get_logger
-from validator.aggregation_validator import validate_aggregation_records
+from processing.validators.aggregation_validator import validate_aggregation_records
 
 logger = get_logger(__name__)
 
@@ -155,7 +155,9 @@ class TradeAggJob:
         # Filter DataFrame to only valid records (by symbol+timestamp)
         valid_keys = {(r["symbol"], r["timestamp"]) for r in valid}
         valid_df = batch_df.filter(
-            col("symbol").isin([k[0] for k in valid_keys])
+            expr("concat(symbol, '|', timestamp)").isin(
+                [f"{k[0]}|{k[1]}" for k in valid_keys]
+            )
         )
 
         # 1. Write to PostgreSQL via staging + MERGE (primary storage)
@@ -188,8 +190,6 @@ class TradeAggJob:
                         "org.postgresql:postgresql:42.7.4")
                 .config("spark.sql.shuffle.partitions", "2")
                 .config("spark.sql.streaming.checkpointLocation", CHECKPOINT)
-                .config("spark.pyspark.python", "/usr/local/bin/python")
-                .config("spark.pyspark.driver.python", "/usr/local/bin/python")
                 .getOrCreate())
 
             self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT)

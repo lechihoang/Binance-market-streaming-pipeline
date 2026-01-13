@@ -14,28 +14,29 @@ from components.api import (
 st.set_page_config(page_title="Market Overview", page_icon="📈", layout="wide")
 
 COLORS = {
-    "blue": "#5794F2",
-    "green": "#73BF69", 
-    "yellow": "#FADE2A",
-    "orange": "#FF9830",
-    "red": "#F2495C",
-    "purple": "#B877D9",
-    "bg": "#111111",
-    "card": "#1E1E1E",
-    "text": "#FAFAFA"
+    "blue": "#1976D2",
+    "green": "#2E7D32", 
+    "yellow": "#F9A825",
+    "orange": "#F57C00",
+    "red": "#D32F2F",
+    "purple": "#7B1FA2",
+    "bg": "#FFFFFF",
+    "card": "#F5F5F5",
+    "grid": "#E0E0E0",
+    "text": "#333333"
 }
 
 def metric_card(label, value, color):
     st.markdown(f"""
-    <div style="background:{COLORS['card']}; padding:20px; border-radius:4px; border-left:4px solid {color};">
-        <div style="color:#999; font-size:12px; margin-bottom:8px;">{label}</div>
+    <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; border-left:4px solid {color};">
+        <div style="color:#666; font-size:12px; margin-bottom:8px;">{label}</div>
         <div style="color:{color}; font-size:28px; font-weight:bold;">{value}</div>
     </div>
     """, unsafe_allow_html=True)
 
 def horizontal_bar_chart(data, x_col, y_col, title, color):
     if not data:
-        return go.Figure().update_layout(title=title, template="plotly_dark")
+        return go.Figure().update_layout(title=title, template="plotly_white")
     
     df = pd.DataFrame(data)
     fig = go.Figure(go.Bar(
@@ -44,17 +45,20 @@ def horizontal_bar_chart(data, x_col, y_col, title, color):
         orientation='h',
         marker_color=color,
         text=df[x_col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x),
-        textposition='outside'
+        textposition='outside',
+        hovertemplate="<b>%{y}</b><br>" +
+                      f"{x_col}: %{{x:,.0f}}<br>" +
+                      "<extra></extra>"
     ))
     fig.update_layout(
         title=title,
-        template="plotly_dark",
+        template="plotly_white",
         paper_bgcolor=COLORS["bg"],
         plot_bgcolor=COLORS["bg"],
         height=300,
         margin=dict(l=100, r=50, t=50, b=30),
         yaxis=dict(autorange="reversed"),
-        xaxis=dict(showgrid=True, gridcolor="#333")
+        xaxis=dict(showgrid=True, gridcolor=COLORS["grid"])
     )
     return fig
 
@@ -67,7 +71,10 @@ def render():
         top_vol = get_top_by_volume(5)
         top_trades = get_top_by_trades(5)
         
-        st.markdown("## Market Overview")
+        st.markdown("## 📈 Market Overview")
+        st.caption("Real-time cryptocurrency market data • Auto-refresh every 5s")
+        
+        st.markdown("---")
         
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -83,7 +90,7 @@ def render():
             metric_card("Avg Trade Value", f"${avg:,.2f}" if avg else "$0", COLORS["purple"])
         
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("### All Tickers - Real-time Data")
+        st.markdown("### All Tickers")
         
         if tickers:
             df = pd.DataFrame(tickers)
@@ -117,9 +124,10 @@ def render():
                 }
             )
         else:
-            st.info("No ticker data")
+            st.info("No ticker data available")
         
         st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("### Top Movers")
         
         col_left, col_right = st.columns(2)
         

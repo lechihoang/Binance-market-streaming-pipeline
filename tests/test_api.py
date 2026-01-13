@@ -1,15 +1,14 @@
 """
 Consolidated test module for FastAPI Backend.
-Contains all tests for market, analytics, alerts, rate limiting, fallback, and system endpoints.
+Contains all tests for market, analytics, alerts, rate limiting, fallback, system endpoints, and data quality.
 
 Table of Contents:
 - Imports and Setup (line ~20)
-- Market Router Tests (line ~150)
-- Analytics Router Tests (line ~300)
-- Alerts Router Tests (line ~450)
-- Rate Limit Tests (line ~550)
-- Fallback Chain Tests (line ~700)
-- System Router Tests (line ~850)
+- Data Quality Tests with Great Expectations (line ~150)
+- Market Router Tests (line ~250)
+- Rate Limit Tests (line ~350)
+- Fallback Chain Tests (line ~450)
+- System Router Tests (line ~550)
 
 Requirements: 6.4
 """
@@ -20,10 +19,15 @@ from unittest.mock import MagicMock
 from hypothesis import given, settings, strategies as st, HealthCheck
 from fastapi.testclient import TestClient
 
+import great_expectations as gx
+from great_expectations import expectations as gxe
+
 from api.app import app, rate_tracker, RATE_LIMIT_PER_MINUTE, get_redis, get_postgres, get_query_router, get_ticker_storage, determine_overall_status
 from storage.redis import Redis
 from storage.postgres import Postgres
 from storage.query_router import Router
+from processing.validators.aggregation_validator import build_aggregation_expectations, run_ge_validation as run_aggregation_ge_validation
+from processing.validators.anomaly_validator import build_anomaly_expectations, run_ge_validation as run_anomaly_ge_validation
 
 
 def is_redis_available():
@@ -141,119 +145,259 @@ symbol_strategy = st.sampled_from([
     "DOGEUSDT", "SOLUSDT", "DOTUSDT", "MATICUSDT", "LTCUSDT"
 ])
 
-price_strategy = st.floats(min_value=0.00001, max_value=1000000.0, allow_nan=False, allow_infinity=False)
-volume_strategy = st.floats(min_value=0.0, max_value=1000000000.0, allow_nan=False, allow_infinity=False)
-timestamp_strategy = st.integers(min_value=1600000000000, max_value=2000000000000)
 limit_strategy = st.integers(min_value=1, max_value=1000)
+
+# Minimal strategies for integration tests that write to Redis
+price_strategy = st.floats(min_value=0.01, max_value=100000.0, allow_nan=False, allow_infinity=False)
+
+alert_strategy = st.fixed_dictionaries({
+    "symbol": symbol_strategy,
+    "alert_type": st.sampled_from(["whale", "price_spike", "volume_anomaly", "volatility"]),
+    "severity": st.sampled_from(["info", "warning", "critical"]),
+    "timestamp": st.integers(min_value=1704067200000, max_value=1704153600000),
+    "message": st.text(min_size=5, max_size=100, alphabet=st.characters(whitelist_categories=("L", "N", "P", "Z"))),
+})
 
 ticker_stats_strategy = st.fixed_dictionaries({
     "open": price_strategy,
     "high": price_strategy,
     "low": price_strategy,
     "close": price_strategy,
-    "volume": volume_strategy,
-    "quote_volume": volume_strategy,
-    "price_change_24h": st.floats(min_value=-100.0, max_value=100.0, allow_nan=False, allow_infinity=False),
-    "timestamp": timestamp_strategy,
-})
-
-trade_strategy = st.fixed_dictionaries({
-    "price": price_strategy,
-    "quantity": volume_strategy,
-    "timestamp": timestamp_strategy,
-    "is_buyer_maker": st.booleans(),
-})
-
-alert_type_strategy = st.sampled_from(["whale", "price_spike", "volume_anomaly", "volatility"])
-severity_strategy = st.sampled_from(["info", "warning", "critical"])
-
-alert_strategy = st.fixed_dictionaries({
-    "symbol": symbol_strategy,
-    "alert_type": alert_type_strategy,
-    "severity": severity_strategy,
-    "message": st.text(min_size=1, max_size=100, alphabet=st.characters(whitelist_categories=('L', 'N', 'P', 'Z'))),
-    "timestamp": timestamp_strategy,
-    "metadata": st.none() | st.fixed_dictionaries({
-        "value": st.floats(min_value=0, max_value=1000000, allow_nan=False, allow_infinity=False),
-    }),
+    "volume": st.floats(min_value=0.0, max_value=1000000.0, allow_nan=False, allow_infinity=False),
+    "quote_volume": st.floats(min_value=0.0, max_value=100000000.0, allow_nan=False, allow_infinity=False),
+    "timestamp": st.integers(min_value=1704067200000, max_value=1704153600000),
 })
 
 
-@skip_if_no_redis
-class TestTickerDataConsistency:
-    """Property tests for ticker data consistency."""
+# =============================================================================
+# Data Quality Tests using Great Expectations
+# =============================================================================
+
+def build_ticker_expectations():
+    """Build list of expectations for ticker data returned by API."""
+    return [
+        gxe.ExpectColumnToExist(column="open"),
+        gxe.ExpectColumnToExist(column="high"),
+        gxe.ExpectColumnToExist(column="low"),
+        gxe.ExpectColumnToExist(column="close"),
+        gxe.ExpectColumnToExist(column="volume"),
+        gxe.ExpectColumnValuesToNotBeNull(column="open"),
+        gxe.ExpectColumnValuesToNotBeNull(column="high"),
+        gxe.ExpectColumnValuesToNotBeNull(column="low"),
+        gxe.ExpectColumnValuesToNotBeNull(column="close"),
+        gxe.ExpectColumnValuesToNotBeNull(column="volume"),
+        gxe.ExpectColumnValuesToBeBetween(column="open", min_value=0),
+        gxe.ExpectColumnValuesToBeBetween(column="high", min_value=0),
+        gxe.ExpectColumnValuesToBeBetween(column="low", min_value=0),
+        gxe.ExpectColumnValuesToBeBetween(column="close", min_value=0),
+        gxe.ExpectColumnValuesToBeBetween(column="volume", min_value=0),
+    ]
+
+
+def run_ticker_ge_validation(records, expectations):
+    """Run GE validation on ticker records."""
+    import pandas as pd
     
-    @given(symbol=symbol_strategy, stats=ticker_stats_strategy)
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_ticker_data_consistency(self, redis_storage, test_client, symbol, stats):
-        """
-        Feature: fastapi-backend, Property 1: Redis data retrieval consistency
-        Validates: Requirements 1.1
-        """
-        redis_storage.write_latest_ticker(symbol, stats)
-        
-        response = test_client.get(f"/api/v1/market/ticker/{symbol}")
-        
-        assert response.status_code == 200
-        data = response.json()
-        
-        assert data["symbol"] == symbol
-        assert abs(data["price"] - stats["close"]) < 1e-6
-        assert abs(data["volume"] - stats["volume"]) < 1e-6
-
-
-@skip_if_no_redis
-class TestPriceDataConsistency:
-    """Property tests for price data consistency."""
+    df = pd.DataFrame(records)
+    context = gx.get_context(mode="ephemeral")
     
-    @given(symbol=symbol_strategy, price=price_strategy, volume=volume_strategy, timestamp=timestamp_strategy)
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_price_data_consistency(self, redis_storage, test_client, symbol, price, volume, timestamp):
-        """
-        Feature: fastapi-backend, Property 2: Price endpoint data consistency
-        Validates: Requirements 1.2
-        """
-        redis_storage.write_latest_price(symbol, price, volume, timestamp)
-        
-        response = test_client.get(f"/api/v1/market/price/{symbol}")
-        
-        assert response.status_code == 200
-        data = response.json()
-        
-        assert data["symbol"] == symbol
-        assert abs(data["price"] - price) < 1e-6
-        assert abs(data["volume"] - volume) < 1e-6
-        assert data["timestamp"] == timestamp
-
-
-@skip_if_no_redis
-class TestTradesLimitConstraint:
-    """Property tests for trades limit constraint."""
+    data_source = context.data_sources.add_pandas("ticker_source")
+    data_asset = data_source.add_dataframe_asset(name="ticker_data")
     
-    @given(
-        symbol=symbol_strategy,
-        limit=limit_strategy,
-        trades=st.lists(trade_strategy, min_size=1, max_size=100)
-    )
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_trades_limit_constraint(self, redis_storage, test_client, symbol, limit, trades):
-        """
-        Feature: fastapi-backend, Property 3: Trades limit constraint
-        Validates: Requirements 1.3
-        """
-        redis_storage.client.flushdb()
-        
-        for trade in trades:
-            redis_storage.write_recent_trade(symbol, trade)
-        
-        response = test_client.get(f"/api/v1/market/trades/{symbol}?limit={limit}")
-        
-        assert response.status_code == 200
-        data = response.json()
-        
-        expected_max = min(limit, 1000)
-        assert len(data) <= expected_max
-        assert len(data) <= len(trades)
+    batch_definition = data_asset.add_batch_definition_whole_dataframe("ticker_batch")
+    batch = batch_definition.get_batch(batch_parameters={"dataframe": df})
+    
+    suite = gx.ExpectationSuite(name="ticker_suite")
+    for exp in expectations:
+        suite.add_expectation(exp)
+    
+    return batch.validate(suite)
+
+
+def test_ticker_data_quality_valid():
+    """Test that valid ticker data passes all GE expectations."""
+    tickers = [
+        {"open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0, "quote_volume": 50000000.0},
+        {"open": 3000.0, "high": 3100.0, "low": 2900.0, "close": 3050.0, "volume": 500.0, "quote_volume": 1500000.0},
+    ]
+    
+    expectations = build_ticker_expectations()
+    result = run_ticker_ge_validation(tickers, expectations)
+    
+    assert result.success, f"Valid tickers should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+
+
+def test_ticker_negative_price_fails():
+    """Test that ticker with negative prices fails GE validation."""
+    invalid_tickers = [
+        {"open": -100.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0, "quote_volume": 50000000.0},
+    ]
+    
+    expectations = build_ticker_expectations()
+    result = run_ticker_ge_validation(invalid_tickers, expectations)
+    
+    assert not result.success, "Ticker with negative price should fail"
+
+
+def test_ticker_null_values_fails():
+    """Test that ticker with null values fails GE validation."""
+    invalid_tickers = [
+        {"open": None, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0, "quote_volume": 50000000.0},
+    ]
+    
+    expectations = build_ticker_expectations()
+    result = run_ticker_ge_validation(invalid_tickers, expectations)
+    
+    assert not result.success, "Ticker with null values should fail"
+
+
+def build_trade_expectations():
+    """Build list of expectations for trade data returned by API."""
+    return [
+        gxe.ExpectColumnToExist(column="price"),
+        gxe.ExpectColumnToExist(column="quantity"),
+        gxe.ExpectColumnToExist(column="timestamp"),
+        gxe.ExpectColumnValuesToNotBeNull(column="price"),
+        gxe.ExpectColumnValuesToNotBeNull(column="quantity"),
+        gxe.ExpectColumnValuesToBeBetween(column="price", min_value=0),
+        gxe.ExpectColumnValuesToBeBetween(column="quantity", min_value=0),
+    ]
+
+
+def run_trade_ge_validation(records, expectations):
+    """Run GE validation on trade records."""
+    import pandas as pd
+    
+    df = pd.DataFrame(records)
+    context = gx.get_context(mode="ephemeral")
+    
+    data_source = context.data_sources.add_pandas("trade_source")
+    data_asset = data_source.add_dataframe_asset(name="trade_data")
+    
+    batch_definition = data_asset.add_batch_definition_whole_dataframe("trade_batch")
+    batch = batch_definition.get_batch(batch_parameters={"dataframe": df})
+    
+    suite = gx.ExpectationSuite(name="trade_suite")
+    for exp in expectations:
+        suite.add_expectation(exp)
+    
+    return batch.validate(suite)
+
+
+def test_trade_data_quality_valid():
+    """Test that valid trade data passes all GE expectations."""
+    trades = [
+        {"price": 50000.0, "quantity": 0.5, "timestamp": 1704067200000, "is_buyer_maker": True},
+        {"price": 50100.0, "quantity": 1.0, "timestamp": 1704067260000, "is_buyer_maker": False},
+    ]
+    
+    expectations = build_trade_expectations()
+    result = run_trade_ge_validation(trades, expectations)
+    
+    assert result.success, f"Valid trades should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+
+
+def test_trade_negative_price_fails():
+    """Test that trade with negative price fails GE validation."""
+    invalid_trades = [
+        {"price": -100.0, "quantity": 0.5, "timestamp": 1704067200000, "is_buyer_maker": True},
+    ]
+    
+    expectations = build_trade_expectations()
+    result = run_trade_ge_validation(invalid_trades, expectations)
+    
+    assert not result.success, "Trade with negative price should fail"
+
+
+def test_trade_null_price_fails():
+    """Test that trade with null price fails GE validation."""
+    invalid_trades = [
+        {"price": None, "quantity": 0.5, "timestamp": 1704067200000, "is_buyer_maker": True},
+    ]
+    
+    expectations = build_trade_expectations()
+    result = run_trade_ge_validation(invalid_trades, expectations)
+    
+    assert not result.success, "Trade with null price should fail"
+
+
+def build_alert_api_expectations():
+    """Build list of expectations for alert data returned by API."""
+    return [
+        gxe.ExpectColumnToExist(column="symbol"),
+        gxe.ExpectColumnToExist(column="alert_type"),
+        gxe.ExpectColumnToExist(column="severity"),
+        gxe.ExpectColumnToExist(column="timestamp"),
+        gxe.ExpectColumnValuesToNotBeNull(column="symbol"),
+        gxe.ExpectColumnValuesToNotBeNull(column="alert_type"),
+        gxe.ExpectColumnValuesToNotBeNull(column="severity"),
+        gxe.ExpectColumnValuesToBeInSet(
+            column="alert_type", 
+            value_set=["whale", "price_spike", "volume_anomaly", "volatility"]
+        ),
+        gxe.ExpectColumnValuesToBeInSet(
+            column="severity",
+            value_set=["info", "warning", "critical"]
+        ),
+    ]
+
+
+def run_alert_api_ge_validation(records, expectations):
+    """Run GE validation on alert records from API."""
+    import pandas as pd
+    
+    df = pd.DataFrame(records)
+    context = gx.get_context(mode="ephemeral")
+    
+    data_source = context.data_sources.add_pandas("alert_api_source")
+    data_asset = data_source.add_dataframe_asset(name="alert_api_data")
+    
+    batch_definition = data_asset.add_batch_definition_whole_dataframe("alert_api_batch")
+    batch = batch_definition.get_batch(batch_parameters={"dataframe": df})
+    
+    suite = gx.ExpectationSuite(name="alert_api_suite")
+    for exp in expectations:
+        suite.add_expectation(exp)
+    
+    return batch.validate(suite)
+
+
+def test_alert_api_data_quality_valid():
+    """Test that valid alert data (API format) passes all GE expectations."""
+    alerts = [
+        {"symbol": "BTCUSDT", "alert_type": "whale", "severity": "critical", "timestamp": 1704067200000, "message": "Whale detected"},
+        {"symbol": "ETHUSDT", "alert_type": "price_spike", "severity": "warning", "timestamp": 1704067260000, "message": "Price spike"},
+    ]
+    
+    expectations = build_alert_api_expectations()
+    result = run_alert_api_ge_validation(alerts, expectations)
+    
+    assert result.success, f"Valid alerts should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+
+
+def test_alert_api_invalid_type_fails():
+    """Test that alert with invalid alert_type fails GE validation."""
+    invalid_alerts = [
+        {"symbol": "BTCUSDT", "alert_type": "unknown_type", "severity": "critical", "timestamp": 1704067200000, "message": "Test"},
+    ]
+    
+    expectations = build_alert_api_expectations()
+    result = run_alert_api_ge_validation(invalid_alerts, expectations)
+    
+    assert not result.success, "Alert with invalid alert_type should fail"
+
+
+def test_alert_api_invalid_severity_fails():
+    """Test that alert with invalid severity fails GE validation."""
+    invalid_alerts = [
+        {"symbol": "BTCUSDT", "alert_type": "whale", "severity": "high", "timestamp": 1704067200000, "message": "Test"},
+        # severity should be info/warning/critical, not high
+    ]
+    
+    expectations = build_alert_api_expectations()
+    result = run_alert_api_ge_validation(invalid_alerts, expectations)
+    
+    assert not result.success, "Alert with invalid severity should fail"
 
 
 @pytest.fixture

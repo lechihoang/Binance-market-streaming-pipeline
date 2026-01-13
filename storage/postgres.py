@@ -48,7 +48,6 @@ class Postgres:
         
         self.pool: Optional[pool.ThreadedConnectionPool] = None
         self.connect()
-        self.init_tables()
         logger.info(f"Postgres initialized at {host}:{port}/{database}")
 
     def connect(self) -> None:
@@ -211,6 +210,17 @@ class Postgres:
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_alerts_ts 
                     ON alerts(timestamp DESC, symbol)
+                """)
+                
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS staging_alerts (
+                        timestamp TIMESTAMP NOT NULL,
+                        symbol VARCHAR(20) NOT NULL,
+                        alert_type VARCHAR(50) NOT NULL,
+                        severity VARCHAR(20) NOT NULL,
+                        message TEXT,
+                        metadata TEXT
+                    )
                 """)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS validation_errors (
@@ -499,6 +509,23 @@ class Postgres:
                 cur.execute("TRUNCATE staging_trades_1m")
         
         logger.info(f"Merged {merged_count} records from staging to trades_1m")
+        return merged_count
+
+    def merge_staging_to_alerts(self) -> int:
+        merge_sql = """
+            INSERT INTO alerts (timestamp, symbol, alert_type, severity, message, metadata)
+            SELECT timestamp, symbol, alert_type, severity, message, metadata
+            FROM staging_alerts
+            ON CONFLICT (timestamp, symbol, alert_type) DO NOTHING
+        """
+        
+        with self.conn() as c:
+            with c.cursor() as cur:
+                cur.execute(merge_sql)
+                merged_count = cur.rowcount
+                cur.execute("TRUNCATE staging_alerts")
+        
+        logger.info(f"Merged {merged_count} alerts from staging to alerts")
         return merged_count
 
     # ========== Candles (Read) ==========
@@ -850,6 +877,12 @@ def check_health(
             )
         logger.info(f"PostgreSQL health check passed: {host}:{port}/{database}")
         record_retry("postgres_health", "check", "success")
+        
+        pg = Postgres(host=host, port=port, user=user, password=password, database=database)
+        pg.init_tables()
+        pg.close()
+        logger.info("PostgreSQL tables initialized")
+        
         return result
     except Exception as e:
         record_error("postgres_health", "health_check_error", "critical")

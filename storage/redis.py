@@ -328,19 +328,25 @@ class Redis:
         return f"{self.TICKER}:{symbol.upper()}"
     
     def pack_ticker(self, symbol: str, data: Dict[str, Any]) -> Dict[str, str]:
-        """Transform ticker for storage."""
+        """Transform ticker for storage.
+        
+        Supports multiple key formats:
+        - Raw Binance API keys (o, h, l, c, p, P, etc.)
+        - Normalized keys from connector (open_price, high_price, etc.)
+        - Redis storage keys (open, high, low, etc.)
+        """
         return {
             "symbol": symbol.upper(),
             "last_price": str(data.get("c", data.get("last_price", "0"))),
             "price_change": str(data.get("p", data.get("price_change", "0"))),
-            "price_change_pct": str(data.get("P", data.get("price_change_pct", "0"))),
-            "open": str(data.get("o", data.get("open", "0"))),
-            "high": str(data.get("h", data.get("high", "0"))),
-            "low": str(data.get("l", data.get("low", "0"))),
+            "price_change_pct": str(data.get("P", data.get("price_change_pct", data.get("price_change_percent", "0")))),
+            "open": str(data.get("o", data.get("open", data.get("open_price", "0")))),
+            "high": str(data.get("h", data.get("high", data.get("high_price", "0")))),
+            "low": str(data.get("l", data.get("low", data.get("low_price", "0")))),
             "volume": str(data.get("v", data.get("volume", "0"))),
             "quote_volume": str(data.get("q", data.get("quote_volume", "0"))),
             "trade_count": str(data.get("n", data.get("trade_count", "0"))),
-            "updated_at": str(data.get("E", data.get("updated_at", int(time.time() * 1000)))),
+            "updated_at": str(data.get("E", data.get("updated_at", data.get("event_time", int(time.time() * 1000))))),
         }
     
     def unpack_ticker(self, data: Dict[str, str]) -> Dict[str, Any]:

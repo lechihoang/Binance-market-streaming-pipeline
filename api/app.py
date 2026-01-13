@@ -18,6 +18,7 @@ from slowapi.util import get_remote_address
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from api.schemas import (
+    BuySellImbalanceResponse,
     HealthResponse,
     KlineResponse,
     LifecycleHealthResponse,
@@ -31,9 +32,9 @@ from api.schemas import (
     TickerListResponse,
     TierStatusResponse,
     TopTradingResponse,
+    TradeCountSpikeResponse,
     TradesCountResponse,
     VolumeSpikeResponse,
-    WhaleAlertResponse,
 )
 from storage.redis import Redis as RedisStorage
 from storage.postgres import Postgres as PostgresStorage
@@ -757,34 +758,6 @@ async def get_trades_count(
         return []
 
 
-@app.get("/api/v1/analytics/alerts/whale-alerts", response_model=List[WhaleAlertResponse], tags=["alerts"])
-async def get_whale_alerts(
-    response: Response,
-    limit: int = Query(default=50, ge=1, le=500),
-    start: Optional[datetime] = Query(default=None, description="Start time (default: 1 hour ago)"),
-    end: Optional[datetime] = Query(default=None, description="End time (default: now)"),
-    query_router: QueryRouter = Depends(get_query_router),
-) -> List[WhaleAlertResponse]:
-    start, end = normalize_time_range(start, end)
-    raw_alerts = query_alerts_by_type(query_router, ["WHALE", "WHALE_ALERT"], start, end)
-    
-    whale_alerts = []
-    for alert in raw_alerts:
-        details = parse_alert_details(alert)
-        ts = ensure_tz(alert.get("timestamp"))
-        whale_alerts.append(WhaleAlertResponse(
-            timestamp=ts,
-            symbol=alert.get("symbol", "UNKNOWN"),
-            side=details.get("side", "BUY"),
-            amount=float(details.get("quantity", details.get("amount", 0))),
-            price=float(details.get("price", 0)),
-            total_value=float(details.get("value", details.get("total_value", 0))),
-        ))
-    
-    whale_alerts.sort(key=lambda x: x.timestamp, reverse=True)
-    return whale_alerts[:min(limit, 500)]
-
-
 @app.get("/api/v1/analytics/alerts/price-spikes", response_model=List[PriceSpikeResponse], tags=["alerts"])
 async def get_price_spikes(
     response: Response,
@@ -837,6 +810,66 @@ async def get_volume_spikes(
     
     volume_spikes.sort(key=lambda x: x.timestamp, reverse=True)
     return volume_spikes[:min(limit, 500)]
+
+
+@app.get("/api/v1/analytics/alerts/trade-count-spikes", response_model=List[TradeCountSpikeResponse], tags=["alerts"])
+async def get_trade_count_spikes(
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=500),
+    start: Optional[datetime] = Query(default=None, description="Start time (default: 1 hour ago)"),
+    end: Optional[datetime] = Query(default=None, description="End time (default: now)"),
+    query_router: QueryRouter = Depends(get_query_router),
+) -> List[TradeCountSpikeResponse]:
+    start, end = normalize_time_range(start, end)
+    raw_alerts = query_alerts_by_type(query_router, ["TRADE_COUNT_SPIKE"], start, end)
+    
+    trade_spikes = []
+    for alert in raw_alerts:
+        details = parse_alert_details(alert)
+        ts = ensure_tz(alert.get("timestamp"))
+        trade_spikes.append(TradeCountSpikeResponse(
+            timestamp=ts,
+            symbol=alert.get("symbol", "UNKNOWN"),
+            trade_count=int(details.get("trade_count", 0)),
+            buy_count=int(details.get("buy_count", 0)),
+            sell_count=int(details.get("sell_count", 0)),
+        ))
+    
+    trade_spikes.sort(key=lambda x: x.timestamp, reverse=True)
+    return trade_spikes[:min(limit, 500)]
+
+
+@app.get("/api/v1/analytics/alerts/buy-sell-imbalance", response_model=List[BuySellImbalanceResponse], tags=["alerts"])
+async def get_buy_sell_imbalance(
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=500),
+    start: Optional[datetime] = Query(default=None, description="Start time (default: 1 hour ago)"),
+    end: Optional[datetime] = Query(default=None, description="End time (default: now)"),
+    query_router: QueryRouter = Depends(get_query_router),
+) -> List[BuySellImbalanceResponse]:
+    start, end = normalize_time_range(start, end)
+    raw_alerts = query_alerts_by_type(query_router, ["BUY_SELL_IMBALANCE"], start, end)
+    
+    imbalances = []
+    for alert in raw_alerts:
+        details = parse_alert_details(alert)
+        ts = ensure_tz(alert.get("timestamp"))
+        buy_count = int(details.get("buy_count", 0))
+        sell_count = int(details.get("sell_count", 0))
+        ratio = float(details.get("buy_sell_ratio", 0))
+        direction = "BUY_HEAVY" if ratio > 1 else "SELL_HEAVY"
+        
+        imbalances.append(BuySellImbalanceResponse(
+            timestamp=ts,
+            symbol=alert.get("symbol", "UNKNOWN"),
+            buy_count=buy_count,
+            sell_count=sell_count,
+            buy_sell_ratio=ratio,
+            imbalance_direction=direction,
+        ))
+    
+    imbalances.sort(key=lambda x: x.timestamp, reverse=True)
+    return imbalances[:min(limit, 500)]
 
 
 @app.get("/api/v1/system/health", response_model=HealthResponse, tags=["system"])
@@ -904,7 +937,7 @@ async def get_ml_status() -> MLStatusResponse:
     from pathlib import Path
     
     model_dir = Path(os.getenv("MODEL_DIR", "models"))
-    model_path = model_dir / "volatility_predictor.txt"
+    model_path = model_dir / "volatility_predictor.json"
     meta_path = model_dir / "volatility_predictor_meta.json"
     
     if not model_path.exists():

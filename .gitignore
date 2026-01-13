@@ -75,4 +75,3 @@ spark-checkpoints/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb

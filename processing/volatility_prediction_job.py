@@ -4,15 +4,11 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Dict
 
-import numpy as np
-import pandas as pd
 import lightgbm as lgb
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
-from pyspark.sql.functions import struct
 from pyspark.sql.window import Window
 from pyspark.sql.types import DoubleType, IntegerType
-from pyspark.ml.functions import predict_batch_udf
 
 from storage.postgres import Postgres
 from util.shutdown import GracefulShutdown
@@ -98,7 +94,6 @@ class VolatilityPredictionJob:
                        quote_volume, trade_count
                 FROM trades_1m
                 WHERE timestamp > '{start_str}'
-                ORDER BY symbol, timestamp
             ) AS trades""")
             .option("user", PG_USER)
             .option("password", PG_PASS)
@@ -223,36 +218,30 @@ class VolatilityPredictionJob:
             F.col("return_15m").isNotNull()
         )
 
-    def predict_volatility_batch(self, features_df: DataFrame) -> DataFrame:
+    def predict_volatility(self, features_df: DataFrame) -> DataFrame:
+        """Predict volatility using broadcast model + UDF."""
         if self.model is None:
             logger.warning("Model not loaded, skipping predictions")
             return features_df.withColumn("predicted_volatility_5m", F.lit(None).cast(DoubleType()))
 
-        model_path = str(Path(MODEL_DIR) / MODEL_FILE)
+        # Broadcast model once to all executors
+        broadcasted_model = self.spark.sparkContext.broadcast(self.model)
         feature_cols = FEATURE_COLUMNS
 
-        def make_predict_fn():
-            import lightgbm as lgb
-            import numpy as np
-            model = lgb.Booster(model_file=model_path)
-            
-            def predict(inputs: np.ndarray) -> np.ndarray:
-                return model.predict(inputs.astype(np.float32))
-            
-            return predict
-
-        predict_udf = predict_batch_udf(
-            make_predict_fn,
-            return_type=DoubleType(),
-            batch_size=1000
+        # UDF that uses broadcasted model - predicts row by row
+        predict_udf = F.udf(
+            lambda *features: float(
+                broadcasted_model.value.predict([[*features]])[0]
+            ),
+            DoubleType(),
         )
 
         return features_df.withColumn(
             "predicted_volatility_5m",
-            predict_udf(struct(*[F.col(c) for c in feature_cols]))
+            predict_udf(*[F.col(c) for c in feature_cols])
         )
 
-    def write_features(self, df: DataFrame) -> int:
+    def write_features(self, df: DataFrame, count: Optional[int] = None) -> int:
         """Write ML features to PostgreSQL using Spark JDBC (distributed)."""
         if df.isEmpty():
             logger.info("No features to write")
@@ -268,7 +257,8 @@ class VolatilityPredictionJob:
             "hour", "symbol_encoded",
         ]
 
-        count = df.count()
+        # Use provided count if available (from cached df), otherwise count
+        record_count = count if count is not None else df.count()
         
         df.select(*feature_cols).write \
             .format("jdbc") \
@@ -280,10 +270,10 @@ class VolatilityPredictionJob:
             .mode("append") \
             .save()
         
-        logger.info(f"Wrote {count} feature records to ml_features via Spark JDBC")
-        return count
+        logger.info(f"Wrote {record_count} feature records to ml_features via Spark JDBC")
+        return record_count
 
-    def write_volatility_predictions(self, df: DataFrame) -> int:
+    def write_volatility_predictions(self, df: DataFrame, count: Optional[int] = None) -> int:
         """Write volatility predictions to PostgreSQL using Spark JDBC (distributed)."""
         if df.isEmpty():
             logger.info("No volatility predictions to write")
@@ -298,7 +288,8 @@ class VolatilityPredictionJob:
             F.col("predicted_volatility_5m"),
         )
         
-        count = predictions_df.count()
+        # Use provided count if available (from cached df), otherwise count
+        record_count = count if count is not None else predictions_df.count()
         
         predictions_df.write \
             .format("jdbc") \
@@ -310,8 +301,8 @@ class VolatilityPredictionJob:
             .mode("append") \
             .save()
         
-        logger.info(f"Wrote {count} volatility prediction records via Spark JDBC")
-        return count
+        logger.info(f"Wrote {record_count} volatility prediction records via Spark JDBC")
+        return record_count
 
     def _save_checkpoint(self) -> None:
         """Save checkpoint once before shutdown."""
@@ -328,8 +319,9 @@ class VolatilityPredictionJob:
                 .appName("VolatilityPredictionJob")
                 .config("spark.jars.packages", "org.postgresql:postgresql:42.7.4")
                 .config("spark.sql.shuffle.partitions", "2")
-                .config("spark.pyspark.python", "/usr/local/bin/python")
-                .config("spark.pyspark.driver.python", "/usr/local/bin/python")
+                .config("spark.pyspark.python", "/usr/local/bin/python3.11")
+                .config("spark.pyspark.driver.python", "/usr/local/bin/python3.11")
+                .config("spark.executorEnv.PYSPARK_PYTHON", "/usr/local/bin/python3.11")
                 .getOrCreate())
 
             self.pg = Postgres(
@@ -351,11 +343,14 @@ class VolatilityPredictionJob:
 
             trades = self.read_trades(start_time)
             
+            # Cache trades since we use it multiple times
+            trades = trades.cache()
             row_count = trades.count()
             logger.info(f"Read {row_count} rows from trades_1m")
             
             if row_count == 0:
                 logger.warning("No new trades found, skipping feature computation")
+                trades.unpersist()
                 return
 
             # Track max timestamp for checkpoint
@@ -364,33 +359,40 @@ class VolatilityPredictionJob:
             self._records_processed = row_count
 
             features = self.compute_features(trades)
+            trades.unpersist()  # Done with trades, free memory
             
-            feature_count = features.count()
+            # Cache features since we use it multiple times (write_features, predict, write_predictions)
+            features = features.cache()
+            feature_count = features.count()  # Single count, triggers cache
             logger.info(f"Computed {feature_count} feature rows")
 
-            written_features = self.write_features(features)
+            written_features = self.write_features(features, count=feature_count)
             
             for _ in range(written_features):
                 record_message_processed("spark_volatility_prediction", "ml_features", "success")
 
             if model_loaded:
-                predictions = self.predict_volatility_batch(features)
-                written_predictions = self.write_volatility_predictions(predictions)
+                predictions = self.predict_volatility(features)
+                written_predictions = self.write_volatility_predictions(predictions, count=feature_count)
                 
                 for _ in range(written_predictions):
                     record_message_processed("spark_volatility_prediction", "volatility_predictions", "success")
                 
+                if written_predictions > 0:
+                    self._save_checkpoint()
+                
                 logger.info(f"Volatility prediction job completed: {written_features} features, {written_predictions} predictions")
             else:
-                logger.info(f"Feature computation completed: {written_features} features (no model)")
+                logger.info(f"Feature computation completed: {written_features} features (no model, checkpoint not updated)")
+            
+            # Unpersist features after done
+            features.unpersist()
 
         except Exception as e:
             record_error("spark_volatility_prediction", "job_failure", "critical")
             logger.error(f"Volatility prediction job failed: {e}")
             raise
         finally:
-            # Save checkpoint once before shutdown
-            self._save_checkpoint()
             if self.pg:
                 self.pg.close()
             if self.spark:

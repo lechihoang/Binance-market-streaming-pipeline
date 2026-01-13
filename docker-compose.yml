@@ -200,7 +200,7 @@ services:
   airflow-init:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/airflow/Dockerfile
     hostname: airflow-init
     container_name: airflow-init
     depends_on:
@@ -221,8 +221,8 @@ services:
       - ./storage:/opt/airflow/storage
       - ./processing:/opt/airflow/processing
       - ./util:/opt/airflow/util
-      - ./validator:/opt/airflow/validator
       - ./data:/opt/airflow/data
+      - ./log:/opt/airflow/log
     entrypoint: /bin/bash
     command:
       - -c
@@ -250,7 +250,7 @@ services:
   airflow-webserver:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/airflow/Dockerfile
     hostname: airflow-webserver
     container_name: airflow-webserver
     depends_on:
@@ -266,7 +266,7 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
       AIRFLOW__CORE__ENABLE_XCOM_PICKLING: 'true'
-      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/dags/logs
+      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/log
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
       AIRFLOW__WEBSERVER__RBAC: 'true'
@@ -286,8 +286,8 @@ services:
       - ./storage:/opt/airflow/storage
       - ./processing:/opt/airflow/processing
       - ./util:/opt/airflow/util
-      - ./validator:/opt/airflow/validator
       - ./data:/opt/airflow/data
+      - ./log:/opt/airflow/log
     command: airflow webserver
     networks:
       - streaming-network
@@ -313,7 +313,7 @@ services:
   airflow-scheduler:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/airflow/Dockerfile
     hostname: airflow-scheduler
     container_name: airflow-scheduler
     depends_on:
@@ -333,7 +333,7 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
       AIRFLOW__CORE__ENABLE_XCOM_PICKLING: 'true'
-      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/dags/logs
+      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/log
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
       REDIS_HOST: redis
@@ -349,9 +349,9 @@ services:
       - ./processing:/opt/airflow/processing
       - ./ingestion:/opt/airflow/ingestion
       - ./util:/opt/airflow/util
-      - ./validator:/opt/airflow/validator
       - ./ml:/opt/airflow/ml
       - ./models:/opt/airflow/models
+      - ./log:/opt/airflow/log
       - spark-checkpoints:/opt/airflow/data/spark-checkpoints
       # /app mounts for BashOperator commands
       - ./ingestion:/app/ingestion
@@ -359,7 +359,6 @@ services:
       - ./storage:/app/storage
       - ./util:/app/util
       - ./schema:/app/schema
-      - ./validator:/app/validator
       - ./ml:/app/ml
       - ./models:/app/models
     command: airflow scheduler
@@ -372,6 +371,7 @@ services:
       retries: 5
       start_period: 30s
     stop_grace_period: 45s
+    init: true
     deploy:
       resources:
         limits:
@@ -433,7 +433,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./grafana/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -458,7 +458,7 @@ services:
   crypto-api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/api/Dockerfile
     hostname: crypto-api
     container_name: crypto-api
     depends_on:
@@ -477,6 +477,7 @@ services:
       POSTGRES_DATA_USER: ${POSTGRES_USER:-crypto}
       POSTGRES_DATA_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
       POSTGRES_DATA_DB: ${POSTGRES_DB:-crypto_data}
+      MODEL_DIR: /app/models
     volumes:
       - ./api:/app/api
       - ./storage:/app/storage
@@ -504,7 +505,7 @@ services:
   ticker-consumer:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/consumer/Dockerfile
     hostname: ticker-consumer
     container_name: ticker-consumer
     depends_on:
@@ -590,8 +591,8 @@ services:
   # Streamlit Dashboard
   streamlit:
     build:
-      context: ./streamlit_app
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: docker/streamlit/Dockerfile
     hostname: streamlit
     container_name: streamlit
     depends_on:

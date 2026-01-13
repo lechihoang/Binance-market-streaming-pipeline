@@ -128,9 +128,12 @@ The `QueryRouter` automatically selects the appropriate storage tier based on th
 │   ├── connector.py               # Binance WebSocket → Kafka (producer)
 │   └── ticker_consumer.py         # Kafka → Redis (consumer)
 ├── processing/                    # Stream processing layer
-│   ├── base_spark_job.py          # Base class for Spark jobs
 │   ├── trade_aggregation_job.py   # OHLCV aggregation
-│   └── anomaly_detection_job.py   # Alert generation
+│   ├── anomaly_detection_job.py   # Alert generation
+│   ├── volatility_prediction_job.py # Volatility prediction
+│   └── validators/                # Data quality validation
+│       ├── aggregation_validator.py   # Aggregation output validation
+│       └── anomaly_validator.py       # Anomaly output validation
 ├── storage/
 │   ├── redis.py                   # Redis storage operations
 │   ├── postgres.py                # PostgreSQL storage operations
@@ -141,16 +144,17 @@ The `QueryRouter` automatically selects the appropriate storage tier based on th
 │   ├── metrics.py                 # Prometheus metrics
 │   ├── retry.py                   # Retry with backoff
 │   └── shutdown.py                # Graceful shutdown handling
-├── validator/
-│   ├── aggregation_validator.py   # Aggregation output validation
-│   └── anomaly_validator.py       # Anomaly output validation
+├── docker/                        # Docker configurations
+│   ├── airflow/                   # Airflow image
+│   ├── api/                       # FastAPI image
+│   ├── consumer/                  # Ticker consumer image
+│   └── streamlit/                 # Streamlit dashboard image
 ├── grafana/
 │   ├── dashboards/                # Pre-configured dashboards
-│   └── provisioning/              # Auto-provisioning config
-├── config/
+│   ├── provisioning/              # Auto-provisioning config
 │   └── prometheus.yml             # Prometheus configuration
-├── tests/                         # Test suite
-├── docker-compose.yml             # Container orchestration
+├── streamlit_app/                 # Streamlit dashboard source
+├── tests/                         # Test suite├── docker-compose.yml             # Container orchestration
 ├── Dockerfile                     # Multi-purpose container image
 └── requirements.txt               # Python dependencies
 ```
@@ -253,7 +257,8 @@ Orchestrates Spark streaming jobs for data processing. Runs every 5 minutes to a
 ### Alerts
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/v1/analytics/alerts/whale-alerts` | Large trade alerts |
+| `GET /api/v1/analytics/alerts/price-spikes` | Price spike alerts (>2% change) |
+| `GET /api/v1/analytics/alerts/volume-spikes` | Volume spike alerts (>$1M) |
 
 ### System
 | Endpoint | Description |
@@ -276,7 +281,7 @@ Detailed analysis for individual trading pairs with OHLCV charts and trade metri
 ![Symbol Deep Dive Dashboard](img/dashboard2.png)
 
 #### 3. Trading Analytics
-Trade patterns, whale alerts, price spikes, and volume anomalies.
+Trade patterns, price spikes, volume spikes, and market anomalies.
 
 ![Trading Analytics Dashboard](img/dashboard3.png)
 

@@ -220,7 +220,8 @@
               { "color": "green", "value": 0 }
             ]
           },
-          "unit": "percent"
+          "unit": "suffix:%",
+          "decimals": 2
         },
         "overrides": []
       },
@@ -242,113 +243,6 @@
     },
 
     {
-      "id": 3,
-      "title": "Whale Alerts",
-      "type": "table",
-      "datasource": {
-        "type": "marcusolsson-json-datasource",
-        "uid": "fastapi"
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 24,
-        "x": 0,
-        "y": 5
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "method": "GET",
-          "urlPath": "/api/v1/analytics/alerts/whale-alerts?limit=50",
-          "fields": [
-            { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
-            { "jsonPath": "$[*].symbol", "name": "Symbol" },
-            { "jsonPath": "$[*].side", "name": "Side" },
-            { "jsonPath": "$[*].amount", "name": "Amount" },
-            { "jsonPath": "$[*].price", "name": "Price" },
-            { "jsonPath": "$[*].total_value", "name": "Total Value" }
-          ]
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "displayMode": "auto",
-            "inspect": false
-          }
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Time" },
-            "properties": [
-              { "id": "custom.width", "value": 180 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Symbol" },
-            "properties": [
-              { "id": "custom.width", "value": 100 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Side" },
-            "properties": [
-              { "id": "custom.displayMode", "value": "color-text" },
-              { "id": "custom.width", "value": 80 },
-              { "id": "mappings", "value": [
-                { "type": "value", "options": { "BUY": { "color": "green", "text": "BUY" } } },
-                { "type": "value", "options": { "SELL": { "color": "red", "text": "SELL" } } }
-              ]}
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Amount" },
-            "properties": [
-              { "id": "decimals", "value": 4 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Price" },
-            "properties": [
-              { "id": "unit", "value": "currencyUSD" },
-              { "id": "decimals", "value": 2 }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Total Value" },
-            "properties": [
-              { "id": "unit", "value": "currencyUSD" },
-              { "id": "decimals", "value": 0 },
-              { "id": "custom.displayMode", "value": "color-background" },
-              { "id": "thresholds", "value": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "transparent", "value": null },
-                  { "color": "yellow", "value": 100000 },
-                  { "color": "orange", "value": 500000 },
-                  { "color": "red", "value": 1000000 }
-                ]
-              }}
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false,
-          "reducer": ["sum"],
-          "fields": ""
-        },
-        "sortBy": [
-          { "displayName": "Time", "desc": true }
-        ]
-      }
-    },
-
-    {
       "id": 4,
       "title": "Price Spikes (>2% change)",
       "type": "table",
@@ -360,7 +254,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 5
       },
       "targets": [
         {
@@ -454,7 +348,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 5
       },
       "targets": [
         {

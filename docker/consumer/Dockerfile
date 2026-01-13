@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    librdkafka-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/consumer/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY ingestion/ ./ingestion/
+COPY storage/ ./storage/
+COPY util/ ./util/
+
+ENV PYTHONPATH=/app
+
+CMD ["python", "-c", "from ingestion.ticker_consumer import main; main()"]
