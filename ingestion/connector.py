@@ -2,37 +2,32 @@
 
 import asyncio
 import json
-import os
 import time
 
 import websockets
 
 from util.logging import setup_logging, get_logger
 from util.kafka import KafkaProducer
+from util.constant import BINANCE_WS_URL, KAFKA_SERVER, SCHEMA_REGISTRY_URL, DEFAULT_SYMBOL
 
 logger = get_logger(__name__)
-
-WS_URL = os.getenv("BINANCE_WS_URL", "wss://stream.binance.com:9443/stream")
-KAFKA_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL", "http://schema-registry:8081")
-SYMBOLS = os.getenv("TICKER_SYMBOLS", "").lower().split(",")
 
 
 class BinanceConnector:
     """Stream trades and tickers from Binance WebSocket to Kafka."""
 
     def __init__(self):
-        streams = [f"{s}@trade" for s in SYMBOLS] + [f"{s}@ticker" for s in SYMBOLS]
-        self.url = f"{WS_URL}?streams={'/'.join(streams)}"
+        streams = [f"{s.lower()}@trade" for s in DEFAULT_SYMBOL] + [f"{s.lower()}@ticker" for s in DEFAULT_SYMBOL]
+        self.url = f"{BINANCE_WS_URL}?streams={'/'.join(streams)}"
 
         self.trades = KafkaProducer(
-            bootstrap_servers=KAFKA_SERVERS,
-            schema_registry_url=REGISTRY_URL,
+            bootstrap_servers=KAFKA_SERVER,
+            schema_registry_url=SCHEMA_REGISTRY_URL,
             topic="raw_trades",
         )
         self.tickers = KafkaProducer(
-            bootstrap_servers=KAFKA_SERVERS,
-            schema_registry_url=REGISTRY_URL,
+            bootstrap_servers=KAFKA_SERVER,
+            schema_registry_url=SCHEMA_REGISTRY_URL,
             topic="raw_tickers",
         )
 
@@ -40,7 +35,7 @@ class BinanceConnector:
         while True:
             try:
                 async with websockets.connect(self.url) as ws:
-                    logger.info(f"Connected, streaming {len(SYMBOLS)} symbols")
+                    logger.info(f"Connected, streaming {len(DEFAULT_SYMBOL)} symbols")
                     async for msg in ws:
                         data = json.loads(msg).get("data", {})
                         event = data.get("e")
@@ -94,7 +89,7 @@ class BinanceConnector:
 
 
 def main():
-    setup_logging(level=os.getenv("LOG_LEVEL", "INFO"), json_output=True)
+    setup_logging(level="INFO", json_output=True)
     logger.info("Starting Binance Connector...")
     asyncio.run(BinanceConnector().run())
 

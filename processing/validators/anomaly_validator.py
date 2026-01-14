@@ -8,18 +8,9 @@ import pandas as pd
 
 from storage.postgres import Postgres
 from util.logging import get_logger
+from util.constant import VALID_ALERT_TYPE, VALID_ALERT_LEVEL
 
 logger = get_logger(__name__)
-
-
-VALID_ALERT_TYPES = [
-    "VOLUME_SPIKE",
-    "PRICE_SPIKE",
-    "TRADE_COUNT_SPIKE",
-    "BUY_SELL_IMBALANCE",
-]
-
-VALID_ALERT_LEVELS = ["HIGH", "MEDIUM", "LOW"]
 
 
 def build_anomaly_expectations() -> List[gxe.Expectation]:
@@ -39,8 +30,8 @@ def build_anomaly_expectations() -> List[gxe.Expectation]:
         gxe.ExpectColumnValuesToNotBeNull(column="alert_level"),
         gxe.ExpectColumnValuesToNotBeNull(column="timestamp"),
         # Value sets
-        gxe.ExpectColumnValuesToBeInSet(column="alert_type", value_set=VALID_ALERT_TYPES),
-        gxe.ExpectColumnValuesToBeInSet(column="alert_level", value_set=VALID_ALERT_LEVELS),
+        gxe.ExpectColumnValuesToBeInSet(column="alert_type", value_set=VALID_ALERT_TYPE),
+        gxe.ExpectColumnValuesToBeInSet(column="alert_level", value_set=VALID_ALERT_LEVEL),
     ]
 
 

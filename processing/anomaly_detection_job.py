@@ -1,7 +1,6 @@
-"""Anomaly Detection Job - batch mode từ trades_1m."""
+"""Anomaly Detection Job - batch mode from trades_1m."""
 
 import json
-import os
 import signal
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -14,29 +13,17 @@ from storage.postgres import Postgres
 from util.shutdown import GracefulShutdown
 from util.metrics import record_error, record_message_processed
 from util.logging import get_logger
+from util.constant import (
+    REDIS_HOST, REDIS_PORT, POSTGRES_HOST, POSTGRES_PORT,
+    POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, BATCH_SIZE,
+    VOLUME_THRESHOLD, PRICE_CHANGE_THRESHOLD, TRADE_COUNT_MULTIPLIER,
+    BUY_RATIO_LOW, BUY_RATIO_HIGH, JOB_ANOMALY, PYSPARK_PYTHON,
+)
 from processing.validators.anomaly_validator import validate_alert_records
 
 logger = get_logger(__name__)
 
-# Config
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-PG_HOST = os.getenv("POSTGRES_HOST", "localhost")
-PG_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
-PG_USER = os.getenv("POSTGRES_USER", "crypto")
-PG_PASS = os.getenv("POSTGRES_PASSWORD", "crypto")
-PG_DB = os.getenv("POSTGRES_DB", "crypto_data")
-JDBC_URL = f"jdbc:postgresql://{PG_HOST}:{PG_PORT}/{PG_DB}"
-
-# Thresholds
-VOLUME_THRESHOLD = 1_000_000.0
-PRICE_CHANGE_THRESHOLD = 2.0
-TRADE_COUNT_MULTIPLIER = 3.0
-BUY_RATIO_LOW = 0.3
-BUY_RATIO_HIGH = 0.7
-
-BATCH_SIZE = 100
-JOB_NAME = "anomaly_detection"
+JDBC_URL = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 
 class AnomalyJob:
@@ -61,8 +48,8 @@ class AnomalyJob:
                 FROM trades_1m
                 WHERE timestamp > '{query_start}' AND timestamp <= '{end}'
             """)
-            .option("user", PG_USER)
-            .option("password", PG_PASS)
+            .option("user", POSTGRES_USER)
+            .option("password", POSTGRES_PASSWORD)
             .option("driver", "org.postgresql.Driver")
             .load())
 
@@ -156,14 +143,14 @@ class AnomalyJob:
             .format("jdbc") \
             .option("url", JDBC_URL) \
             .option("dbtable", "staging_alerts") \
-            .option("user", PG_USER) \
-            .option("password", PG_PASS) \
+            .option("user", POSTGRES_USER) \
+            .option("password", POSTGRES_PASSWORD) \
             .option("driver", "org.postgresql.Driver") \
             .mode("overwrite") \
             .save()
         
         if self.pg:
-            return self.pg.merge_staging_to_alerts()
+            return self.pg.merge_staging_to_alert()
         return 0
 
     def write_alerts_to_redis(self, records: list) -> None:
@@ -182,7 +169,7 @@ class AnomalyJob:
                 "details": json.loads(r["details"]) if isinstance(r["details"], str) else r["details"],
             })
         
-        self.redis.write_alerts(redis_records)
+        self.redis.write_alert_batch(redis_records)
 
     def run(self) -> None:
         logger.info("Starting AnomalyJob")
@@ -191,16 +178,16 @@ class AnomalyJob:
                 .appName("AnomalyJob")
                 .config("spark.jars.packages", "org.postgresql:postgresql:42.7.4")
                 .config("spark.sql.shuffle.partitions", "2")
-                .config("spark.pyspark.python", "/usr/local/bin/python3.11")
-                .config("spark.pyspark.driver.python", "/usr/local/bin/python3.11")
-                .config("spark.executorEnv.PYSPARK_PYTHON", "/usr/local/bin/python3.11")
+                .config("spark.pyspark.python", PYSPARK_PYTHON)
+                .config("spark.pyspark.driver.python", PYSPARK_PYTHON)
+                .config("spark.executorEnv.PYSPARK_PYTHON", PYSPARK_PYTHON)
                 .getOrCreate())
 
-            self.pg = Postgres(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASS, database=PG_DB)
+            self.pg = Postgres(host=POSTGRES_HOST, port=POSTGRES_PORT, user=POSTGRES_USER, password=POSTGRES_PASSWORD, database=POSTGRES_DB)
             self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT)
 
             # Time range
-            checkpoint = self.pg.get_checkpoint(JOB_NAME)
+            checkpoint = self.pg.get_checkpoint(JOB_ANOMALY)
             start = checkpoint["last_processed_timestamp"] if checkpoint else datetime.now(timezone.utc) - timedelta(hours=1)
             end = datetime.now(timezone.utc)
             logger.info(f"Processing: {start} to {end}")
@@ -212,7 +199,7 @@ class AnomalyJob:
             count = df.count()
             logger.info(f"Read {count} rows")
             if count == 0:
-                self.pg.update_checkpoint(JOB_NAME, end, 0)
+                self.pg.update_checkpoint(JOB_ANOMALY, end, 0)
                 return
 
             # Detect anomalies - returns DataFrame with alert_id, created_at columns
@@ -224,7 +211,7 @@ class AnomalyJob:
             logger.info(f"Found {alert_count} alerts")
             if alert_count == 0:
                 alerts_df.unpersist()
-                self.pg.update_checkpoint(JOB_NAME, end, 0)
+                self.pg.update_checkpoint(JOB_ANOMALY, end, 0)
                 return
 
             # Process in batches using toLocalIterator (memory efficient)
@@ -270,9 +257,9 @@ class AnomalyJob:
                 record_message_processed("spark_anomaly_detection", "alerts", "success")
 
             if max_ts:
-                self.pg.update_checkpoint(JOB_NAME, max_ts, total_valid)
+                self.pg.update_checkpoint(JOB_ANOMALY, max_ts, total_valid)
             else:
-                self.pg.update_checkpoint(JOB_NAME, end, 0)
+                self.pg.update_checkpoint(JOB_ANOMALY, end, 0)
             
             logger.info(f"AnomalyJob completed: {total_valid} valid, {total_invalid} invalid")
 

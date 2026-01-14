@@ -15,7 +15,7 @@ COPY api/ ./api/
 COPY storage/ ./storage/
 COPY util/ ./util/
 COPY ml/ ./ml/
-COPY models/ ./models/
+COPY model/ ./model/
 
 ENV PYTHONPATH=/app
 

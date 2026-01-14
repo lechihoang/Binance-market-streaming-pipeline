@@ -12,15 +12,14 @@ ENV _JAVA_OPTIONS="--add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.b
 
 COPY docker/airflow/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir "apache-airflow==2.10.4"
+    pip install --no-cache-dir -r requirements.txt
 
 COPY api/ ./api/
 COPY ingestion/ ./ingestion/
 COPY storage/ ./storage/
 COPY processing/ ./processing/
 COPY util/ ./util/
-COPY models/ ./models/
+COPY model/ ./model/
 
 ENV AIRFLOW_HOME=/opt/airflow
 ENV PYTHONPATH=/app:/opt/airflow

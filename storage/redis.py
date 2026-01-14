@@ -1,7 +1,6 @@
 """Redis storage module."""
 
 import json
-import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
@@ -9,108 +8,24 @@ from typing import Any, Dict, List, Optional, Union
 import redis
 from redis.exceptions import ConnectionError, TimeoutError
 
-logger = logging.getLogger(__name__)
+from util.logging import get_logger
+from util.constant import (
+    REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD,
+    RedisKey, RedisTTL, RedisLimit, TICKER_MAP,
+)
 
-
-def parse_candle_timestamp(ts: Any) -> Optional[datetime]:
-    if ts is None:
-        return None
-    if isinstance(ts, datetime):
-        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-    if isinstance(ts, (int, float)):
-        return datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-    if isinstance(ts, str):
-        try:
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except ValueError:
-            return None
-    return None
-
-
-def get_window_start(dt: datetime, window_minutes: int) -> datetime:
-    window_min = (dt.minute // window_minutes) * window_minutes
-    return dt.replace(minute=window_min, second=0, microsecond=0)
-
-
-def aggregate_candles(candles: List[Dict[str, Any]], window_start: datetime, interval: str) -> Dict[str, Any]:
-    candles.sort(key=lambda x: x.get("timestamp", 0))
-    agg = {
-        "timestamp": window_start,
-        "symbol": candles[0].get("symbol", ""),
-        "interval": interval,
-        "open": candles[0].get("open", 0),
-        "high": max(c.get("high", 0) for c in candles),
-        "low": min(c.get("low", float("inf")) for c in candles),
-        "close": candles[-1].get("close", 0),
-        "volume": sum(c.get("volume", 0) for c in candles),
-        "quote_volume": sum(c.get("quote_volume", 0) for c in candles),
-        "trade_count": sum(c.get("trade_count", 0) for c in candles),
-    }
-    if agg["low"] == float("inf"):
-        agg["low"] = 0
-    return agg
-
-
-def check_health(
-    host: str = "localhost",
-    port: int = 6379,
-    db: int = 0,
-    retries: int = 3,
-    delay: float = 1.0,
-    max_retries: Optional[int] = None,
-    retry_delay: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Check Redis connection health."""
-    retries = max_retries if max_retries is not None else retries
-    delay = retry_delay if retry_delay is not None else delay
-    last_err = None
-    
-    for attempt in range(1, retries + 1):
-        try:
-            client = redis.Redis(
-                host=host, port=port, db=db,
-                socket_connect_timeout=5, socket_timeout=5,
-            )
-            client.ping()
-            client.close()
-            return {
-                "service": "redis",
-                "tier": "hot",
-                "status": "healthy",
-                "host": host,
-                "port": port,
-                "attempt": attempt,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        except Exception as e:
-            last_err = e
-            if attempt < retries:
-                time.sleep(delay)
-    
-    raise Exception(f"Redis health check failed after {retries} attempts: {last_err}")
+logger = get_logger(__name__)
 
 
 class Redis:
-    # Key prefixes
-    AGG = "agg"
-    TICKER = "ticker"
-    TRADE = "trade"
-    ALERT = "alert"
-    PRICE = "price"
-    
-    # TTLs in seconds
-    AGG_TTL = 3600
-    TICKER_TTL = 60
-    TRADE_TTL = 300
-    ALERT_TTL = 86400
-    
+    """Redis storage operations for real-time data caching."""
+
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6379,
-        db: int = 0,
-        password: Optional[str] = None,
+        host: str = REDIS_HOST,
+        port: int = REDIS_PORT,
+        db: int = REDIS_DB,
+        password: Optional[str] = REDIS_PASSWORD,
         max_retries: int = 3,
         retry_delay: float = 1.0,
         ttl_seconds: Optional[int] = None,
@@ -122,26 +37,20 @@ class Redis:
         self.password = password
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        self.ticker_ttl = ticker_ttl or ttl_seconds or self.TICKER_TTL
-        
+        self.ticker_ttl = ticker_ttl or ttl_seconds or RedisTTL.TICKER
+
         self.client: Optional[redis.Redis] = None
         self.connect()
-    
+
     def connect(self) -> None:
         """Connect to Redis with exponential backoff."""
-        last_err = None
-        delay = self.retry_delay
-        
+        last_err, delay = None, self.retry_delay
+
         for attempt in range(1, self.max_retries + 1):
             try:
                 self.client = redis.Redis(
-                    host=self.host,
-                    port=self.port,
-                    db=self.db,
-                    password=self.password,
-                    socket_connect_timeout=5,
-                    socket_timeout=5,
-                    decode_responses=True,
+                    host=self.host, port=self.port, db=self.db, password=self.password,
+                    socket_connect_timeout=5, socket_timeout=5, decode_responses=True,
                 )
                 self.client.ping()
                 logger.info(f"Connected to Redis at {self.host}:{self.port}/{self.db}")
@@ -152,203 +61,194 @@ class Redis:
                 if attempt < self.max_retries:
                     time.sleep(delay)
                     delay *= 2
-        
+
         raise ConnectionError(f"Failed to connect to Redis after {self.max_retries} attempts: {last_err}")
-    
-    def ensure_connected(self) -> Any:
+
+    def ensure(self) -> redis.Redis:
+        """Ensure connected, reconnect if needed."""
         if self.client is None:
             self.connect()
         try:
-            if self.client:
-                self.client.ping()
+            self.client.ping()  # type: ignore
         except (ConnectionError, TimeoutError):
             logger.warning("Redis connection lost, reconnecting...")
             self.connect()
-        return self.client
-    
+        return self.client  # type: ignore
+
     def ping(self) -> bool:
         try:
-            result = self.ensure_connected().ping()
-            return bool(result)
+            return bool(self.ensure().ping())
         except Exception:
             return False
-    
+
     def close(self) -> None:
         if self.client:
             self.client.close()
             self.client = None
             logger.info("Redis connection closed")
 
+    # ========== Helper Methods ==========
+
+    def to_hash(self, data: Dict[str, Any]) -> Dict[str, str]:
+        """Convert dict to Redis hash format."""
+        return {k: str(v) if v is not None else "" for k, v in data.items()}
+
+    def parse_value(self, key: str, value: str) -> Any:
+        """Parse Redis hash value to appropriate type."""
+        if value == "":
+            return None
+        if key in ("trade_count", "buy_count", "sell_count"):
+            return int(float(value)) if value else 0
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+    def write_to_list(self, key: str, item: Dict[str, Any], max_items: int, ttl: int) -> bool:
+        """Write item to list with trimming and expiry."""
+        try:
+            pipe = self.ensure().pipeline()
+            pipe.lpush(key, json.dumps(item))
+            pipe.ltrim(key, 0, max_items - 1)
+            pipe.expire(key, ttl)
+            pipe.execute()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to write to {key}: {e}")
+            return False
+
+    def read_from_list(self, key: str, limit: int) -> List[Dict[str, Any]]:
+        """Read list items as dicts."""
+        try:
+            items = self.ensure().lrange(key, 0, limit - 1)
+            result = []
+            for item in items:
+                try:
+                    result.append(json.loads(item))
+                except json.JSONDecodeError:
+                    continue
+            return result
+        except Exception as e:
+            logger.error(f"Failed to read {key}: {e}")
+            return []
+
+    @staticmethod
+    def parse_ts(ts: Any) -> Optional[datetime]:
+        """Parse timestamp to datetime."""
+        if ts is None:
+            return None
+        if isinstance(ts, datetime):
+            return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+        if isinstance(ts, (int, float)):
+            return datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+        if isinstance(ts, str):
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                return None
+        return None
+
     # ========== Aggregation (OHLCV) ==========
-    
+
     def agg_key(self, symbol: str, interval: str = "1m") -> str:
-        return f"{self.AGG}:{symbol}:{interval}"
-    
+        return f"{RedisKey.AGG}:{symbol}:{interval}"
+
     def write_agg(self, symbol: str, interval: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
         """Write aggregation (OHLCV) data."""
         try:
             key = self.agg_key(symbol, interval)
-            hash_data = {k: str(v) if v is not None else "" for k, v in data.items()}
-            self.ensure_connected().hset(key, mapping=hash_data)
-            self.ensure_connected().expire(key, ttl or self.AGG_TTL)
+            self.ensure().hset(key, mapping=self.to_hash(data))
+            self.ensure().expire(key, ttl or RedisTTL.AGG)
             return True
         except Exception as e:
             logger.error(f"Failed to write agg for {symbol}: {e}")
             return False
-    
+
     def get_agg(self, symbol: str, interval: str = "1m") -> Optional[Dict[str, Any]]:
         """Get aggregation data."""
         try:
-            key = self.agg_key(symbol, interval)
-            data = self.ensure_connected().hgetall(key)
-            if not data:
-                return None
-            
-            result = {}
-            for k, v in data.items():
-                if v == "":
-                    result[k] = None
-                elif k in ("trade_count", "buy_count", "sell_count"):
-                    result[k] = int(float(v)) if v else 0
-                else:
-                    try:
-                        result[k] = float(v)
-                    except ValueError:
-                        result[k] = v
-            return result
+            data = self.ensure().hgetall(self.agg_key(symbol, interval))
+            return {k: self.parse_value(k, v) for k, v in data.items()} if data else None
         except Exception as e:
             logger.error(f"Failed to get agg for {symbol}: {e}")
             return None
-    
-    def write_aggs(self, aggs: List[Dict[str, Any]], ttl: Optional[int] = None) -> int:
+
+    def write_agg_batch(self, aggs: List[Dict[str, Any]], ttl: Optional[int] = None) -> int:
         """Batch write aggregations."""
         count = 0
-        pipe = self.ensure_connected().pipeline()
-        
         try:
+            pipe = self.ensure().pipeline()
             for agg in aggs:
-                symbol = agg.get("symbol")
-                interval = agg.get("interval", "1m")
+                symbol, interval = agg.get("symbol"), agg.get("interval", "1m")
                 if not symbol:
                     continue
-                
                 key = self.agg_key(symbol, interval)
-                hash_data = {k: str(v) if v is not None else "" for k, v in agg.items()}
-                pipe.hset(key, mapping=hash_data)
-                pipe.expire(key, ttl or self.AGG_TTL)
+                pipe.hset(key, mapping=self.to_hash(agg))
+                pipe.expire(key, ttl or RedisTTL.AGG)
                 count += 1
-            
             pipe.execute()
             return count
         except Exception as e:
-            logger.error(f"Failed to write aggs batch: {e}")
+            logger.error(f"Failed to write agg batch: {e}")
             return 0
 
-    def get_aggs(self, symbol: str, interval: str = "5m") -> List[Dict[str, Any]]:
-        """Get aggregations, combining into higher timeframe if needed."""
-        if interval == "1m":
-            agg = self.get_agg(symbol, "1m")
-            return [agg] if agg else []
-        
-        if interval not in {"5m", "15m"}:
-            logger.warning(f"Invalid interval '{interval}'")
+    def get_agg_list(self, symbol: str, interval: str = "5m") -> List[Dict[str, Any]]:
+        """Get aggregations for a symbol."""
+        agg = self.get_agg(symbol, "1m")
+        if not agg:
             return []
-        
-        agg_1m = self.get_agg(symbol, "1m")
-        if not agg_1m:
-            return []
-        
-        result = dict(agg_1m)
-        result["interval"] = interval
-        return [result]
+        if interval != "1m":
+            agg["interval"] = interval
+        return [agg]
 
-    def combine_aggs(self, candles: List[Dict[str, Any]], interval: str = "5m") -> List[Dict[str, Any]]:
-        if not candles or interval == "1m":
-            return candles or []
-        
-        mins = {"5m": 5, "15m": 15}.get(interval)
-        if mins is None:
-            logger.warning(f"Invalid interval '{interval}'")
-            return candles
-        
-        windows: Dict[datetime, List[Dict[str, Any]]] = {}
-        for candle in candles:
-            ts = parse_candle_timestamp(candle.get("timestamp"))
-            if ts is None:
-                continue
-            window_start = get_window_start(ts, mins)
-            if window_start not in windows:
-                windows[window_start] = []
-            windows[window_start].append(candle)
-        
-        return [
-            aggregate_candles(wc, ws, interval)
-            for ws, wc in sorted(windows.items())
-            if wc
-        ]
-    
     # ========== Price ==========
-    
+
     def price_key(self, symbol: str) -> str:
-        return f"{self.PRICE}:{symbol}"
-    
+        return f"{RedisKey.PRICE}:{symbol}"
+
     def write_price(self, symbol: str, price: float, ts: Optional[int] = None) -> bool:
         """Write latest price."""
         try:
             key = self.price_key(symbol)
-            data = {
-                "price": str(price),
-                "timestamp": str(ts or int(time.time() * 1000)),
-            }
-            self.ensure_connected().hset(key, mapping=data)
-            self.ensure_connected().expire(key, self.AGG_TTL)
+            data = {"price": str(price), "timestamp": str(ts or int(time.time() * 1000))}
+            self.ensure().hset(key, mapping=data)
+            self.ensure().expire(key, RedisTTL.AGG)
             return True
         except Exception as e:
             logger.error(f"Failed to write price for {symbol}: {e}")
             return False
-    
+
     def get_price(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get latest price."""
         try:
-            key = self.price_key(symbol)
-            data = self.ensure_connected().hgetall(key)
-            if not data:
-                return None
-            return {
-                "price": float(data.get("price", 0)),
-                "timestamp": int(data.get("timestamp", 0)),
-            }
+            data = self.ensure().hgetall(self.price_key(symbol))
+            return {"price": float(data.get("price", 0)), "timestamp": int(data.get("timestamp", 0))} if data else None
         except Exception as e:
             logger.error(f"Failed to get price for {symbol}: {e}")
             return None
 
     # ========== Ticker ==========
-    
+
     def ticker_key(self, symbol: str) -> str:
-        return f"{self.TICKER}:{symbol.upper()}"
-    
+        return f"{RedisKey.TICKER}:{symbol.upper()}"
+
     def pack_ticker(self, symbol: str, data: Dict[str, Any]) -> Dict[str, str]:
-        """Transform ticker for storage.
-        
-        Supports multiple key formats:
-        - Raw Binance API keys (o, h, l, c, p, P, etc.)
-        - Normalized keys from connector (open_price, high_price, etc.)
-        - Redis storage keys (open, high, low, etc.)
-        """
-        return {
-            "symbol": symbol.upper(),
-            "last_price": str(data.get("c", data.get("last_price", "0"))),
-            "price_change": str(data.get("p", data.get("price_change", "0"))),
-            "price_change_pct": str(data.get("P", data.get("price_change_pct", data.get("price_change_percent", "0")))),
-            "open": str(data.get("o", data.get("open", data.get("open_price", "0")))),
-            "high": str(data.get("h", data.get("high", data.get("high_price", "0")))),
-            "low": str(data.get("l", data.get("low", data.get("low_price", "0")))),
-            "volume": str(data.get("v", data.get("volume", "0"))),
-            "quote_volume": str(data.get("q", data.get("quote_volume", "0"))),
-            "trade_count": str(data.get("n", data.get("trade_count", "0"))),
-            "updated_at": str(data.get("E", data.get("updated_at", data.get("event_time", int(time.time() * 1000))))),
-        }
-    
+        """Transform ticker for storage."""
+        packed = {"symbol": symbol.upper()}
+
+        for binance_key, storage_key in TICKER_MAP.items():
+            packed[storage_key] = str(data.get(binance_key, data.get(storage_key, "0")))
+
+        # Fallback for alternative key names
+        alt_keys = {"open_price": "open", "high_price": "high", "low_price": "low",
+                    "price_change_percent": "price_change_pct", "event_time": "updated_at"}
+        for alt, target in alt_keys.items():
+            if alt in data:
+                packed[target] = str(data[alt])
+
+        return packed
+
     def unpack_ticker(self, data: Dict[str, str]) -> Dict[str, Any]:
         """Transform ticker from storage."""
         if not data:
@@ -366,167 +266,107 @@ class Redis:
             "trade_count": int(data.get("trade_count", 0) or 0),
             "updated_at": int(data.get("updated_at", 0) or 0),
         }
-    
+
     def write_ticker(self, symbol: str, data: Dict[str, Any]) -> bool:
         """Write ticker data."""
         try:
             key = self.ticker_key(symbol)
-            storage_data = self.pack_ticker(symbol, data)
-            self.ensure_connected().hset(key, mapping=storage_data)
-            self.ensure_connected().expire(key, self.ticker_ttl)
+            self.ensure().hset(key, mapping=self.pack_ticker(symbol, data))
+            self.ensure().expire(key, self.ticker_ttl)
             return True
         except Exception as e:
             logger.error(f"Failed to write ticker for {symbol}: {e}")
             return False
-    
+
     def get_ticker(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get ticker data."""
         try:
-            key = self.ticker_key(symbol)
-            data = self.ensure_connected().hgetall(key)
-            if not data:
-                return None
-            return self.unpack_ticker(data)
+            data = self.ensure().hgetall(self.ticker_key(symbol))
+            return self.unpack_ticker(data) if data else None
         except Exception as e:
             logger.error(f"Failed to get ticker for {symbol}: {e}")
             return None
-    
-    def get_tickers(self) -> List[Dict[str, Any]]:
+
+    def get_ticker_all(self) -> List[Dict[str, Any]]:
         """Get all tickers."""
         try:
-            pattern = f"{self.TICKER}:*"
-            keys = self.ensure_connected().keys(pattern)
+            keys = self.ensure().keys(f"{RedisKey.TICKER}:*")
             if not keys:
                 return []
-            
-            tickers = []
-            pipe = self.ensure_connected().pipeline()
+
+            pipe = self.ensure().pipeline()
             for key in keys:
                 pipe.hgetall(key)
-            
-            for data in pipe.execute():
-                if data:
-                    tickers.append(self.unpack_ticker(data))
-            return tickers
+
+            return [self.unpack_ticker(data) for data in pipe.execute() if data]
         except Exception as e:
-            logger.error(f"Failed to get tickers: {e}")
+            logger.error(f"Failed to get all tickers: {e}")
             return []
 
     # ========== Trades ==========
-    
+
     def trade_key(self, symbol: str) -> str:
-        return f"{self.TRADE}:{symbol}"
-    
-    def write_trade(self, symbol: str, trade: Dict[str, Any], max_trades: int = 100) -> bool:
+        return f"{RedisKey.TRADE}:{symbol}"
+
+    def write_trade(self, symbol: str, trade: Dict[str, Any], max_trades: int = RedisLimit.MAX_TRADE) -> bool:
         """Write recent trade."""
-        try:
-            key = self.trade_key(symbol)
-            trade_json = json.dumps(trade)
-            
-            pipe = self.ensure_connected().pipeline()
-            pipe.lpush(key, trade_json)
-            pipe.ltrim(key, 0, max_trades - 1)
-            pipe.expire(key, self.TRADE_TTL)
-            pipe.execute()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to write trade for {symbol}: {e}")
-            return False
-    
-    def get_trades(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
+        return self.write_to_list(self.trade_key(symbol), trade, max_trades, RedisTTL.TRADE)
+
+    def get_trade(self, symbol: str, limit: int = RedisLimit.MAX_TRADE) -> List[Dict[str, Any]]:
         """Get recent trades."""
-        try:
-            key = self.trade_key(symbol)
-            trades_json = self.ensure_connected().lrange(key, 0, limit - 1)
-            
-            trades = []
-            for t in trades_json:
-                try:
-                    trades.append(json.loads(t))
-                except json.JSONDecodeError:
-                    continue
-            return trades
-        except Exception as e:
-            logger.error(f"Failed to get trades for {symbol}: {e}")
-            return []
-    
+        return self.read_from_list(self.trade_key(symbol), limit)
+
     # ========== Alerts ==========
-    
+
     def alert_key(self) -> str:
-        return f"{self.ALERT}:recent"
-    
-    def write_alert(self, alert: Dict[str, Any], max_alerts: int = 1000) -> bool:
+        return f"{RedisKey.ALERT}:recent"
+
+    def normalize_alert_ts(self, alert: Dict[str, Any]) -> None:
+        """Normalize alert timestamp to ISO format."""
+        if "timestamp" not in alert:
+            alert["timestamp"] = datetime.now(timezone.utc).isoformat()
+        elif isinstance(alert["timestamp"], datetime):
+            alert["timestamp"] = alert["timestamp"].isoformat()
+
+    def write_alert(self, alert: Dict[str, Any], max_alerts: int = RedisLimit.MAX_ALERT) -> bool:
         """Write an alert."""
-        try:
-            key = self.alert_key()
-            
-            if "timestamp" not in alert:
-                alert["timestamp"] = datetime.now(timezone.utc).isoformat()
-            elif isinstance(alert["timestamp"], datetime):
-                alert["timestamp"] = alert["timestamp"].isoformat()
-            
-            alert_json = json.dumps(alert)
-            
-            pipe = self.ensure_connected().pipeline()
-            pipe.lpush(key, alert_json)
-            pipe.ltrim(key, 0, max_alerts - 1)
-            pipe.expire(key, self.ALERT_TTL)
-            pipe.execute()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to write alert: {e}")
-            return False
-    
-    def get_alerts(self, limit: int = 100) -> List[Dict[str, Any]]:
+        self.normalize_alert_ts(alert)
+        return self.write_to_list(self.alert_key(), alert, max_alerts, RedisTTL.ALERT)
+
+    def get_alert(self, limit: int = RedisLimit.MAX_ALERT) -> List[Dict[str, Any]]:
         """Get recent alerts."""
-        try:
-            key = self.alert_key()
-            alerts_json = self.ensure_connected().lrange(key, 0, limit - 1)
-            
-            alerts = []
-            for a in alerts_json:
-                try:
-                    alert = json.loads(a)
-                    if "timestamp" in alert and isinstance(alert["timestamp"], str):
-                        try:
-                            dt = datetime.fromisoformat(alert["timestamp"].replace("Z", "+00:00"))
-                            alert["timestamp"] = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-                        except ValueError:
-                            pass
-                    alerts.append(alert)
-                except json.JSONDecodeError:
-                    continue
-            return alerts
-        except Exception as e:
-            logger.error(f"Failed to get alerts: {e}")
-            return []
-    
-    def write_alerts(self, alerts: List[Dict[str, Any]], max_alerts: int = 1000) -> int:
+        alerts = self.read_from_list(self.alert_key(), limit)
+
+        for alert in alerts:
+            if "timestamp" in alert and isinstance(alert["timestamp"], str):
+                parsed = self.parse_ts(alert["timestamp"])
+                if parsed:
+                    alert["timestamp"] = parsed
+        return alerts
+
+    def write_alert_batch(self, alerts: List[Dict[str, Any]], max_alerts: int = RedisLimit.MAX_ALERT) -> int:
         """Batch write alerts."""
         if not alerts:
             return 0
-        
+
         try:
             key = self.alert_key()
-            pipe = self.ensure_connected().pipeline()
-            
+            pipe = self.ensure().pipeline()
+
             for alert in alerts:
-                if "timestamp" not in alert:
-                    alert["timestamp"] = datetime.now(timezone.utc).isoformat()
-                elif isinstance(alert["timestamp"], datetime):
-                    alert["timestamp"] = alert["timestamp"].isoformat()
+                self.normalize_alert_ts(alert)
                 pipe.lpush(key, json.dumps(alert))
-            
+
             pipe.ltrim(key, 0, max_alerts - 1)
-            pipe.expire(key, self.ALERT_TTL)
+            pipe.expire(key, RedisTTL.ALERT)
             pipe.execute()
             return len(alerts)
         except Exception as e:
-            logger.error(f"Failed to write alerts batch: {e}")
+            logger.error(f"Failed to write alert batch: {e}")
             return 0
 
     # ========== Generic ==========
-    
+
     def write(
         self,
         key: str,
@@ -539,33 +379,59 @@ class Redis:
             if dtype == "hash":
                 if not isinstance(value, dict):
                     raise ValueError("Value must be dict for hash")
-                hash_data = {k: str(v) if v is not None else "" for k, v in value.items()}
-                self.ensure_connected().hset(key, mapping=hash_data)
-            
+                self.ensure().hset(key, mapping=self.to_hash(value))
+
             elif dtype == "list":
                 if not isinstance(value, list):
                     raise ValueError("Value must be list for list type")
-                pipe = self.ensure_connected().pipeline()
+                pipe = self.ensure().pipeline()
                 pipe.delete(key)
                 for item in value:
-                    if isinstance(item, (dict, list)):
-                        pipe.rpush(key, json.dumps(item))
-                    else:
-                        pipe.rpush(key, str(item))
+                    pipe.rpush(key, json.dumps(item) if isinstance(item, (dict, list)) else str(item))
                 pipe.execute()
-            
+
             elif dtype == "string":
-                if isinstance(value, (dict, list)):
-                    self.ensure_connected().set(key, json.dumps(value))
-                else:
-                    self.ensure_connected().set(key, str(value))
-            
+                val = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+                self.ensure().set(key, val)
+
             else:
                 raise ValueError(f"Unsupported dtype: {dtype}")
-            
+
             if ttl:
-                self.ensure_connected().expire(key, ttl)
+                self.ensure().expire(key, ttl)
             return True
         except Exception as e:
             logger.error(f"Failed to write key {key}: {e}")
             return False
+
+
+def check_health(
+    host: str = REDIS_HOST,
+    port: int = REDIS_PORT,
+    db: int = REDIS_DB,
+    retries: int = 3,
+    delay: float = 1.0,
+    max_retries: Optional[int] = None,
+    retry_delay: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Check Redis connection health."""
+    retries = max_retries if max_retries is not None else retries
+    delay = retry_delay if retry_delay is not None else delay
+    last_err = None
+
+    for attempt in range(1, retries + 1):
+        try:
+            client = redis.Redis(host=host, port=port, db=db, socket_connect_timeout=5, socket_timeout=5)
+            client.ping()
+            client.close()
+            return {
+                "service": "redis", "tier": "hot", "status": "healthy",
+                "host": host, "port": port, "attempt": attempt,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                time.sleep(delay)
+
+    raise Exception(f"Redis health check failed after {retries} attempts: {last_err}")

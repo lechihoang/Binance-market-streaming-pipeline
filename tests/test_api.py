@@ -74,7 +74,7 @@ def create_mock_ticker_storage():
     mock = MagicMock()
     mock.ping.return_value = True
     mock.get_ticker.return_value = None
-    mock.get_tickers.return_value = []
+    mock.get_ticker_all.return_value = []
     return mock
 
 

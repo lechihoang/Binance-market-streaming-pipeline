@@ -3,16 +3,17 @@
 
 import os
 import sys
+from pathlib import Path
+
+# Add project root to path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import subprocess
 import zipfile
-from pathlib import Path
 from datetime import datetime, timedelta
 
-SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
-    "ADAUSDT", "DOGEUSDT", "TRXUSDT", "AVAXUSDT", "LINKUSDT",
-    "DOTUSDT", "MATICUSDT", "SHIBUSDT", "LTCUSDT", "ATOMUSDT",
-]
+from util.constant import DEFAULT_SYMBOL
 
 BASE_URL = "https://data.binance.vision/data/spot/monthly/klines"
 INTERVAL = "1m"
@@ -20,10 +21,17 @@ DATA_DIR = Path(__file__).parent.parent / "data" / "historical"
 
 
 def get_download_month():
-    today = datetime.now()
-    first_of_month = today.replace(day=1)
-    last_month = first_of_month - timedelta(days=1)
-    return last_month.year, last_month.month
+    # Default to November 2025 as requested
+    return 2025, 11
+
+
+def clear_data_dir():
+    """Clear existing data to ensure clean training state."""
+    print(f"Cleaning {DATA_DIR}...")
+    for f in DATA_DIR.glob("*.csv"):
+        f.unlink()
+    for f in DATA_DIR.glob("*.zip"):
+        f.unlink()
 
 
 def download_symbol(symbol: str, year: int, month: int) -> bool:
@@ -79,13 +87,14 @@ def main():
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    clear_data_dir()
 
     if args.year and args.month:
         year, month = args.year, args.month
     else:
         year, month = get_download_month()
 
-    symbols = args.symbols.split(",") if args.symbols else SYMBOLS
+    symbols = args.symbols.split(",") if args.symbols else DEFAULT_SYMBOL
 
     print(f"Downloading {len(symbols)} symbols for {year}-{month:02d}")
     print(f"Output: {DATA_DIR}\n")

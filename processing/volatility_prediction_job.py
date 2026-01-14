@@ -1,4 +1,3 @@
-import os
 import signal
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -14,31 +13,25 @@ from storage.postgres import Postgres
 from util.shutdown import GracefulShutdown
 from util.metrics import record_error, record_message_processed
 from util.logging import get_logger
+from util.constant import (
+    POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD,
+    POSTGRES_DB, LOOKBACK_HOUR, MODEL_DIR, MODEL_FILE, JOB_VOLATILITY,
+    PYSPARK_PYTHON,
+)
 
 logger = get_logger(__name__)
 
-PG_HOST = os.getenv("POSTGRES_HOST", "localhost")
-PG_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
-PG_USER = os.getenv("POSTGRES_USER", "crypto")
-PG_PASS = os.getenv("POSTGRES_PASSWORD", "crypto")
-PG_DB = os.getenv("POSTGRES_DB", "crypto_data")
-JDBC_URL = f"jdbc:postgresql://{PG_HOST}:{PG_PORT}/{PG_DB}"
+JDBC_URL = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
-LOOKBACK_HOURS = int(os.getenv("FEATURE_LOOKBACK_HOURS", "2"))
-MODEL_DIR = os.getenv("MODEL_DIR", "models")
-MODEL_FILE = "volatility_predictor.json"
-
-JOB_NAME = "volatility_prediction"
-
+# Features used by the trained model (must match exactly with notebook)
 FEATURE_COLUMNS = [
-    "return_5m",
-    "return_15m",
-    "volatility_5m",
+    "return_1m",
     "volatility_15m",
     "volatility_30m",
     "volatility_60m",
-    "volatility_ratio",
     "candle_range",
+    "candle_body",
+    "volume_ratio_15m",
     "volume_ratio_60m",
     "buy_ratio",
     "buy_sell_imbalance",
@@ -49,11 +42,14 @@ FEATURE_COLUMNS = [
 ]
 
 SYMBOL_ENCODING: Dict[str, int] = {
-    "BTCUSDT": 0, "ETHUSDT": 1, "BNBUSDT": 2, "SOLUSDT": 3, "XRPUSDT": 4,
-    "DOGEUSDT": 5, "ADAUSDT": 6, "AVAXUSDT": 7, "SHIBUSDT": 8, "DOTUSDT": 9,
-    "LINKUSDT": 10, "TRXUSDT": 11, "MATICUSDT": 12, "UNIUSDT": 13,
-    "ATOMUSDT": 14, "LTCUSDT": 15, "ETCUSDT": 16, "XLMUSDT": 17,
-    "NEARUSDT": 18, "APTUSDT": 19, "SUIUSDT": 20,
+    "AAVEUSDT": 0, "ADAUSDT": 1, "ALGOUSDT": 2, "APTUSDT": 3, "ARBUSDT": 4,
+    "ATOMUSDT": 5, "AVAXUSDT": 6, "BCHUSDT": 7, "BNBUSDT": 8, "BONKUSDT": 9,
+    "BTCUSDT": 10, "DOGEUSDT": 11, "DOTUSDT": 12, "ENAUSDT": 13, "ETCUSDT": 14,
+    "ETHUSDT": 15, "FILUSDT": 16, "HBARUSDT": 17, "ICPUSDT": 18, "LINKUSDT": 19,
+    "LTCUSDT": 20, "NEARUSDT": 21, "ONDOUSDT": 22, "OPUSDT": 23, "PEPEUSDT": 24,
+    "RENDERUSDT": 25, "SHIBUSDT": 26, "SOLUSDT": 27, "SUIUSDT": 28, "TAOUSDT": 29,
+    "TONUSDT": 30, "TRUMPUSDT": 31, "TRXUSDT": 32, "UNIUSDT": 33, "VETUSDT": 34,
+    "WLDUSDT": 35, "WLFIUSDT": 36, "XLMUSDT": 37, "XRPUSDT": 38, "ZECUSDT": 39,
 }
 
 
@@ -91,12 +87,12 @@ class VolatilityPredictionJob:
             .option("url", JDBC_URL)
             .option("dbtable", f"""(
                 SELECT timestamp, symbol, open, high, low, close, volume, 
-                       quote_volume, trade_count
+                       quote_volume, trade_count, buy_count, sell_count
                 FROM trades_1m
                 WHERE timestamp > '{start_str}'
             ) AS trades""")
-            .option("user", PG_USER)
-            .option("password", PG_PASS)
+            .option("user", POSTGRES_USER)
+            .option("password", POSTGRES_PASSWORD)
             .option("driver", "org.postgresql.Driver")
             .load())
 
@@ -117,6 +113,8 @@ class VolatilityPredictionJob:
             F.col("volume").cast(DoubleType()),
             F.col("quote_volume").cast(DoubleType()),
             F.col("trade_count"),
+            F.col("buy_count"),
+            F.col("sell_count"),
         )
 
         features = features.withColumn(
@@ -168,6 +166,9 @@ class VolatilityPredictionJob:
         features = features.withColumn(
             "candle_range",
             ((F.col("high") - F.col("low")) / (F.col("close") + 1e-8)) * 100
+        ).withColumn(
+            "candle_body",
+            (F.abs(F.col("close") - F.col("open")) / (F.col("close") + 1e-8)) * 100
         )
 
         features = features.withColumn(
@@ -176,12 +177,25 @@ class VolatilityPredictionJob:
             "volume_ratio_60m",
             F.when(F.col("avg_volume_60") > 0, F.col("volume") / F.col("avg_volume_60"))
                 .otherwise(1.0)
+        ).withColumn(
+            "avg_volume_15", F.avg("volume").over(w_15)
+        ).withColumn(
+            "volume_ratio_15m",
+            F.when(F.col("avg_volume_15") > 0, F.col("volume") / F.col("avg_volume_15"))
+                .otherwise(1.0)
         )
 
         features = features.withColumn(
-            "buy_ratio", F.lit(0.5)
+            "buy_ratio",
+            F.when(F.col("trade_count") > 0,
+                   F.col("buy_count").cast(DoubleType()) / F.col("trade_count").cast(DoubleType()))
+                .otherwise(0.5)
         ).withColumn(
-            "buy_sell_imbalance", F.lit(0.0)
+            "buy_sell_imbalance",
+            F.when(F.col("trade_count") > 0,
+                   (2.0 * F.col("buy_count").cast(DoubleType()) - F.col("trade_count").cast(DoubleType())) 
+                   / F.col("trade_count").cast(DoubleType()))
+                .otherwise(0.0)
         )
 
         features = features.withColumn(
@@ -208,9 +222,11 @@ class VolatilityPredictionJob:
 
         return features.select(
             "timestamp", "symbol", "close", "volume", "quote_volume", "trade_count",
-            "return_5m", "return_15m",
+            # Features for database (all computed features)
+            "return_1m", "return_5m", "return_15m",
             "volatility_5m", "volatility_15m", "volatility_30m", "volatility_60m",
-            "volatility_ratio", "candle_range", "volume_ratio_60m",
+            "volatility_ratio", "candle_range", "candle_body",
+            "volume_ratio_15m", "volume_ratio_60m",
             "buy_ratio", "buy_sell_imbalance",
             "price_vs_ma_15m", "price_vs_ma_60m",
             "hour", "symbol_encoded",
@@ -242,30 +258,29 @@ class VolatilityPredictionJob:
         )
 
     def write_features(self, df: DataFrame, count: Optional[int] = None) -> int:
-        """Write ML features to PostgreSQL using Spark JDBC (distributed)."""
         if df.isEmpty():
             logger.info("No features to write")
             return 0
 
         feature_cols = [
             "timestamp", "symbol", "close", "volume", "quote_volume", "trade_count",
-            "return_5m", "return_15m",
+            "return_1m", "return_5m", "return_15m",
             "volatility_5m", "volatility_15m", "volatility_30m", "volatility_60m",
-            "volatility_ratio", "candle_range", "volume_ratio_60m",
+            "volatility_ratio", "candle_range", "candle_body",
+            "volume_ratio_15m", "volume_ratio_60m",
             "buy_ratio", "buy_sell_imbalance",
             "price_vs_ma_15m", "price_vs_ma_60m",
             "hour", "symbol_encoded",
         ]
 
-        # Use provided count if available (from cached df), otherwise count
         record_count = count if count is not None else df.count()
         
         df.select(*feature_cols).write \
             .format("jdbc") \
             .option("url", JDBC_URL) \
             .option("dbtable", "ml_features") \
-            .option("user", PG_USER) \
-            .option("password", PG_PASS) \
+            .option("user", POSTGRES_USER) \
+            .option("password", POSTGRES_PASSWORD) \
             .option("driver", "org.postgresql.Driver") \
             .mode("append") \
             .save()
@@ -295,8 +310,8 @@ class VolatilityPredictionJob:
             .format("jdbc") \
             .option("url", JDBC_URL) \
             .option("dbtable", "volatility_predictions") \
-            .option("user", PG_USER) \
-            .option("password", PG_PASS) \
+            .option("user", POSTGRES_USER) \
+            .option("password", POSTGRES_PASSWORD) \
             .option("driver", "org.postgresql.Driver") \
             .mode("append") \
             .save()
@@ -308,7 +323,7 @@ class VolatilityPredictionJob:
         """Save checkpoint once before shutdown."""
         if self.pg and self._max_ts:
             try:
-                self.pg.update_checkpoint(JOB_NAME, self._max_ts, self._records_processed)
+                self.pg.update_checkpoint(JOB_VOLATILITY, self._max_ts, self._records_processed)
                 logger.info(f"Checkpoint saved: {self._max_ts}, records: {self._records_processed}")
             except Exception as e:
                 logger.error(f"Failed to save checkpoint: {e}")
@@ -319,23 +334,23 @@ class VolatilityPredictionJob:
                 .appName("VolatilityPredictionJob")
                 .config("spark.jars.packages", "org.postgresql:postgresql:42.7.4")
                 .config("spark.sql.shuffle.partitions", "2")
-                .config("spark.pyspark.python", "/usr/local/bin/python3.11")
-                .config("spark.pyspark.driver.python", "/usr/local/bin/python3.11")
-                .config("spark.executorEnv.PYSPARK_PYTHON", "/usr/local/bin/python3.11")
+                .config("spark.pyspark.python", PYSPARK_PYTHON)
+                .config("spark.pyspark.driver.python", PYSPARK_PYTHON)
+                .config("spark.executorEnv.PYSPARK_PYTHON", PYSPARK_PYTHON)
                 .getOrCreate())
 
             self.pg = Postgres(
-                host=PG_HOST, port=PG_PORT,
-                user=PG_USER, password=PG_PASS, database=PG_DB
+                host=POSTGRES_HOST, port=POSTGRES_PORT,
+                user=POSTGRES_USER, password=POSTGRES_PASSWORD, database=POSTGRES_DB
             )
 
-            checkpoint = self.pg.get_checkpoint(JOB_NAME)
+            checkpoint = self.pg.get_checkpoint(JOB_VOLATILITY)
             if checkpoint:
                 start_time = checkpoint["last_processed_timestamp"]
                 logger.info(f"Resuming from checkpoint: {start_time}")
             else:
-                start_time = datetime.now() - timedelta(hours=LOOKBACK_HOURS)
-                logger.info(f"No checkpoint, starting from {LOOKBACK_HOURS} hours ago: {start_time}")
+                start_time = datetime.now() - timedelta(hours=LOOKBACK_HOUR)
+                logger.info(f"No checkpoint, starting from {LOOKBACK_HOUR} hours ago: {start_time}")
 
             model_loaded = self.load_model()
             if not model_loaded:

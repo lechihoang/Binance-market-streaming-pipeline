@@ -40,14 +40,11 @@ from storage.redis import Redis as RedisStorage
 from storage.postgres import Postgres as PostgresStorage
 from storage.query_router import Router as QueryRouter
 from util.logging import get_logger
-
+from util.constant import RATE_LIMIT, RATE_LIMIT_WINDOW, DEFAULT_SYMBOL, VALID_INTERVAL, VALID_TRADE_COUNT_INTERVAL, MAX_TIME_RANGE_DAY
 
 logger = get_logger(__name__)
 
-
-RATE_LIMIT_PER_MINUTE = 100
-RATE_LIMIT_WINDOW_SECONDS = 60
-ALERT_SYMBOLS = os.getenv("ALERT_SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT,XRPUSDT,SOLUSDT,ADAUSDT,DOGEUSDT,TRXUSDT,AVAXUSDT,LINKUSDT,DOTUSDT,MATICUSDT,SHIBUSDT,LTCUSDT,ATOMUSDT").split(",")
+ALERT_SYMBOLS = DEFAULT_SYMBOL
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
 
@@ -109,8 +106,8 @@ class RateLimitTracker:
 
 
 rate_tracker = RateLimitTracker(
-    limit=RATE_LIMIT_PER_MINUTE, 
-    window_seconds=RATE_LIMIT_WINDOW_SECONDS
+    limit=RATE_LIMIT, 
+    window_seconds=RATE_LIMIT_WINDOW
 )
 
 
@@ -185,7 +182,7 @@ async def interval_validation_error_handler(request: Request, exc: RequestValida
             return JSONResponse(
                 status_code=400,
                 content={
-                    "detail": f"Invalid interval. Valid values: {', '.join(sorted(VALID_KLINE_INTERVALS))}"
+                    "detail": f"Invalid interval. Valid values: {', '.join(sorted(VALID_INTERVAL))}"
                 }
             )
     # For other validation errors, return the default 422 response
@@ -227,7 +224,7 @@ async def rate_limit_middleware(request: Request, call_next):
             },
             headers={
                 "Retry-After": str(retry_after),
-                "X-RateLimit-Limit": str(RATE_LIMIT_PER_MINUTE),
+                "X-RateLimit-Limit": str(RATE_LIMIT),
                 "X-RateLimit-Remaining": "0",
                 "X-RateLimit-Reset": str(reset_time),
             },
@@ -390,11 +387,6 @@ def determine_overall_status(redis_healthy: bool, postgres_healthy: bool, kafka_
         return "degraded"
 
 
-MAX_TIME_RANGE_DAYS = 365
-VALID_KLINE_INTERVALS = {"1m", "5m", "15m", "1h"}
-VALID_TRADES_COUNT_INTERVALS = {"1m", "1h", "1d"}
-
-
 def normalize_time_range(
     start: Optional[datetime],
     end: Optional[datetime],
@@ -432,7 +424,7 @@ def query_alerts_by_type(
     for symbol in ALERT_SYMBOLS:
         try:
             result = query_router.query(
-                data_type=QueryRouter.ALERTS,
+                data_type=QueryRouter.ALERT,
                 symbol=symbol,
                 start=start,
                 end=end,
@@ -452,7 +444,7 @@ def ensure_tz(dt: Optional[datetime]) -> datetime:
 
 
 def validate_time_range(start: datetime, end: datetime) -> None:
-    if (end - start).days > MAX_TIME_RANGE_DAYS:
+    if (end - start).days > MAX_TIME_RANGE_DAY:
         raise HTTPException(
             status_code=400,
             detail="Time range exceeds maximum allowed (1 year)"
@@ -460,10 +452,10 @@ def validate_time_range(start: datetime, end: datetime) -> None:
 
 
 def validate_interval(interval: str) -> None:
-    if interval not in VALID_KLINE_INTERVALS:
+    if interval not in VALID_INTERVAL:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_KLINE_INTERVALS))}"
+            detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_INTERVAL))}"
         )
 
 
@@ -485,7 +477,7 @@ def query_klines_with_fallback(
     
     try:
         data = query_router.query(
-            data_type=QueryRouter.KLINES,
+            data_type=QueryRouter.KLINE,
             symbol=symbol,
             start=start,
             end=end,
@@ -507,7 +499,7 @@ async def get_ticker_health(
     start_time = time.time()
     
     redis_connected = storage.ping()
-    ticker_count = len(storage.get_tickers()) if redis_connected else 0
+    ticker_count = len(storage.get_ticker_all()) if redis_connected else 0
     latency_ms = (time.time() - start_time) * 1000
     
     if redis_connected and ticker_count > 0:
@@ -534,7 +526,7 @@ async def get_market_summary(
     """Get real-time market summary statistics."""
     start_time = time.time()
     
-    all_tickers = storage.get_tickers()
+    all_tickers = storage.get_ticker_all()
     
     total_symbols = len(all_tickers)
     total_trades = 0
@@ -570,7 +562,7 @@ async def get_all_realtime_tickers(
     """Get all available ticker data."""
     start_time = time.time()
     
-    tickers_data = storage.get_tickers()
+    tickers_data = storage.get_ticker_all()
     tickers = [format_ticker_response(data) for data in tickers_data]
     
     response_time_ms = (time.time() - start_time) * 1000
@@ -593,7 +585,7 @@ async def get_top_by_trades(
     """Get top symbols by trades count."""
     start_time = time.time()
     
-    all_tickers = storage.get_tickers()
+    all_tickers = storage.get_ticker_all()
     
     results = []
     for ticker in all_tickers:
@@ -633,7 +625,7 @@ async def get_top_by_volume(
     """Get top symbols by quote volume."""
     start_time = time.time()
     
-    all_tickers = storage.get_tickers()
+    all_tickers = storage.get_ticker_all()
     
     results = []
     for ticker in all_tickers:
@@ -720,10 +712,10 @@ async def get_trades_count(
     postgres: PostgresStorage = Depends(get_postgres),
 ) -> List[TradesCountResponse]:
     """Get trades count aggregated by time interval."""
-    if interval not in VALID_TRADES_COUNT_INTERVALS:
+    if interval not in VALID_TRADE_COUNT_INTERVAL:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_TRADES_COUNT_INTERVALS))}"
+            detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_TRADE_COUNT_INTERVAL))}"
         )
     
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -936,7 +928,7 @@ async def get_ml_status() -> MLStatusResponse:
     import json
     from pathlib import Path
     
-    model_dir = Path(os.getenv("MODEL_DIR", "models"))
+    model_dir = Path(os.getenv("MODEL_DIR", "model"))
     model_path = model_dir / "volatility_predictor.json"
     meta_path = model_dir / "volatility_predictor_meta.json"
     

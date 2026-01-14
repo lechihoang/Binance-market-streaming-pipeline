@@ -1,0 +1,59 @@
+# Ruff configuration
+# https://docs.astral.sh/ruff/configuration/
+
+# Target Python 3.11
+target-version = "py311"
+
+# Line length to match Black
+line-length = 120
+
+# Exclude common directories
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".hypothesis",
+    "*.egg-info",
+    "build",
+    "dist",
+    "notebook",
+    "data",
+]
+
+[lint]
+# Enable these rule sets
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+]
+
+# Ignore specific rules
+ignore = [
+    "E501",   # line too long (handled by Black)
+    "B008",   # do not perform function calls in argument defaults (FastAPI Depends)
+    "B904",   # raise without from (acceptable in some cases)
+    "SIM108", # use ternary operator (can reduce readability)
+]
+
+# Allow autofix for all enabled rules
+fixable = ["ALL"]
+unfixable = []
+
+[lint.per-file-ignores]
+# Tests can have longer lines and unused imports
+"tests/*" = ["E501", "F401", "F811"]
+# DAGs have specific patterns
+"dags/*" = ["E501"]
+# Notebooks
+"notebook/*" = ["ALL"]
+
+[lint.isort]
+known-first-party = ["api", "ingestion", "processing", "storage", "util"]
