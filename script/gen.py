@@ -1,14 +1,14 @@
 """Generate Architecture Diagram for Real-Time Crypto Pipeline."""
 
-from diagrams import Diagram, Cluster, Edge
-from diagrams.onprem.queue import Kafka
+from diagrams import Cluster, Diagram, Edge
+from diagrams.aws.storage import S3  # Use S3 icon for MinIO (S3-compatible)
 from diagrams.onprem.analytics import Spark
 from diagrams.onprem.database import PostgreSQL
 from diagrams.onprem.inmemory import Redis
 from diagrams.onprem.monitoring import Grafana
 from diagrams.onprem.network import Internet
+from diagrams.onprem.queue import Kafka
 from diagrams.programming.framework import Fastapi
-from diagrams.aws.storage import S3  # Use S3 icon for MinIO (S3-compatible)
 
 graph_attr = {
     "fontsize": "16",

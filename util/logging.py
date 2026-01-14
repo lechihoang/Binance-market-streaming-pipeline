@@ -3,16 +3,16 @@
 import json
 import logging
 import sys
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 
 class JSONFormatter(logging.Formatter):
     """JSON formatter for structured logging."""
 
     def format(self, record: logging.LogRecord) -> str:
-        log_data: Dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+        log_data: dict[str, Any] = {
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -33,9 +33,9 @@ class JSONFormatter(logging.Formatter):
 
 def setup_logging(
     level: str = "INFO",
-    format_string: Optional[str] = None,
+    format_string: str | None = None,
     json_output: bool = False,
-    stream: Optional[Any] = None,
+    stream: Any | None = None,
 ) -> None:
     """Configure root logger with specified format and level."""
     numeric_level = getattr(logging, level.upper(), logging.INFO)

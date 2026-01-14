@@ -1,21 +1,19 @@
-import streamlit as st
+import sys
+import time
+
 import pandas as pd
 import plotly.graph_objects as go
-import sys
+import streamlit as st
+
 sys.path.insert(0, "/app")
 
-from components.api import (
-    get_realtime_tickers,
-    get_market_summary,
-    get_top_by_volume,
-    get_top_by_trades
-)
+from components.api import get_market_summary, get_realtime_tickers, get_top_by_trades, get_top_by_volume
 
 st.set_page_config(page_title="Market Overview", page_icon="📈", layout="wide")
 
 COLORS = {
     "blue": "#1976D2",
-    "green": "#2E7D32", 
+    "green": "#2E7D32",
     "yellow": "#F9A825",
     "orange": "#F57C00",
     "red": "#D32F2F",
@@ -23,46 +21,53 @@ COLORS = {
     "bg": "#FFFFFF",
     "card": "#F5F5F5",
     "grid": "#E0E0E0",
-    "text": "#333333"
+    "text": "#333333",
 }
 
+
 def metric_card(label, value, color):
-    st.markdown(f"""
+    st.markdown(
+        f"""
     <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; border-left:4px solid {color};">
         <div style="color:#666; font-size:12px; margin-bottom:8px;">{label}</div>
         <div style="color:{color}; font-size:28px; font-weight:bold;">{value}</div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
+
 
 def horizontal_bar_chart(data, x_col, y_col, title, color):
     if not data:
         return go.Figure().update_layout(title=title, template="plotly_white")
-    
+
     df = pd.DataFrame(data)
-    fig = go.Figure(go.Bar(
-        x=df[x_col],
-        y=df[y_col],
-        orientation='h',
-        marker_color=color,
-        text=df[x_col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x),
-        textposition='outside',
-        hovertemplate="<b>%{y}</b><br>" +
-                      f"{x_col}: %{{x:,.0f}}<br>" +
-                      "<extra></extra>"
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=df[x_col],
+            y=df[y_col],
+            orientation="h",
+            marker_color=color,
+            text=df[x_col].apply(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x),
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>" + f"{x_col}: %{{x:,.0f}}<br>" + "<extra></extra>",
+        )
+    )
     fig.update_layout(
         title=title,
         template="plotly_white",
         paper_bgcolor=COLORS["bg"],
         plot_bgcolor=COLORS["bg"],
         height=300,
-        margin=dict(l=100, r=50, t=50, b=30),
-        yaxis=dict(autorange="reversed"),
-        xaxis=dict(showgrid=True, gridcolor=COLORS["grid"])
+        margin={"l": 100, "r": 50, "t": 50, "b": 30},
+        yaxis={"autorange": "reversed"},
+        xaxis={"showgrid": True, "gridcolor": COLORS["grid"]},
     )
     return fig
 
+
 placeholder = st.empty()
+
 
 def render():
     with placeholder.container():
@@ -70,12 +75,12 @@ def render():
         tickers = get_realtime_tickers()
         top_vol = get_top_by_volume(5)
         top_trades = get_top_by_trades(5)
-        
+
         st.markdown("## 📈 Market Overview")
         st.caption("Real-time cryptocurrency market data • Auto-refresh every 5s")
-        
+
         st.markdown("---")
-        
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             metric_card("Total Symbols", summary.get("total_symbols", 0), COLORS["blue"])
@@ -88,13 +93,13 @@ def render():
         with col4:
             avg = summary.get("avg_trade_value", 0)
             metric_card("Avg Trade Value", f"${avg:,.2f}" if avg else "$0", COLORS["purple"])
-        
+
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("### All Tickers")
-        
+
         if tickers:
             df = pd.DataFrame(tickers)
-            
+
             display_df = pd.DataFrame()
             display_df["Symbol"] = df["symbol"]
             display_df["Price"] = df["last_price"].apply(lambda x: float(x) if x else 0)
@@ -105,7 +110,7 @@ def render():
             display_df["Volume"] = df["volume"].apply(lambda x: float(x) if x else 0)
             display_df["Quote Vol"] = df["quote_volume"].apply(lambda x: float(x) if x else 0)
             display_df["Trades"] = df["trade_count"].apply(lambda x: int(x) if x else 0)
-            
+
             st.dataframe(
                 display_df,
                 use_container_width=True,
@@ -121,23 +126,23 @@ def render():
                     "Volume": st.column_config.NumberColumn("Volume", format="%.2f"),
                     "Quote Vol": st.column_config.NumberColumn("Quote Vol", format="$%.0f"),
                     "Trades": st.column_config.NumberColumn("Trades", format="%d"),
-                }
+                },
             )
         else:
             st.info("No ticker data available")
-        
+
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("### Top Movers")
-        
+
         col_left, col_right = st.columns(2)
-        
+
         with col_left:
             if top_trades:
                 for t in top_trades:
                     t["trade_count"] = int(t.get("trade_count", 0))
                 fig = horizontal_bar_chart(top_trades, "trade_count", "symbol", "Top 5 by Trade Count", COLORS["blue"])
                 st.plotly_chart(fig, use_container_width=True)
-        
+
         with col_right:
             if top_vol:
                 for v in top_vol:
@@ -145,8 +150,8 @@ def render():
                 fig = horizontal_bar_chart(top_vol, "quote_volume", "symbol", "Top 5 by Quote Volume", COLORS["green"])
                 st.plotly_chart(fig, use_container_width=True)
 
+
 render()
 
-import time
 time.sleep(5)
 st.rerun()

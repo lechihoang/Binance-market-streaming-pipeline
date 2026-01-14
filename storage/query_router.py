@@ -1,12 +1,13 @@
 """Auto tier selection for queries based on time range."""
 
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from .redis import Redis
-from .postgres import Postgres
+from util.constant import CACHE_HOUR
 from util.logging import get_logger
-from util.constant import VALID_INTERVAL, CACHE_HOUR
+
+from .postgres import Postgres
+from .redis import Redis
 
 logger = get_logger(__name__)
 
@@ -33,26 +34,25 @@ class Router:
             },
         }
 
-    def wrap_single(self, result: Any) -> List[Dict[str, Any]]:
+    def wrap_single(self, result: Any) -> list[dict[str, Any]]:
         return [result] if result else []
 
-    def redis_candle(self, symbol: str, interval: str = "1m") -> List[Dict[str, Any]]:
+    def redis_candle(self, symbol: str, interval: str = "1m") -> list[dict[str, Any]]:
         if interval == "1m":
             r = self.redis.get_agg(symbol, "1m")
             return [r] if r else []
         return self.redis.get_agg_list(symbol, interval)
 
     def select_tier(self, start: datetime) -> str:
-        now = datetime.now(timezone.utc)
-        start_utc = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+        now = datetime.now(UTC)
+        start_utc = start if start.tzinfo else start.replace(tzinfo=UTC)
         if start_utc > now - timedelta(hours=CACHE_HOUR):
             return "redis"
         return "postgres"
 
     def query_tier(
-        self, tier: str, data_type: str, symbol: str, start: datetime, end: datetime,
-        interval: str = "1m"
-    ) -> List[Dict[str, Any]]:
+        self, tier: str, data_type: str, symbol: str, start: datetime, end: datetime, interval: str = "1m"
+    ) -> list[dict[str, Any]]:
         if data_type == self.KLINE:
             return self.query_kline_tier(tier, symbol, start, end, interval)
 
@@ -64,7 +64,7 @@ class Router:
 
     def query_kline_tier(
         self, tier: str, symbol: str, start: datetime, end: datetime, interval: str = "1m"
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         if tier == "redis":
             return self.redis_candle(symbol, interval)
         elif tier == "postgres":
@@ -74,9 +74,8 @@ class Router:
         return []
 
     def query(
-        self, data_type: str, symbol: str, start: datetime, end: datetime,
-        interval: str = "1m"
-    ) -> List[Dict[str, Any]]:
+        self, data_type: str, symbol: str, start: datetime, end: datetime, interval: str = "1m"
+    ) -> list[dict[str, Any]]:
         """Query with auto tier selection and fallback."""
         tier = self.select_tier(start)
         idx = self.TIER.index(tier)

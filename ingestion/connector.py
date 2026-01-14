@@ -6,9 +6,9 @@ import time
 
 import websockets
 
-from util.logging import setup_logging, get_logger
+from util.constant import BINANCE_WS_URL, DEFAULT_SYMBOL, KAFKA_SERVER, SCHEMA_REGISTRY_URL
 from util.kafka import KafkaProducer
-from util.constant import BINANCE_WS_URL, KAFKA_SERVER, SCHEMA_REGISTRY_URL, DEFAULT_SYMBOL
+from util.logging import get_logger, setup_logging
 
 logger = get_logger(__name__)
 

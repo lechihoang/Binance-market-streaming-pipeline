@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """Download 1-minute klines from Binance Public Data."""
 
-import os
+import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import subprocess
-import zipfile
-from datetime import datetime, timedelta
-
-from util.constant import DEFAULT_SYMBOL
+from util.constant import DEFAULT_SYMBOL  # noqa: E402
 
 BASE_URL = "https://data.binance.vision/data/spot/monthly/klines"
 INTERVAL = "1m"
@@ -46,17 +43,12 @@ def download_symbol(symbol: str, year: int, month: int) -> bool:
 
     print(f"  {symbol}: Downloading...")
     try:
-        result = subprocess.run(
-            ["curl", "-sL", "-o", str(zip_path), url],
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-        
+        result = subprocess.run(["curl", "-sL", "-o", str(zip_path), url], capture_output=True, text=True, timeout=120)
+
         if result.returncode != 0:
             print(f"  {symbol}: FAILED - curl error")
             return False
-        
+
         if not zip_path.exists() or zip_path.stat().st_size < 1000:
             print(f"  {symbol}: FAILED - file too small or not found")
             if zip_path.exists():
@@ -107,9 +99,9 @@ def main():
     print(f"\nDone: {success}/{len(symbols)} symbols downloaded")
 
     if success > 0:
-        print(f"\nNext steps:")
-        print(f"  1. Import to PostgreSQL: python3 script/import_historical_data.py")
-        print(f"  2. Train model: jupyter notebook notebooks/train_price_predictor.ipynb")
+        print("\nNext steps:")
+        print("  1. Import to PostgreSQL: python3 script/import_historical_data.py")
+        print("  2. Train model: jupyter notebook notebooks/train_price_predictor.ipynb")
 
 
 if __name__ == "__main__":

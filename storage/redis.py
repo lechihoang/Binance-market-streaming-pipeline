@@ -2,17 +2,23 @@
 
 import json
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from datetime import UTC, datetime
+from typing import Any
 
 import redis
 from redis.exceptions import ConnectionError, TimeoutError
 
-from util.logging import get_logger
 from util.constant import (
-    REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD,
-    RedisKey, RedisTTL, RedisLimit, TICKER_MAP,
+    REDIS_DB,
+    REDIS_HOST,
+    REDIS_PASSWORD,
+    REDIS_PORT,
+    TICKER_MAP,
+    RedisKey,
+    RedisLimit,
+    RedisTTL,
 )
+from util.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -25,11 +31,11 @@ class Redis:
         host: str = REDIS_HOST,
         port: int = REDIS_PORT,
         db: int = REDIS_DB,
-        password: Optional[str] = REDIS_PASSWORD,
+        password: str | None = REDIS_PASSWORD,
         max_retries: int = 3,
         retry_delay: float = 1.0,
-        ttl_seconds: Optional[int] = None,
-        ticker_ttl: Optional[int] = None,
+        ttl_seconds: int | None = None,
+        ticker_ttl: int | None = None,
     ):
         self.host = host
         self.port = port
@@ -39,7 +45,7 @@ class Redis:
         self.retry_delay = retry_delay
         self.ticker_ttl = ticker_ttl or ttl_seconds or RedisTTL.TICKER
 
-        self.client: Optional[redis.Redis] = None
+        self.client: redis.Redis | None = None
         self.connect()
 
     def connect(self) -> None:
@@ -49,8 +55,13 @@ class Redis:
         for attempt in range(1, self.max_retries + 1):
             try:
                 self.client = redis.Redis(
-                    host=self.host, port=self.port, db=self.db, password=self.password,
-                    socket_connect_timeout=5, socket_timeout=5, decode_responses=True,
+                    host=self.host,
+                    port=self.port,
+                    db=self.db,
+                    password=self.password,
+                    socket_connect_timeout=5,
+                    socket_timeout=5,
+                    decode_responses=True,
                 )
                 self.client.ping()
                 logger.info(f"Connected to Redis at {self.host}:{self.port}/{self.db}")
@@ -89,7 +100,7 @@ class Redis:
 
     # ========== Helper Methods ==========
 
-    def to_hash(self, data: Dict[str, Any]) -> Dict[str, str]:
+    def to_hash(self, data: dict[str, Any]) -> dict[str, str]:
         """Convert dict to Redis hash format."""
         return {k: str(v) if v is not None else "" for k, v in data.items()}
 
@@ -104,7 +115,7 @@ class Redis:
         except ValueError:
             return value
 
-    def write_to_list(self, key: str, item: Dict[str, Any], max_items: int, ttl: int) -> bool:
+    def write_to_list(self, key: str, item: dict[str, Any], max_items: int, ttl: int) -> bool:
         """Write item to list with trimming and expiry."""
         try:
             pipe = self.ensure().pipeline()
@@ -117,7 +128,7 @@ class Redis:
             logger.error(f"Failed to write to {key}: {e}")
             return False
 
-    def read_from_list(self, key: str, limit: int) -> List[Dict[str, Any]]:
+    def read_from_list(self, key: str, limit: int) -> list[dict[str, Any]]:
         """Read list items as dicts."""
         try:
             items = self.ensure().lrange(key, 0, limit - 1)
@@ -133,18 +144,18 @@ class Redis:
             return []
 
     @staticmethod
-    def parse_ts(ts: Any) -> Optional[datetime]:
+    def parse_ts(ts: Any) -> datetime | None:
         """Parse timestamp to datetime."""
         if ts is None:
             return None
         if isinstance(ts, datetime):
-            return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
         if isinstance(ts, (int, float)):
-            return datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+            return datetime.fromtimestamp(ts / 1000, tz=UTC)
         if isinstance(ts, str):
             try:
                 dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
             except ValueError:
                 return None
         return None
@@ -154,7 +165,7 @@ class Redis:
     def agg_key(self, symbol: str, interval: str = "1m") -> str:
         return f"{RedisKey.AGG}:{symbol}:{interval}"
 
-    def write_agg(self, symbol: str, interval: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+    def write_agg(self, symbol: str, interval: str, data: dict[str, Any], ttl: int | None = None) -> bool:
         """Write aggregation (OHLCV) data."""
         try:
             key = self.agg_key(symbol, interval)
@@ -165,7 +176,7 @@ class Redis:
             logger.error(f"Failed to write agg for {symbol}: {e}")
             return False
 
-    def get_agg(self, symbol: str, interval: str = "1m") -> Optional[Dict[str, Any]]:
+    def get_agg(self, symbol: str, interval: str = "1m") -> dict[str, Any] | None:
         """Get aggregation data."""
         try:
             data = self.ensure().hgetall(self.agg_key(symbol, interval))
@@ -174,7 +185,7 @@ class Redis:
             logger.error(f"Failed to get agg for {symbol}: {e}")
             return None
 
-    def write_agg_batch(self, aggs: List[Dict[str, Any]], ttl: Optional[int] = None) -> int:
+    def write_agg_batch(self, aggs: list[dict[str, Any]], ttl: int | None = None) -> int:
         """Batch write aggregations."""
         count = 0
         try:
@@ -193,7 +204,7 @@ class Redis:
             logger.error(f"Failed to write agg batch: {e}")
             return 0
 
-    def get_agg_list(self, symbol: str, interval: str = "5m") -> List[Dict[str, Any]]:
+    def get_agg_list(self, symbol: str, interval: str = "5m") -> list[dict[str, Any]]:
         """Get aggregations for a symbol."""
         agg = self.get_agg(symbol, "1m")
         if not agg:
@@ -207,7 +218,7 @@ class Redis:
     def price_key(self, symbol: str) -> str:
         return f"{RedisKey.PRICE}:{symbol}"
 
-    def write_price(self, symbol: str, price: float, ts: Optional[int] = None) -> bool:
+    def write_price(self, symbol: str, price: float, ts: int | None = None) -> bool:
         """Write latest price."""
         try:
             key = self.price_key(symbol)
@@ -219,7 +230,7 @@ class Redis:
             logger.error(f"Failed to write price for {symbol}: {e}")
             return False
 
-    def get_price(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_price(self, symbol: str) -> dict[str, Any] | None:
         """Get latest price."""
         try:
             data = self.ensure().hgetall(self.price_key(symbol))
@@ -233,7 +244,7 @@ class Redis:
     def ticker_key(self, symbol: str) -> str:
         return f"{RedisKey.TICKER}:{symbol.upper()}"
 
-    def pack_ticker(self, symbol: str, data: Dict[str, Any]) -> Dict[str, str]:
+    def pack_ticker(self, symbol: str, data: dict[str, Any]) -> dict[str, str]:
         """Transform ticker for storage."""
         packed = {"symbol": symbol.upper()}
 
@@ -241,15 +252,20 @@ class Redis:
             packed[storage_key] = str(data.get(binance_key, data.get(storage_key, "0")))
 
         # Fallback for alternative key names
-        alt_keys = {"open_price": "open", "high_price": "high", "low_price": "low",
-                    "price_change_percent": "price_change_pct", "event_time": "updated_at"}
+        alt_keys = {
+            "open_price": "open",
+            "high_price": "high",
+            "low_price": "low",
+            "price_change_percent": "price_change_pct",
+            "event_time": "updated_at",
+        }
         for alt, target in alt_keys.items():
             if alt in data:
                 packed[target] = str(data[alt])
 
         return packed
 
-    def unpack_ticker(self, data: Dict[str, str]) -> Dict[str, Any]:
+    def unpack_ticker(self, data: dict[str, str]) -> dict[str, Any]:
         """Transform ticker from storage."""
         if not data:
             return {}
@@ -267,7 +283,7 @@ class Redis:
             "updated_at": int(data.get("updated_at", 0) or 0),
         }
 
-    def write_ticker(self, symbol: str, data: Dict[str, Any]) -> bool:
+    def write_ticker(self, symbol: str, data: dict[str, Any]) -> bool:
         """Write ticker data."""
         try:
             key = self.ticker_key(symbol)
@@ -278,7 +294,7 @@ class Redis:
             logger.error(f"Failed to write ticker for {symbol}: {e}")
             return False
 
-    def get_ticker(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_ticker(self, symbol: str) -> dict[str, Any] | None:
         """Get ticker data."""
         try:
             data = self.ensure().hgetall(self.ticker_key(symbol))
@@ -287,7 +303,7 @@ class Redis:
             logger.error(f"Failed to get ticker for {symbol}: {e}")
             return None
 
-    def get_ticker_all(self) -> List[Dict[str, Any]]:
+    def get_ticker_all(self) -> list[dict[str, Any]]:
         """Get all tickers."""
         try:
             keys = self.ensure().keys(f"{RedisKey.TICKER}:*")
@@ -308,11 +324,11 @@ class Redis:
     def trade_key(self, symbol: str) -> str:
         return f"{RedisKey.TRADE}:{symbol}"
 
-    def write_trade(self, symbol: str, trade: Dict[str, Any], max_trades: int = RedisLimit.MAX_TRADE) -> bool:
+    def write_trade(self, symbol: str, trade: dict[str, Any], max_trades: int = RedisLimit.MAX_TRADE) -> bool:
         """Write recent trade."""
         return self.write_to_list(self.trade_key(symbol), trade, max_trades, RedisTTL.TRADE)
 
-    def get_trade(self, symbol: str, limit: int = RedisLimit.MAX_TRADE) -> List[Dict[str, Any]]:
+    def get_trade(self, symbol: str, limit: int = RedisLimit.MAX_TRADE) -> list[dict[str, Any]]:
         """Get recent trades."""
         return self.read_from_list(self.trade_key(symbol), limit)
 
@@ -321,19 +337,19 @@ class Redis:
     def alert_key(self) -> str:
         return f"{RedisKey.ALERT}:recent"
 
-    def normalize_alert_ts(self, alert: Dict[str, Any]) -> None:
+    def normalize_alert_ts(self, alert: dict[str, Any]) -> None:
         """Normalize alert timestamp to ISO format."""
         if "timestamp" not in alert:
-            alert["timestamp"] = datetime.now(timezone.utc).isoformat()
+            alert["timestamp"] = datetime.now(UTC).isoformat()
         elif isinstance(alert["timestamp"], datetime):
             alert["timestamp"] = alert["timestamp"].isoformat()
 
-    def write_alert(self, alert: Dict[str, Any], max_alerts: int = RedisLimit.MAX_ALERT) -> bool:
+    def write_alert(self, alert: dict[str, Any], max_alerts: int = RedisLimit.MAX_ALERT) -> bool:
         """Write an alert."""
         self.normalize_alert_ts(alert)
         return self.write_to_list(self.alert_key(), alert, max_alerts, RedisTTL.ALERT)
 
-    def get_alert(self, limit: int = RedisLimit.MAX_ALERT) -> List[Dict[str, Any]]:
+    def get_alert(self, limit: int = RedisLimit.MAX_ALERT) -> list[dict[str, Any]]:
         """Get recent alerts."""
         alerts = self.read_from_list(self.alert_key(), limit)
 
@@ -344,7 +360,7 @@ class Redis:
                     alert["timestamp"] = parsed
         return alerts
 
-    def write_alert_batch(self, alerts: List[Dict[str, Any]], max_alerts: int = RedisLimit.MAX_ALERT) -> int:
+    def write_alert_batch(self, alerts: list[dict[str, Any]], max_alerts: int = RedisLimit.MAX_ALERT) -> int:
         """Batch write alerts."""
         if not alerts:
             return 0
@@ -370,9 +386,9 @@ class Redis:
     def write(
         self,
         key: str,
-        value: Union[Dict[str, Any], List[Any], str],
+        value: dict[str, Any] | list[Any] | str,
         dtype: str = "hash",
-        ttl: Optional[int] = None,
+        ttl: int | None = None,
     ) -> bool:
         """Generic write supporting multiple Redis data types."""
         try:
@@ -411,9 +427,9 @@ def check_health(
     db: int = REDIS_DB,
     retries: int = 3,
     delay: float = 1.0,
-    max_retries: Optional[int] = None,
-    retry_delay: Optional[float] = None,
-) -> Dict[str, Any]:
+    max_retries: int | None = None,
+    retry_delay: float | None = None,
+) -> dict[str, Any]:
     """Check Redis connection health."""
     retries = max_retries if max_retries is not None else retries
     delay = retry_delay if retry_delay is not None else delay
@@ -425,9 +441,13 @@ def check_health(
             client.ping()
             client.close()
             return {
-                "service": "redis", "tier": "hot", "status": "healthy",
-                "host": host, "port": port, "attempt": attempt,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "service": "redis",
+                "tier": "hot",
+                "status": "healthy",
+                "host": host,
+                "port": port,
+                "attempt": attempt,
+                "timestamp": datetime.now(UTC).isoformat(),
             }
         except Exception as e:
             last_err = e

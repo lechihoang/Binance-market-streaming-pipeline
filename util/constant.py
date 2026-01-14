@@ -1,8 +1,5 @@
 """All constants for crypto streaming pipeline."""
 
-import os
-from datetime import timedelta
-
 # =============================================================================
 # REDIS
 # =============================================================================
@@ -68,13 +65,31 @@ POSTGRES_MAX_RETRY = 3
 POSTGRES_RETRY_DELAY = 1.0
 
 TRADE_FIELD = [
-    "timestamp", "symbol", "open", "high", "low", "close", "volume", "quote_volume",
-    "trade_count", "buy_count", "sell_count", "volume_weighted_avg_price",
-    "price_change_percent", "buy_sell_ratio", "average_price", "price_volatility",
+    "timestamp",
+    "symbol",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "quote_volume",
+    "trade_count",
+    "buy_count",
+    "sell_count",
+    "volume_weighted_avg_price",
+    "price_change_percent",
+    "buy_sell_ratio",
+    "average_price",
+    "price_volatility",
 ]
 
 ALERT_FIELD = [
-    "timestamp", "symbol", "alert_type", "severity", "message", "metadata",
+    "timestamp",
+    "symbol",
+    "alert_type",
+    "severity",
+    "message",
+    "metadata",
 ]
 
 # =============================================================================
@@ -87,14 +102,46 @@ BINANCE_DATA_URL = "https://data.binance.vision/data/spot/monthly/klines"
 # SYMBOLS
 # =============================================================================
 DEFAULT_SYMBOL = [
-    "BTCUSDT", "ETHUSDT", "XRPUSDT", "BNBUSDT", "SOLUSDT",
-    "TRXUSDT", "DOGEUSDT", "ADAUSDT", "BCHUSDT", "XLMUSDT",
-    "LINKUSDT", "SUIUSDT", "ZECUSDT", "HBARUSDT", "AVAXUSDT",
-    "LTCUSDT", "SHIBUSDT", "UNIUSDT", "WLFIUSDT", "TONUSDT",
-    "DOTUSDT", "TAOUSDT", "PEPEUSDT", "WLDUSDT", "AAVEUSDT",
-    "TRUMPUSDT", "NEARUSDT", "ETCUSDT", "ONDOUSDT", "ICPUSDT",
-    "ENAUSDT", "ARBUSDT", "FILUSDT", "APTUSDT", "OPUSDT",
-    "ATOMUSDT", "ALGOUSDT", "RENDERUSDT", "VETUSDT", "BONKUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "TRXUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "BCHUSDT",
+    "XLMUSDT",
+    "LINKUSDT",
+    "SUIUSDT",
+    "ZECUSDT",
+    "HBARUSDT",
+    "AVAXUSDT",
+    "LTCUSDT",
+    "SHIBUSDT",
+    "UNIUSDT",
+    "WLFIUSDT",
+    "TONUSDT",
+    "DOTUSDT",
+    "TAOUSDT",
+    "PEPEUSDT",
+    "WLDUSDT",
+    "AAVEUSDT",
+    "TRUMPUSDT",
+    "NEARUSDT",
+    "ETCUSDT",
+    "ONDOUSDT",
+    "ICPUSDT",
+    "ENAUSDT",
+    "ARBUSDT",
+    "FILUSDT",
+    "APTUSDT",
+    "OPUSDT",
+    "ATOMUSDT",
+    "ALGOUSDT",
+    "RENDERUSDT",
+    "VETUSDT",
+    "BONKUSDT",
 ]
 
 TICKER_SYMBOL = ",".join(DEFAULT_SYMBOL)
@@ -131,12 +178,25 @@ MODEL_DIR = "model"
 MODEL_FILE = "volatility_predictor.json"
 
 FEATURE_COLUMN = [
-    "close", "volume", "quote_volume", "trade_count",
-    "return_5m", "return_15m", "volatility_5m", "volatility_15m",
-    "volatility_30m", "volatility_60m", "volatility_ratio",
-    "candle_range", "volume_ratio_60m", "buy_ratio",
-    "buy_sell_imbalance", "price_vs_ma_15m", "price_vs_ma_60m",
-    "hour", "symbol_encoded",
+    "close",
+    "volume",
+    "quote_volume",
+    "trade_count",
+    "return_5m",
+    "return_15m",
+    "volatility_5m",
+    "volatility_15m",
+    "volatility_30m",
+    "volatility_60m",
+    "volatility_ratio",
+    "candle_range",
+    "volume_ratio_60m",
+    "buy_ratio",
+    "buy_sell_imbalance",
+    "price_vs_ma_15m",
+    "price_vs_ma_60m",
+    "hour",
+    "symbol_encoded",
 ]
 
 # =============================================================================

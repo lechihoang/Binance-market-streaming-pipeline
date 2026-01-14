@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from util.logging import get_logger
 
@@ -11,7 +11,7 @@ class KafkaProducer:
         bootstrap_servers: str,
         schema_registry_url: str,
         topic: str,
-        subject: Optional[str] = None,
+        subject: str | None = None,
         linger_ms: int = 100,
     ):
         from confluent_kafka import SerializingProducer
@@ -29,17 +29,19 @@ class KafkaProducer:
             lambda obj, ctx: obj,
         )
 
-        self._producer = SerializingProducer({
-            "bootstrap.servers": bootstrap_servers,
-            "linger.ms": linger_ms,
-            "queue.buffering.max.messages": 500000,
-            "queue.buffering.max.kbytes": 2097152,
-            "batch.size": 2000000,
-            "value.serializer": avro_serializer,
-            "key.serializer": lambda k, ctx: k.encode("utf-8") if k else None,
-        })
+        self._producer = SerializingProducer(
+            {
+                "bootstrap.servers": bootstrap_servers,
+                "linger.ms": linger_ms,
+                "queue.buffering.max.messages": 500000,
+                "queue.buffering.max.kbytes": 2097152,
+                "batch.size": 2000000,
+                "value.serializer": avro_serializer,
+                "key.serializer": lambda k, ctx: k.encode("utf-8") if k else None,
+            }
+        )
 
-    def send(self, value: Dict[str, Any], key: Optional[str] = None) -> None:
+    def send(self, value: dict[str, Any], key: str | None = None) -> None:
         self._producer.produce(
             topic=self.topic,
             key=key,

@@ -5,36 +5,24 @@ from contextlib import contextmanager
 
 from prometheus_client import Counter, Histogram
 
-
 # --- Metrics Definitions ---
 
-ERRORS_TOTAL = Counter(
-    'app_errors_total',
-    'Total number of errors',
-    ['service', 'error_type', 'severity']
-)
+ERRORS_TOTAL = Counter("app_errors_total", "Total number of errors", ["service", "error_type", "severity"])
 
 LATENCY_HISTOGRAM = Histogram(
-    'app_latency_seconds',
-    'Request latency in seconds',
-    ['service', 'operation'],
-    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+    "app_latency_seconds",
+    "Request latency in seconds",
+    ["service", "operation"],
+    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
 )
 
-MESSAGES_PROCESSED = Counter(
-    'app_messages_processed_total',
-    'Total messages processed',
-    ['service', 'topic', 'status']
-)
+MESSAGES_PROCESSED = Counter("app_messages_processed_total", "Total messages processed", ["service", "topic", "status"])
 
-RETRY_ATTEMPTS = Counter(
-    'app_retry_attempts_total',
-    'Total retry attempts',
-    ['service', 'operation', 'result']
-)
+RETRY_ATTEMPTS = Counter("app_retry_attempts_total", "Total retry attempts", ["service", "operation", "result"])
 
 
 # --- Helper Functions ---
+
 
 def record_error(service: str, error_type: str, severity: str = "error") -> None:
     """Record an error occurrence."""

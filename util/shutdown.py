@@ -2,7 +2,6 @@
 
 import logging
 import time
-from typing import Optional
 
 
 class GracefulShutdown:
@@ -11,13 +10,13 @@ class GracefulShutdown:
     def __init__(
         self,
         graceful_shutdown_timeout: int = 15,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ):
         self.graceful_shutdown_timeout = graceful_shutdown_timeout
         self.shutdown_requested: bool = False
         self.batch_in_progress: bool = False
-        self.current_batch_id: Optional[int] = None
-        self.batch_start_time: Optional[float] = None
+        self.current_batch_id: int | None = None
+        self.batch_start_time: float | None = None
         self.logger = logger or logging.getLogger(__name__)
 
     def request_shutdown(self, signal_num: int) -> None:

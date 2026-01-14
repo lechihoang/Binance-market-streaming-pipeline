@@ -1,22 +1,30 @@
 """PostgreSQL storage module - data operations only."""
 
 import json
-from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
+from typing import Any
 
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
-from util.logging import get_logger
-from util.retry import RetryConfig, retry_operation
-from util.metrics import track_latency, record_error, record_retry
 from util.constant import (
-    POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB,
-    POSTGRES_MIN_CONN, POSTGRES_MAX_CONN, POSTGRES_MAX_RETRY, POSTGRES_RETRY_DELAY,
-    TRADE_FIELD, ALERT_FIELD,
+    ALERT_FIELD,
+    POSTGRES_DB,
+    POSTGRES_HOST,
+    POSTGRES_MAX_CONN,
+    POSTGRES_MAX_RETRY,
+    POSTGRES_MIN_CONN,
+    POSTGRES_PASSWORD,
+    POSTGRES_PORT,
+    POSTGRES_RETRY_DELAY,
+    POSTGRES_USER,
+    TRADE_FIELD,
 )
+from util.logging import get_logger
+from util.metrics import record_error, record_retry, track_latency
+from util.retry import RetryConfig, retry_operation
 
 logger = get_logger(__name__)
 
@@ -53,12 +61,13 @@ class Postgres:
             retryable_exceptions=(psycopg2.OperationalError, psycopg2.InterfaceError),
         )
 
-        self.pool: Optional[pool.ThreadedConnectionPool] = None
+        self.pool: pool.ThreadedConnectionPool | None = None
         self.connect()
         logger.info(f"Postgres initialized at {host}:{port}/{database}")
 
     def connect(self) -> None:
         """Establish connection pool with retry."""
+
         def create_pool():
             self.pool = pool.ThreadedConnectionPool(
                 self.min_connections,
@@ -67,7 +76,7 @@ class Postgres:
                 port=self.port,
                 user=self.user,
                 password=self.password,
-                database=self.database
+                database=self.database,
             )
             return self.pool
 
@@ -99,18 +108,13 @@ class Postgres:
             if c and not c.closed:
                 self.pool.putconn(c)  # type: ignore
 
-    def run(
-        self,
-        query: str,
-        params: Optional[tuple] = None,
-        fetch: bool = False
-    ) -> Optional[List[Dict[str, Any]]]:
+    def run(self, query: str, params: tuple | None = None, fetch: bool = False) -> list[dict[str, Any]] | None:
         """Execute SQL query with retry logic."""
+
         def do_run():
-            with self.conn() as c:
-                with c.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(query, params)
-                    return [dict(row) for row in cur.fetchall()] if fetch else None
+            with self.conn() as c, c.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, params)
+                return [dict(row) for row in cur.fetchall()] if fetch else None
 
         try:
             with track_latency("postgres", "query"):
@@ -134,7 +138,7 @@ class Postgres:
 
     # ========== Merge Operations ==========
 
-    def build_update_clause(self, field_list: List[str]) -> str:
+    def build_update_clause(self, field_list: list[str]) -> str:
         """Build UPDATE clause for MERGE operations."""
         return ", ".join(f"{f}=EXCLUDED.{f}" for f in field_list if f not in ("timestamp", "symbol"))
 
@@ -149,11 +153,10 @@ class Postgres:
             ON CONFLICT (symbol, timestamp) DO UPDATE SET {update_clause}
         """
 
-        with self.conn() as c:
-            with c.cursor() as cur:
-                cur.execute(merge_sql)
-                count = cur.rowcount
-                cur.execute("TRUNCATE staging_trades_1m")
+        with self.conn() as c, c.cursor() as cur:
+            cur.execute(merge_sql)
+            count = cur.rowcount
+            cur.execute("TRUNCATE staging_trades_1m")
 
         logger.info(f"Merged {count} records from staging to trades_1m")
         return count
@@ -168,11 +171,10 @@ class Postgres:
             ON CONFLICT (timestamp, symbol, alert_type) DO NOTHING
         """
 
-        with self.conn() as c:
-            with c.cursor() as cur:
-                cur.execute(merge_sql)
-                count = cur.rowcount
-                cur.execute("TRUNCATE staging_alerts")
+        with self.conn() as c, c.cursor() as cur:
+            cur.execute(merge_sql)
+            count = cur.rowcount
+            cur.execute("TRUNCATE staging_alerts")
 
         logger.info(f"Merged {count} alerts from staging to alerts")
         return count
@@ -180,14 +182,8 @@ class Postgres:
     # ========== Read Operations ==========
 
     def query_by_range(
-        self,
-        table: str,
-        symbol: str,
-        start: datetime,
-        end: datetime,
-        column: str = "*",
-        order: str = "timestamp ASC"
-    ) -> List[Dict[str, Any]]:
+        self, table: str, symbol: str, start: datetime, end: datetime, column: str = "*", order: str = "timestamp ASC"
+    ) -> list[dict[str, Any]]:
         """Generic query by symbol and time range."""
         query = f"""
             SELECT {column} FROM {table}
@@ -196,17 +192,11 @@ class Postgres:
         """
         return self.run(query, (symbol, start, end), fetch=True) or []
 
-    def get_candle(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
+    def get_candle(self, symbol: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
         """Get OHLCV candles from trades_1m table."""
         return self.query_by_range("trades_1m", symbol, start, end, ", ".join(TRADE_FIELD))
 
-    def get_candle_agg(
-        self,
-        symbol: str,
-        start: datetime,
-        end: datetime,
-        interval: str = "5m"
-    ) -> List[Dict[str, Any]]:
+    def get_candle_agg(self, symbol: str, start: datetime, end: datetime, interval: str = "5m") -> list[dict[str, Any]]:
         """Get candles from materialized views for different timeframes."""
         if interval == "1m":
             return self.get_candle(symbol, start, end)
@@ -218,21 +208,19 @@ class Postgres:
         column = "timestamp, symbol, open, high, low, close, volume, quote_volume, trade_count, buy_count, sell_count"
         return self.query_by_range(table_map[interval], symbol, start, end, column)
 
-    def get_alert(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
+    def get_alert(self, symbol: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
         """Get alerts for a symbol in time range."""
         result = self.query_by_range("alerts", symbol, start, end, ", ".join(ALERT_FIELD), "timestamp DESC")
 
         for row in result:
             if row.get("metadata") and isinstance(row["metadata"], str):
-                try:
+                with suppress(json.JSONDecodeError):
                     row["metadata"] = json.loads(row["metadata"])
-                except json.JSONDecodeError:
-                    pass
         return result
 
     def get_trades_count(
         self, symbol: str, start: datetime, end: datetime, interval: str = "1h"
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Get aggregated trade count by time interval."""
         trunc = {"1m": "minute", "1h": "hour", "1d": "day"}.get(interval, "hour")
 
@@ -252,11 +240,8 @@ class Postgres:
     # ========== ML Features ==========
 
     def get_ml_features_for_training(
-        self,
-        start: datetime,
-        end: datetime,
-        symbols: Optional[List[str]] = None
-    ) -> List[Dict[str, Any]]:
+        self, start: datetime, end: datetime, symbols: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Get ML features for model training."""
         base = "SELECT * FROM ml_features WHERE volatility_next_5m IS NOT NULL AND timestamp >= %s AND timestamp <= %s"
 
@@ -266,7 +251,7 @@ class Postgres:
 
         return self.run(f"{base} ORDER BY timestamp", (start, end), fetch=True) or []
 
-    def get_ml_features_latest(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_ml_features_latest(self, symbol: str) -> dict[str, Any] | None:
         """Get latest ML features for a symbol."""
         query = "SELECT * FROM ml_features WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1"
         result = self.run(query, (symbol,), fetch=True)
@@ -274,7 +259,7 @@ class Postgres:
 
     # ========== Volatility Predictions ==========
 
-    def get_latest_volatility_prediction(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_latest_volatility_prediction(self, symbol: str) -> dict[str, Any] | None:
         """Get latest volatility prediction for a symbol."""
         query = """
             SELECT timestamp, symbol, current_volatility, predicted_volatility_5m, computed_at
@@ -288,7 +273,7 @@ class Postgres:
         symbol: str,
         start: datetime,
         end: datetime,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Get volatility predictions in time range."""
         query = """
             SELECT timestamp, symbol, current_volatility, predicted_volatility_5m, computed_at
@@ -299,7 +284,7 @@ class Postgres:
 
     # ========== Job Checkpoints ==========
 
-    def get_checkpoint(self, job_name: str) -> Optional[Dict[str, Any]]:
+    def get_checkpoint(self, job_name: str) -> dict[str, Any] | None:
         """Get checkpoint for a job."""
         query = "SELECT job_name, last_processed_timestamp, records_processed, updated_at FROM job_checkpoints WHERE job_name = %s"
         result = self.run(query, (job_name,), fetch=True)
@@ -343,10 +328,9 @@ class Postgres:
 
         total = 0
         while True:
-            with self.conn() as c:
-                with c.cursor() as cur:
-                    cur.execute(delete_sql, (retention_days, batch_size))
-                    deleted = cur.rowcount
+            with self.conn() as c, c.cursor() as cur:
+                cur.execute(delete_sql, (retention_days, batch_size))
+                deleted = cur.rowcount
 
             total += deleted
             if deleted < batch_size:
@@ -356,7 +340,7 @@ class Postgres:
         logger.info(f"Cleanup {table}: {total} records deleted")
         return total
 
-    def cleanup_all(self, retention_days: int, batch_size: int = 1000) -> Dict[str, int]:
+    def cleanup_all(self, retention_days: int, batch_size: int = 1000) -> dict[str, int]:
         """Cleanup all tables."""
         results = {}
         for t in ["trades_1m", "alerts"]:
@@ -372,10 +356,7 @@ class Postgres:
     # ========== Validation Errors ==========
 
     def write_validation_errors(
-        self,
-        source: str,
-        records: List[Dict[str, Any]],
-        failed: List[List[Dict[str, Any]]]
+        self, source: str, records: list[dict[str, Any]], failed: list[list[dict[str, Any]]]
     ) -> int:
         """Write validation errors to database."""
         if not records:
@@ -396,10 +377,9 @@ class Postgres:
         """
 
         def do_run():
-            with self.conn() as c:
-                with c.cursor() as cur:
-                    cur.executemany(query, prepared)
-                    return len(prepared)
+            with self.conn() as c, c.cursor() as cur:
+                cur.executemany(query, prepared)
+                return len(prepared)
 
         try:
             with track_latency("postgres", "write_validation_errors"):
@@ -423,9 +403,8 @@ class Postgres:
         """Manually refresh continuous aggregates if needed."""
         for view in ["trades_5m", "trades_15m", "trades_1h"]:
             try:
-                with self.conn() as c:
-                    with c.cursor() as cur:
-                        cur.execute(f"CALL refresh_continuous_aggregate('{view}', NULL, NULL)")
+                with self.conn() as c, c.cursor() as cur:
+                    cur.execute(f"CALL refresh_continuous_aggregate('{view}', NULL, NULL)")
                 logger.info(f"Refreshed {view}")
             except Exception as e:
                 logger.debug(f"Refresh {view} skipped: {e}")
@@ -439,10 +418,10 @@ def check_health(
     database: str = POSTGRES_DB,
     retries: int = POSTGRES_MAX_RETRY,
     delay: float = POSTGRES_RETRY_DELAY,
-    max_retries: Optional[int] = None,
-    retry_delay: Optional[float] = None,
-    **_context
-) -> Dict[str, Any]:
+    max_retries: int | None = None,
+    retry_delay: float | None = None,
+    **_context,
+) -> dict[str, Any]:
     """Check PostgreSQL connection health."""
     actual_retries = max_retries if max_retries is not None else retries
     actual_delay = retry_delay if retry_delay is not None else delay
@@ -459,25 +438,28 @@ def check_health(
 
     def do_check():
         attempt_count[0] += 1
-        c = psycopg2.connect(
-            host=host, port=port, user=user,
-            password=password, database=database, connect_timeout=10
-        )
+        c = psycopg2.connect(host=host, port=port, user=user, password=password, database=database, connect_timeout=10)
         with c.cursor() as cur:
             cur.execute("SELECT 1")
             cur.fetchone()
         c.close()
 
         return {
-            "service": "postgresql", "tier": "warm", "status": "healthy",
-            "host": host, "port": port, "database": database,
-            "attempt": attempt_count[0], "timestamp": datetime.now(timezone.utc).isoformat()
+            "service": "postgresql",
+            "tier": "warm",
+            "status": "healthy",
+            "host": host,
+            "port": port,
+            "database": database,
+            "attempt": attempt_count[0],
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     try:
         with track_latency("postgres_health", "check"):
             result = retry_operation(
-                do_check, config=retry_config,
+                do_check,
+                config=retry_config,
                 operation_name="PostgreSQL health check",
                 on_retry=lambda a, d, e: record_retry("postgres_health", "check", "failed"),
             )

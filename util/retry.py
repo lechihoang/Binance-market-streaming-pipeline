@@ -2,8 +2,9 @@
 
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Tuple, Type, TypeVar
+from typing import TypeVar
 
 from util.logging import get_logger
 
@@ -15,14 +16,13 @@ T = TypeVar("T")
 @dataclass
 class RetryConfig:
     """Configuration for retry operations."""
+
     max_retries: int = 3
     initial_delay_ms: int = 1000
     max_delay_ms: int = 60000
     multiplier: float = 2.0
     jitter_factor: float = 0.1
-    retryable_exceptions: Tuple[Type[Exception], ...] = field(
-        default_factory=lambda: (Exception,)
-    )
+    retryable_exceptions: tuple[type[Exception], ...] = field(default_factory=lambda: (Exception,))
 
 
 class ExponentialBackoff:
@@ -43,7 +43,7 @@ class ExponentialBackoff:
 
     def next_delay_ms(self) -> int:
         """Calculate next delay with exponential backoff and jitter."""
-        delay = self.initial_delay_ms * (self.multiplier ** self._attempt)
+        delay = self.initial_delay_ms * (self.multiplier**self._attempt)
         delay = min(delay, self.max_delay_ms)
         jitter = delay * self.jitter_factor * random.random()
         self._attempt += 1
@@ -60,9 +60,9 @@ class ExponentialBackoff:
 
 def retry_operation(
     operation: Callable[[], T],
-    config: Optional[RetryConfig] = None,
+    config: RetryConfig | None = None,
     operation_name: str = "operation",
-    on_retry: Optional[Callable[[int, int, Exception], None]] = None,
+    on_retry: Callable[[int, int, Exception], None] | None = None,
 ) -> T:
     """Execute operation with retry logic."""
     if config is None:
@@ -75,7 +75,7 @@ def retry_operation(
         jitter_factor=config.jitter_factor,
     )
 
-    last_error: Optional[Exception] = None
+    last_error: Exception | None = None
 
     for attempt in range(config.max_retries):
         try:

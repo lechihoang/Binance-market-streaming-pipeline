@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -20,7 +19,7 @@ class TickerDataResponse(BaseModel):
 
 
 class TickerListResponse(BaseModel):
-    tickers: List[TickerDataResponse]
+    tickers: list[TickerDataResponse]
     count: int
     timestamp: int
 
@@ -55,10 +54,10 @@ class KlineResponse(BaseModel):
     low: float
     close: float
     volume: float
-    quote_volume: Optional[float] = None
-    trade_count: Optional[int] = None
-    buy_count: Optional[int] = None
-    sell_count: Optional[int] = None
+    quote_volume: float | None = None
+    trade_count: int | None = None
+    buy_count: int | None = None
+    sell_count: int | None = None
 
 
 class TradesCountResponse(BaseModel):
@@ -103,8 +102,8 @@ class BuySellImbalanceResponse(BaseModel):
 class ServiceHealth(BaseModel):
     name: str
     healthy: bool
-    latency_ms: Optional[float] = None
-    error: Optional[str] = None
+    latency_ms: float | None = None
+    error: str | None = None
 
 
 class HealthResponse(BaseModel):
@@ -112,22 +111,22 @@ class HealthResponse(BaseModel):
     redis: bool
     postgres: bool
     timestamp: datetime
-    services: Optional[List[ServiceHealth]] = None
+    services: list[ServiceHealth] | None = None
 
 
 class TierStatusResponse(BaseModel):
     tier: str
-    last_run: Optional[str] = None
+    last_run: str | None = None
     success: bool
     records_affected: int = 0
     bytes_reclaimed: int = 0
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class LifecycleHealthResponse(BaseModel):
-    last_run: Optional[str] = None
+    last_run: str | None = None
     overall_success: bool
-    tiers: List[TierStatusResponse] = []
+    tiers: list[TierStatusResponse] = []
 
 
 class MLPredictionResponse(BaseModel):
@@ -140,5 +139,5 @@ class MLPredictionResponse(BaseModel):
 
 class MLStatusResponse(BaseModel):
     model_loaded: bool
-    model_info: Optional[dict] = None
-    error: Optional[str] = None
+    model_info: dict | None = None
+    error: str | None = None

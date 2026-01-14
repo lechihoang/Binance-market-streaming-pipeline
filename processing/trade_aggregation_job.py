@@ -1,28 +1,53 @@
 """Trade Aggregation Job - 1-minute OHLCV from trades."""
 
 import signal
-from typing import Any, List, Optional
+from typing import Any
 
 import requests
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import (
-    col, window, count, sum as spark_sum, min as spark_min,
-    max as spark_max, stddev, when, lit, expr, struct,
-)
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.avro.functions import from_avro
+from pyspark.sql.functions import (
+    col,
+    count,
+    expr,
+    lit,
+    stddev,
+    struct,
+    when,
+    window,
+)
+from pyspark.sql.functions import (
+    max as spark_max,
+)
+from pyspark.sql.functions import (
+    min as spark_min,
+)
+from pyspark.sql.functions import (
+    sum as spark_sum,
+)
 from pyspark.sql.types import DoubleType, TimestampType
 
-from storage.redis import Redis
-from storage.postgres import Postgres
-from util.shutdown import GracefulShutdown
-from util.metrics import record_error, record_message_processed
-from util.logging import get_logger
-from util.constant import (
-    KAFKA_SERVER, SCHEMA_REGISTRY_URL, TOPIC_TRADE, SPARK_CHECKPOINT,
-    MAX_RUNTIME, REDIS_HOST, REDIS_PORT, POSTGRES_HOST, POSTGRES_PORT,
-    POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, TRADE_FIELD,
-)
 from processing.validators.aggregation_validator import validate_aggregation_records
+from storage.postgres import Postgres
+from storage.redis import Redis
+from util.constant import (
+    KAFKA_SERVER,
+    MAX_RUNTIME,
+    POSTGRES_DB,
+    POSTGRES_HOST,
+    POSTGRES_PASSWORD,
+    POSTGRES_PORT,
+    POSTGRES_USER,
+    REDIS_HOST,
+    REDIS_PORT,
+    SCHEMA_REGISTRY_URL,
+    SPARK_CHECKPOINT,
+    TOPIC_TRADE,
+    TRADE_FIELD,
+)
+from util.logging import get_logger
+from util.metrics import record_error, record_message_processed
+from util.shutdown import GracefulShutdown
 
 logger = get_logger(__name__)
 
@@ -34,10 +59,10 @@ class TradeAggJob:
 
     def __init__(self):
         self.shutdown = GracefulShutdown(graceful_shutdown_timeout=15)
-        self.spark: Optional[SparkSession] = None
+        self.spark: SparkSession | None = None
         self.query: Any = None
-        self.redis: Optional[Redis] = None
-        self.pg: Optional[Postgres] = None
+        self.redis: Redis | None = None
+        self.pg: Postgres | None = None
         self.schema_cache = ""
         signal.signal(signal.SIGTERM, lambda sig, _: self.shutdown.request_shutdown(sig))
         signal.signal(signal.SIGINT, lambda sig, _: self.shutdown.request_shutdown(sig))
@@ -65,8 +90,8 @@ class TradeAggJob:
         ).withWatermark("event_time", "1 minute")
 
     def aggregate(self, df: DataFrame) -> DataFrame:
-        return (df
-            .groupBy(window(col("event_time"), "1 minute"), col("symbol"))
+        return (
+            df.groupBy(window(col("event_time"), "1 minute"), col("symbol"))
             .agg(
                 count("*").alias("trade_count"),
                 spark_sum("quantity").alias("volume"),
@@ -85,39 +110,44 @@ class TradeAggJob:
                 lit("1m").alias("interval"),
                 "symbol",
                 col("first_trade.price").alias("open"),
-                "high", "low",
+                "high",
+                "low",
                 col("last_trade.price").alias("close"),
-                "volume", "quote_volume",
-                "trade_count", "price_volatility", "buy_count", "sell_count",
+                "volume",
+                "quote_volume",
+                "trade_count",
+                "price_volatility",
+                "buy_count",
+                "sell_count",
             )
             .withColumn("volume_weighted_avg_price", col("quote_volume") / col("volume"))
             .withColumn("average_price", col("volume_weighted_avg_price"))
-            .withColumn("price_change_percent", 
-                when(col("open") > 0, ((col("close") - col("open")) / col("open")) * 100)
-                    .otherwise(0.0))
-            .withColumn("buy_sell_ratio", 
-                when(col("sell_count") > 0, col("buy_count") / col("sell_count"))
-                    .otherwise(lit(None))))
+            .withColumn(
+                "price_change_percent",
+                when(col("open") > 0, ((col("close") - col("open")) / col("open")) * 100).otherwise(0.0),
+            )
+            .withColumn(
+                "buy_sell_ratio", when(col("sell_count") > 0, col("buy_count") / col("sell_count")).otherwise(lit(None))
+            )
+        )
 
     def write_to_postgres(self, df: DataFrame) -> None:
-        df.select(*TRADE_FIELD).write \
-            .format("jdbc") \
-            .option("url", JDBC_URL) \
-            .option("dbtable", "staging_trades_1m") \
-            .option("user", POSTGRES_USER) \
-            .option("password", POSTGRES_PASSWORD) \
-            .option("driver", "org.postgresql.Driver") \
-            .mode("overwrite") \
-            .save()
-        
+        df.select(*TRADE_FIELD).write.format("jdbc").option("url", JDBC_URL).option(
+            "dbtable", "staging_trades_1m"
+        ).option("user", POSTGRES_USER).option("password", POSTGRES_PASSWORD).option(
+            "driver", "org.postgresql.Driver"
+        ).mode(
+            "overwrite"
+        ).save()
+
         if self.pg:
             self.pg.merge_staging_to_trade()
 
-    def write_to_redis(self, records: List[dict]) -> int:
+    def write_to_redis(self, records: list[dict]) -> int:
         """Write records to Redis cache."""
         if not self.redis or not records:
             return 0
-        
+
         # Convert timestamp to ISO string for Redis
         redis_records = []
         for r in records:
@@ -126,7 +156,7 @@ class TradeAggJob:
             if ts and hasattr(ts, "isoformat"):
                 record["timestamp"] = ts.isoformat()
             redis_records.append(record)
-        
+
         return self.redis.write_agg_batch(redis_records)
 
     def write_batch(self, batch_df: DataFrame, batch_id: int) -> None:
@@ -138,18 +168,14 @@ class TradeAggJob:
         # Validate records
         records = [row.asDict() for row in batch_df.collect()]
         valid, invalid, _ = validate_aggregation_records(records, None)
-        
+
         if not valid:
             logger.warning(f"Batch {batch_id}: No valid records to write")
             return
 
         # Filter DataFrame to only valid records (by symbol+timestamp)
         valid_keys = {(r["symbol"], r["timestamp"]) for r in valid}
-        valid_df = batch_df.filter(
-            expr("concat(symbol, '|', timestamp)").isin(
-                [f"{k[0]}|{k[1]}" for k in valid_keys]
-            )
-        )
+        valid_df = batch_df.filter(expr("concat(symbol, '|', timestamp)").isin([f"{k[0]}|{k[1]}" for k in valid_keys]))
 
         # 1. Write to PostgreSQL via staging + MERGE (primary storage)
         try:
@@ -173,34 +199,45 @@ class TradeAggJob:
 
     def run(self) -> None:
         try:
-            self.spark = (SparkSession.builder
-                .appName("TradeAggJob")
-                .config("spark.jars.packages",
-                        "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.0,"
-                        "org.apache.spark:spark-avro_2.13:4.1.0,"
-                        "org.postgresql:postgresql:42.7.4")
+            self.spark = (
+                SparkSession.builder.appName("TradeAggJob")
+                .config(
+                    "spark.jars.packages",
+                    "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.0,"
+                    "org.apache.spark:spark-avro_2.13:4.1.0,"
+                    "org.postgresql:postgresql:42.7.4",
+                )
                 .config("spark.sql.shuffle.partitions", "2")
                 .config("spark.sql.streaming.checkpointLocation", SPARK_CHECKPOINT)
-                .getOrCreate())
+                .getOrCreate()
+            )
 
             self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT)
-            self.pg = Postgres(host=POSTGRES_HOST, port=POSTGRES_PORT, user=POSTGRES_USER, password=POSTGRES_PASSWORD, database=POSTGRES_DB)
+            self.pg = Postgres(
+                host=POSTGRES_HOST,
+                port=POSTGRES_PORT,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD,
+                database=POSTGRES_DB,
+            )
 
-            raw = (self.spark.readStream
-                .format("kafka")
+            raw = (
+                self.spark.readStream.format("kafka")
                 .option("kafka.bootstrap.servers", KAFKA_SERVER)
                 .option("subscribe", TOPIC_TRADE)
                 .option("startingOffsets", "earliest")
-                .load())
+                .load()
+            )
 
             aggs = self.aggregate(self.parse(raw))
 
-            self.query = (aggs.writeStream
-                .foreachBatch(self.write_batch)
+            self.query = (
+                aggs.writeStream.foreachBatch(self.write_batch)
                 .outputMode("update")
                 .trigger(processingTime="60 seconds")
                 .option("checkpointLocation", SPARK_CHECKPOINT)
-                .start())
+                .start()
+            )
 
             self.query.awaitTermination(timeout=MAX_RUNTIME)
         except Exception as e:
