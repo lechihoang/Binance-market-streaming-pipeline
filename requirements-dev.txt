@@ -48,3 +48,4 @@ types-requests>=2.31.0
 # Utilities
 # ============================================
 httpx>=0.26.0
+websockets>=12.0

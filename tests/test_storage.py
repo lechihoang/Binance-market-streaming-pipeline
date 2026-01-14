@@ -194,7 +194,7 @@ class TestQueryRoutingCorrectness:
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_redis_tier_selection_for_recent_queries(self, query_router, offset_minutes):
         """For any query within last 1 hour, the router should select Redis tier."""
-        now = datetime.now()
+        now = datetime.now(UTC)
         start = now - timedelta(minutes=offset_minutes)
 
         selected_tier = query_router.select_tier(start)
@@ -204,8 +204,8 @@ class TestQueryRoutingCorrectness:
     @given(offset_hours=postgres_offset_hours)
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_postgres_tier_selection_for_historical_queries(self, query_router, offset_hours):
-        """For any query >= 1 hour, the router should select PostgreSQL tier."""
-        now = datetime.now()
+        """For any query > 1 hour, the router should select PostgreSQL tier."""
+        now = datetime.now(UTC)
         start = now - timedelta(hours=offset_hours)
 
         selected_tier = query_router.select_tier(start)
@@ -215,13 +215,22 @@ class TestQueryRoutingCorrectness:
         ), f"Expected PostgreSQL for {offset_hours} hours ago, got {selected_tier}"
 
     def test_boundary_exactly_1_hour(self, query_router):
-        """Test boundary condition: exactly 1 hour ago should use PostgreSQL."""
-        now = datetime.now()
+        """Test boundary: exactly 1 hour ago uses PostgreSQL (start <= now - 1h)."""
+        now = datetime.now(UTC)
         start = now - timedelta(hours=1)
 
         selected_tier = query_router.select_tier(start)
 
         assert selected_tier == self.TIER_POSTGRES
+
+    def test_boundary_just_under_1_hour(self, query_router):
+        """Test boundary: just under 1 hour ago uses Redis (start > now - 1h)."""
+        now = datetime.now(UTC)
+        start = now - timedelta(minutes=59)
+
+        selected_tier = query_router.select_tier(start)
+
+        assert selected_tier == self.TIER_REDIS
 
 
 # =============================================================================
