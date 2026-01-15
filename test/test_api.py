@@ -1,17 +1,4 @@
-"""
-Consolidated test module for FastAPI Backend.
-Contains all tests for market, analytics, alerts, rate limiting, fallback, system endpoints, and data quality.
-
-Table of Contents:
-- Imports and Setup (line ~20)
-- Data Quality Tests with Great Expectations (line ~150)
-- Market Router Tests (line ~250)
-- Rate Limit Tests (line ~350)
-- Fallback Chain Tests (line ~450)
-- System Router Tests (line ~550)
-
-Requirements: 6.4
-"""
+"""Tests for FastAPI - market/analytics/alerts endpoints, rate limiting, fallback chain."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -33,10 +20,10 @@ from api.app import (
     get_ticker_storage,
     rate_tracker,
 )
-from processing.validators.aggregation_validator import build_aggregation_expectations
-from processing.validators.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
-from processing.validators.anomaly_validator import build_anomaly_expectations
-from processing.validators.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
+from validator.aggregation_validator import build_aggregation_expectations
+from validator.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
+from validator.anomaly_validator import build_anomaly_expectations
+from validator.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
 from storage.postgres import Postgres
 from storage.query_router import Router
 from storage.redis import Redis
@@ -73,7 +60,7 @@ def create_mock_redis():
 def create_mock_postgres():
     """Create a mock PostgreSQL storage that returns empty results."""
     mock = MagicMock()
-    mock.query_candles.return_value = []
+    mock.query_klines.return_value = []
     mock.query_alerts.return_value = []
     mock._execute_with_retry.return_value = [{"result": 1}]
     return mock
@@ -102,7 +89,7 @@ def redis_storage():
 def postgres_storage():
     """Create mock Postgres instance for testing."""
     mock = MagicMock(spec=Postgres)
-    mock.query_candles.return_value = []
+    mock.query_klines.return_value = []
     mock.query_alerts.return_value = []
     mock._execute_with_retry.return_value = [{"result": 1}]
     return mock
@@ -245,9 +232,9 @@ def test_ticker_data_quality_valid():
     expectations = build_ticker_expectations()
     result = run_ticker_ge_validation(tickers, expectations)
 
-    assert (
-        result.success
-    ), f"Valid tickers should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    assert result.success, (
+        f"Valid tickers should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    )
 
 
 def test_ticker_negative_price_fails():
@@ -324,9 +311,9 @@ def test_trade_data_quality_valid():
     expectations = build_trade_expectations()
     result = run_trade_ge_validation(trades, expectations)
 
-    assert (
-        result.success
-    ), f"Valid trades should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    assert result.success, (
+        f"Valid trades should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    )
 
 
 def test_trade_negative_price_fails():
@@ -412,9 +399,9 @@ def test_alert_api_data_quality_valid():
     expectations = build_alert_api_expectations()
     result = run_alert_api_ge_validation(alerts, expectations)
 
-    assert (
-        result.success
-    ), f"Valid alerts should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    assert result.success, (
+        f"Valid alerts should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    )
 
 
 def test_alert_api_invalid_type_fails():
@@ -658,7 +645,7 @@ class TestFallbackChainExecution:
         Validates: Requirements 7.3
         """
         redis_storage.client.flushdb()
-        postgres_storage.query_candles.return_value = []
+        postgres_storage.query_klines.return_value = []
 
         response = test_client_with_fallback.get(f"/api/v1/market/ticker/{symbol}")
 

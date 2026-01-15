@@ -1,4 +1,4 @@
-"""Generate Architecture Diagram for Real-Time Crypto Pipeline."""
+"""Generates architecture diagram using diagrams library (outputs real_time_crypto_pipeline.png)."""
 
 from diagrams import Cluster, Diagram, Edge
 from diagrams.aws.storage import S3  # Use S3 icon for MinIO (S3-compatible)

@@ -1,4 +1,4 @@
-"""Retry utilities with exponential backoff."""
+"""Retry with exponential backoff + jitter for transient failures."""
 
 import random
 import time

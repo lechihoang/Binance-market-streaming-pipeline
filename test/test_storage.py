@@ -1,15 +1,4 @@
-"""
-Consolidated test module for Storage Layer.
-Contains all tests for Redis, PostgreSQL, health checks, query router, and data quality.
-
-Table of Contents:
-- Imports and Setup (line ~20)
-- Health Check Tests (line ~80)
-- Query Router Property Tests (line ~180)
-- Data Quality Tests with Great Expectations (line ~280)
-
-Requirements: 6.3
-"""
+"""Tests for storage - Redis/PostgreSQL health checks, query router tier selection, data quality."""
 
 import os
 import tempfile
@@ -22,10 +11,10 @@ from great_expectations import expectations as gxe
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from processing.validators.aggregation_validator import build_aggregation_expectations
-from processing.validators.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
-from processing.validators.anomaly_validator import build_anomaly_expectations
-from processing.validators.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
+from validator.aggregation_validator import build_aggregation_expectations
+from validator.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
+from validator.anomaly_validator import build_anomaly_expectations
+from validator.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
 from storage.postgres import Postgres
 from storage.postgres import check_health as check_postgres_health
 from storage.query_router import Router
@@ -165,7 +154,7 @@ def mock_redis():
 def mock_postgres():
     """Create mock Postgres."""
     mock = MagicMock()
-    mock.query_candles.return_value = []
+    mock.query_klines.return_value = []
     mock.query_alerts.return_value = []
     return mock
 
@@ -210,9 +199,9 @@ class TestQueryRoutingCorrectness:
 
         selected_tier = query_router.select_tier(start)
 
-        assert (
-            selected_tier == self.TIER_POSTGRES
-        ), f"Expected PostgreSQL for {offset_hours} hours ago, got {selected_tier}"
+        assert selected_tier == self.TIER_POSTGRES, (
+            f"Expected PostgreSQL for {offset_hours} hours ago, got {selected_tier}"
+        )
 
     def test_boundary_exactly_1_hour(self, query_router):
         """Test boundary: exactly 1 hour ago uses PostgreSQL (start <= now - 1h)."""
@@ -262,9 +251,9 @@ def test_ohlcv_data_quality_valid():
     expectations = build_aggregation_expectations()
     result = run_aggregation_ge_validation(ohlcv_records, expectations)
 
-    assert (
-        result.success
-    ), f"Valid OHLCV should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    assert result.success, (
+        f"Valid OHLCV should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    )
 
 
 def test_ohlcv_high_less_than_low_fails():
@@ -369,9 +358,9 @@ def test_alert_data_quality_valid():
     expectations = build_anomaly_expectations()
     result = run_anomaly_ge_validation(alerts, expectations)
 
-    assert (
-        result.success
-    ), f"Valid alerts should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    assert result.success, (
+        f"Valid alerts should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    )
 
 
 def test_alert_invalid_type_fails():
@@ -485,9 +474,9 @@ def test_trade_data_quality_valid():
     expectations = build_trade_expectations()
     result = run_trade_ge_validation(trades, expectations)
 
-    assert (
-        result.success
-    ), f"Valid trades should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    assert result.success, (
+        f"Valid trades should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    )
 
 
 def test_trade_negative_price_fails():

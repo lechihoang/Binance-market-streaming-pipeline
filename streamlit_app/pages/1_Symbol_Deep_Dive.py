@@ -9,7 +9,7 @@ sys.path.insert(0, "/app")
 
 from components.api import get_available_symbols, get_klines
 
-st.set_page_config(page_title="Symbol Deep Dive", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="Symbol Deep Dive", layout="wide")
 
 COLORS = {
     "green": "#2E7D32",
@@ -191,13 +191,11 @@ if not symbols:
 
 col1, col2, col3 = st.columns([2, 1, 1])
 with col1:
-    symbol = st.selectbox("Symbol", symbols, index=0, label_visibility="collapsed")
+    symbol = st.selectbox("Select Symbol", symbols, index=0)
 with col2:
-    interval = st.selectbox("Interval", ["1m", "5m", "15m"], index=0, label_visibility="collapsed")
+    interval = st.selectbox("Interval", ["1m", "5m", "15m"], index=0)
 with col3:
-    minutes = st.selectbox(
-        "Period", [30, 60, 120], index=1, format_func=lambda x: f"{x} min", label_visibility="collapsed"
-    )
+    minutes = st.selectbox("Period", [30, 60, 120], index=1, format_func=lambda x: f"{x} min")
 
 placeholder = st.empty()
 
@@ -224,7 +222,7 @@ def render():
         with row2_right:
             st.plotly_chart(create_trades_chart(data, symbol), use_container_width=True)
 
-        st.markdown(f"### Recent Candles - {symbol}")
+        st.markdown(f"### Historical Data - {symbol}")
         df = pd.DataFrame(data)
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df = df.sort_values("timestamp", ascending=False)

@@ -1,8 +1,16 @@
-"""Redis storage module."""
+"""Redis storage module for real-time market data caching.
+
+Provides fast in-memory caching for:
+- OHLCV klines (Open, High, Low, Close, Volume aggregations)
+- Real-time ticker data (24h price/volume stats)
+- Recent trades and alerts
+
+Acts as hot tier for recent data with automatic TTL-based expiration.
+"""
 
 import json
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import redis
@@ -24,7 +32,15 @@ logger = get_logger(__name__)
 
 
 class Redis:
-    """Redis storage operations for real-time data caching."""
+    """Redis storage operations for real-time data caching.
+
+    Manages Redis connections and operations for hot-tier data storage:
+    - Kline aggregations: 1m/5m/15m/1h OHLCV data with configurable TTL
+    - Ticker data: 24h rolling statistics per symbol
+    - Trades/Alerts: Recent data with list trimming
+
+    Data automatically expires based on configured TTLs to maintain cache size.
+    """
 
     def __init__(
         self,
@@ -98,7 +114,7 @@ class Redis:
             self.client = None
             logger.info("Redis connection closed")
 
-    # ========== Helper Methods ==========
+    # Helper Methods
 
     def to_hash(self, data: dict[str, Any]) -> dict[str, str]:
         """Convert dict to Redis hash format."""
@@ -149,24 +165,23 @@ class Redis:
         if ts is None:
             return None
         if isinstance(ts, datetime):
-            return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+            return ts
         if isinstance(ts, (int, float)):
-            return datetime.fromtimestamp(ts / 1000, tz=UTC)
+            return datetime.fromtimestamp(ts / 1000)
         if isinstance(ts, str):
             try:
                 dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+                return dt.replace(tzinfo=None) if dt.tzinfo else dt
             except ValueError:
                 return None
         return None
 
-    # ========== Aggregation (OHLCV) ==========
+    # Aggregation (OHLCV klines)
 
     def agg_key(self, symbol: str, interval: str = "1m") -> str:
         return f"{RedisKey.AGG}:{symbol}:{interval}"
 
     def write_agg(self, symbol: str, interval: str, data: dict[str, Any], ttl: int | None = None) -> bool:
-        """Write aggregation (OHLCV) data."""
         try:
             key = self.agg_key(symbol, interval)
             self.ensure().hset(key, mapping=self.to_hash(data))
@@ -177,7 +192,6 @@ class Redis:
             return False
 
     def get_agg(self, symbol: str, interval: str = "1m") -> dict[str, Any] | None:
-        """Get aggregation data."""
         try:
             data = self.ensure().hgetall(self.agg_key(symbol, interval))
             return {k: self.parse_value(k, v) for k, v in data.items()} if data else None
@@ -186,7 +200,6 @@ class Redis:
             return None
 
     def write_agg_batch(self, aggs: list[dict[str, Any]], ttl: int | None = None) -> int:
-        """Batch write aggregations."""
         count = 0
         try:
             pipe = self.ensure().pipeline()
@@ -213,7 +226,7 @@ class Redis:
             agg["interval"] = interval
         return [agg]
 
-    # ========== Price ==========
+    # Price
 
     def price_key(self, symbol: str) -> str:
         return f"{RedisKey.PRICE}:{symbol}"
@@ -239,7 +252,7 @@ class Redis:
             logger.error(f"Failed to get price for {symbol}: {e}")
             return None
 
-    # ========== Ticker ==========
+    # Ticker
 
     def ticker_key(self, symbol: str) -> str:
         return f"{RedisKey.TICKER}:{symbol.upper()}"
@@ -319,7 +332,7 @@ class Redis:
             logger.error(f"Failed to get all tickers: {e}")
             return []
 
-    # ========== Trades ==========
+    # Trades
 
     def trade_key(self, symbol: str) -> str:
         return f"{RedisKey.TRADE}:{symbol}"
@@ -332,7 +345,7 @@ class Redis:
         """Get recent trades."""
         return self.read_from_list(self.trade_key(symbol), limit)
 
-    # ========== Alerts ==========
+    # Alerts
 
     def alert_key(self) -> str:
         return f"{RedisKey.ALERT}:recent"
@@ -340,7 +353,7 @@ class Redis:
     def normalize_alert_ts(self, alert: dict[str, Any]) -> None:
         """Normalize alert timestamp to ISO format."""
         if "timestamp" not in alert:
-            alert["timestamp"] = datetime.now(UTC).isoformat()
+            alert["timestamp"] = datetime.now().isoformat()
         elif isinstance(alert["timestamp"], datetime):
             alert["timestamp"] = alert["timestamp"].isoformat()
 
@@ -381,7 +394,7 @@ class Redis:
             logger.error(f"Failed to write alert batch: {e}")
             return 0
 
-    # ========== Generic ==========
+    # Generic
 
     def write(
         self,
@@ -447,7 +460,7 @@ def check_health(
                 "host": host,
                 "port": port,
                 "attempt": attempt,
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": datetime.now().isoformat(),
             }
         except Exception as e:
             last_err = e

@@ -1,18 +1,4 @@
-"""
-Consolidated test module for Airflow DAGs and Data Quality.
-Contains all tests for DAG syntax, health checks, field validation, completeness checks, and logging.
-
-Table of Contents:
-- Imports and Setup (line ~20)
-- DAG Syntax Tests (line ~80)
-- Health Check Tests (line ~200)
-- Field Validation Tests (line ~350)
-- Completeness Check Tests (line ~500)
-- Logging Property Tests (line ~650)
-- Integration Tests (line ~800)
-
-Requirements: 6.5
-"""
+"""Tests for Airflow DAGs - syntax validation, health checks, integration."""
 
 import ast
 import os
@@ -235,9 +221,9 @@ class TestStreamingPipelineDAG:
 
         # Verify no technical_indicators tasks exist
         for task_id in task_ids:
-            assert (
-                "technical_indicators" not in task_id
-            ), f"Found technical_indicators task '{task_id}' which should have been removed"
+            assert "technical_indicators" not in task_id, (
+                f"Found technical_indicators task '{task_id}' which should have been removed"
+            )
 
     def test_dag_has_correct_task_groups(self, dag):
         """Test DAG has the expected TaskGroups.

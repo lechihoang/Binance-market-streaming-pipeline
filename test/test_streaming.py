@@ -1,17 +1,4 @@
-"""
-Consolidated test module for PySpark Streaming Processor.
-Contains all tests for aggregations, anomaly detection, connectors, and micro-batch processing.
-
-Table of Contents:
-- Imports and Setup (line ~20)
-- Aggregation Tests (line ~60)
-- Anomaly Detector Tests (line ~300)
-- Data Quality Tests with Great Expectations (line ~400)
-- Connector Tests (line ~500)
-- Micro-Batch Property Tests (line ~600)
-
-Requirements: 6.2
-"""
+"""Tests for streaming - OHLCV/VWAP calculation, anomaly detection, micro-batch processing."""
 
 import json
 import os
@@ -29,10 +16,10 @@ from great_expectations import expectations as gxe
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-from processing.validators.aggregation_validator import build_aggregation_expectations
-from processing.validators.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
-from processing.validators.anomaly_validator import build_anomaly_expectations
-from processing.validators.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
+from validator.aggregation_validator import build_aggregation_expectations
+from validator.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
+from validator.anomaly_validator import build_anomaly_expectations
+from validator.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
 
 
 def calculate_ohlcv(trades: list[dict[str, Any]]) -> dict[str, float]:
@@ -332,9 +319,9 @@ def test_alert_completeness_valid_data():
     expectations = build_anomaly_expectations()
     result = run_anomaly_ge_validation(alerts, expectations)
 
-    assert (
-        result.success
-    ), f"Valid alerts should pass all expectations. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    assert result.success, (
+        f"Valid alerts should pass all expectations. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    )
 
 
 def test_alert_missing_required_fields_fails():
@@ -408,9 +395,9 @@ def test_aggregation_data_quality_valid():
     expectations = build_aggregation_expectations()
     result = run_aggregation_ge_validation(aggregations, expectations)
 
-    assert (
-        result.success
-    ), f"Valid aggregations should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    assert result.success, (
+        f"Valid aggregations should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
+    )
 
 
 def test_aggregation_invalid_ohlc_relationship_fails():
@@ -595,9 +582,9 @@ class TestEmptyBatchCountingTriggersStop:
 
         stop_index = controller.process_batch_sequence(batch_sequence)
 
-        assert (
-            stop_index == -1
-        ), f"Should not stop with {num_empty_batches} empty batches (threshold={empty_batch_threshold})"
+        assert stop_index == -1, (
+            f"Should not stop with {num_empty_batches} empty batches (threshold={empty_batch_threshold})"
+        )
 
 
 class TestNonEmptyBatchResetsCounter:

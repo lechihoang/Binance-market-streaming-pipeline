@@ -1,4 +1,4 @@
-"""Streaming Processing DAG."""
+"""Runs Spark jobs every 5min - trade aggregation, anomaly detection, volatility prediction."""
 
 import sys
 from datetime import datetime, timedelta
@@ -59,7 +59,6 @@ with DAG(
     max_active_runs=1,
     tags=["streaming", "spark", "processing"],
 ) as dag:
-
     with TaskGroup("health_checks") as health_checks:
         test_redis_health = PythonOperator(
             task_id="test_redis_health",

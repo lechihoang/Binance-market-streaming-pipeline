@@ -1,4 +1,4 @@
-"""Binance Connector DAG."""
+"""Binance WebSocket to Kafka - runs WebSocket connector to stream trades/tickers into Kafka."""
 
 import os
 import sys
@@ -34,6 +34,11 @@ with DAG(
 ) as dag:
 
     def check_kafka_health(**context):
+        """Verify Kafka broker connectivity before starting the connector.
+
+        This is a pre-flight check to ensure the Kafka broker is reachable.
+        If Kafka is not available, the DAG will fail early with a clear error.
+        """
         import socket
 
         kafka_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")

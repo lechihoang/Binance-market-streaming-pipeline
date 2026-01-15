@@ -1,6 +1,4 @@
-"""
-Cleanup utilities for Airflow DAGs.
-"""
+"""Cleanup - kills orphaned processes, removes temp files after DAG runs."""
 
 import glob
 import logging
@@ -19,7 +17,6 @@ def cleanup_connector_resources(**context) -> dict[str, Any]:
     """
     errors: list[str] = []
 
-    # Kill orphan connector processes
     try:
         subprocess.run(["pkill", "-f", "ingestion.connector"], capture_output=True, text=True, timeout=30)
         logger.info("Killed orphan connector processes")
@@ -27,7 +24,6 @@ def cleanup_connector_resources(**context) -> dict[str, Any]:
         errors.append(f"Failed to kill processes: {e}")
         logger.error(f"Failed to kill processes: {e}")
 
-    # Clear temp files
     for pattern in ["/tmp/binance_connector_*", "/tmp/kafka_producer_*"]:
         for f in glob.glob(pattern):
             try:
@@ -51,7 +47,6 @@ def cleanup_streaming_resources(
     redis_host = redis_host or os.getenv("REDIS_HOST", "redis")
     redis_port = redis_port or int(os.getenv("REDIS_PORT", "6379"))
 
-    # Flush Redis
     try:
         import redis
 
@@ -63,7 +58,6 @@ def cleanup_streaming_resources(
         errors.append(f"Failed to flush Redis: {e}")
         logger.error(f"Failed to flush Redis: {e}")
 
-    # Clear temp files (NOT checkpoint files)
     for pattern in ["/tmp/spark_streaming_*", "/tmp/pyspark_*", "/tmp/streaming_processor_*"]:
         for f in glob.glob(pattern):
             try:

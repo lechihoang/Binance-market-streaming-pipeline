@@ -1,13 +1,13 @@
-"""Anomaly Detection Job - batch mode from trades_1m."""
+"""Reads aggregated trades, detects anomalies - volume spikes, price spikes, trade count spikes, buy/sell imbalance."""
 
 import json
 import signal
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from processing.validators.anomaly_validator import validate_alert_records
+from validator.anomaly_validator import validate_alert_records
 from storage.postgres import Postgres
 from storage.redis import Redis
 from util.constant import (
@@ -28,8 +28,19 @@ from util.constant import (
     VOLUME_THRESHOLD,
 )
 from util.logging import get_logger
-from util.metrics import record_error, record_message_processed
-from util.shutdown import GracefulShutdown
+from util.metric import record_error, record_message_processed
+
+shutdown_requested = False
+signal_name = "Unknown"
+
+
+def request_shutdown(sig, frame):
+    """Handle shutdown signal."""
+    global shutdown_requested, signal_name
+    shutdown_requested = True
+    names = {2: "SIGINT", 15: "SIGTERM"}
+    signal_name = names.get(sig, f"Signal {sig}")
+
 
 logger = get_logger(__name__)
 
@@ -37,14 +48,12 @@ JDBC_URL = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
 
 class AnomalyJob:
-
     def __init__(self):
-        self.shutdown = GracefulShutdown(graceful_shutdown_timeout=30)
         self.spark: SparkSession | None = None
         self.redis: Redis | None = None
         self.pg: Postgres | None = None
-        signal.signal(signal.SIGTERM, lambda s, _: self.shutdown.request_shutdown(s))
-        signal.signal(signal.SIGINT, lambda s, _: self.shutdown.request_shutdown(s))
+        signal.signal(signal.SIGTERM, request_shutdown)
+        signal.signal(signal.SIGINT, request_shutdown)
 
     def read_trades(self, start: datetime, end: datetime, lookback_minutes: int = 0) -> DataFrame:
         """Read trades_1m via Spark JDBC."""
@@ -107,6 +116,8 @@ class AnomalyJob:
                 F.to_json(
                     F.struct(
                         F.col("trade_count"),
+                        F.col("buy_count"),
+                        F.col("sell_count"),
                         F.round(F.col("avg_tc"), 2).alias("avg_trade_count"),
                         F.round(F.col("trade_count") / F.col("avg_tc"), 2).alias("multiplier"),
                     )
@@ -121,7 +132,7 @@ class AnomalyJob:
                 & ((F.col("buy_sell_ratio") < BUY_RATIO_LOW) | (F.col("buy_sell_ratio") > BUY_RATIO_HIGH))
             )
             .withColumn(
-                "pressure", F.when(F.col("buy_sell_ratio") < BUY_RATIO_LOW, "SELL_PRESSURE").otherwise("BUY_PRESSURE")
+                "pressure", F.when(F.col("buy_sell_ratio") < BUY_RATIO_LOW, "More Sell").otherwise("More Buy")
             )
             .select(
                 F.col("timestamp"),
@@ -134,10 +145,13 @@ class AnomalyJob:
             )
         )
 
-        # Union all and add alert_id, created_at for direct write
-        all_alerts = volume_spike.union(price_spike).union(trade_spike).union(imbalance)
-
-        return all_alerts.withColumn("alert_id", F.expr("uuid()")).withColumn("created_at", F.current_timestamp())
+        return (
+            volume_spike.union(price_spike)
+            .union(trade_spike)
+            .union(imbalance)
+            .withColumn("alert_id", F.expr("uuid()"))
+            .withColumn("created_at", F.current_timestamp())
+        )
 
     def write_alerts_to_postgres(self, records: list) -> int:
         if not records:
@@ -212,13 +226,11 @@ class AnomalyJob:
             )
             self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT)
 
-            # Time range
             checkpoint = self.pg.get_checkpoint(JOB_ANOMALY)
-            start = checkpoint["last_processed_timestamp"] if checkpoint else datetime.now(UTC) - timedelta(hours=1)
-            end = datetime.now(UTC)
+            start = checkpoint["last_processed_timestamp"] if checkpoint else datetime.now() - timedelta(hours=1)
+            end = datetime.now()
             logger.info(f"Processing: {start} to {end}")
 
-            # Read with 60-min lookback for trade count avg
             df = self.read_trades(start, end, lookback_minutes=60)
             df.cache()
 
@@ -228,7 +240,6 @@ class AnomalyJob:
                 self.pg.update_checkpoint(JOB_ANOMALY, end, 0)
                 return
 
-            # Detect anomalies - returns DataFrame with alert_id, created_at columns
             alerts_df = self.detect_anomalies(df, start)
             alerts_df = alerts_df.cache()
             alert_count = alerts_df.count()
@@ -240,7 +251,6 @@ class AnomalyJob:
                 self.pg.update_checkpoint(JOB_ANOMALY, end, 0)
                 return
 
-            # Process in batches using toLocalIterator (memory efficient)
             total_valid = 0
             total_invalid = 0
             max_ts = None
@@ -263,7 +273,6 @@ class AnomalyJob:
                     logger.info(f"Batch processed: {len(valid)} valid, {len(invalid)} invalid")
                     batch = []
 
-            # Process remaining batch
             if batch:
                 valid, invalid, _ = validate_alert_records(batch, self.pg)
 

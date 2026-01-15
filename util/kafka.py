@@ -12,7 +12,6 @@ class KafkaProducer:
         schema_registry_url: str,
         topic: str,
         subject: str | None = None,
-        linger_ms: int = 100,
     ):
         from confluent_kafka import SerializingProducer
         from confluent_kafka.schema_registry import SchemaRegistryClient
@@ -32,10 +31,11 @@ class KafkaProducer:
         self._producer = SerializingProducer(
             {
                 "bootstrap.servers": bootstrap_servers,
-                "linger.ms": linger_ms,
-                "queue.buffering.max.messages": 500000,
-                "queue.buffering.max.kbytes": 2097152,
-                "batch.size": 2000000,
+                "linger.ms": 20,
+                "queue.buffering.max.messages": 200000,
+                "queue.buffering.max.kbytes": 1048576,
+                "batch.size": 1000000,
+                "message.timeout.ms": 30000,
                 "value.serializer": avro_serializer,
                 "key.serializer": lambda k, ctx: k.encode("utf-8") if k else None,
             }
@@ -48,6 +48,8 @@ class KafkaProducer:
             value=value,
             on_delivery=lambda err, msg: logger.error(f"Delivery failed: {err}") if err else None,
         )
+        # Poll to trigger message delivery and prevent queue full errors
+        self._producer.poll(0)
 
     def flush(self, timeout: float = 10.0) -> int:
         return self._producer.flush(timeout)

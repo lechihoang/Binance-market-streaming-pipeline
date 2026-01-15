@@ -3,7 +3,7 @@ import os
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from functools import lru_cache
 from threading import Lock
 from typing import Any
@@ -17,7 +17,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from api.schemas import (
+from api.schema import (
     BuySellImbalanceResponse,
     HealthResponse,
     KlineResponse,
@@ -25,6 +25,7 @@ from api.schemas import (
     MLPredictionResponse,
     MLStatusResponse,
     PriceSpikeResponse,
+    RecentTradeResponse,
     ServiceHealth,
     TickerDataResponse,
     TickerHealthResponse,
@@ -173,13 +174,11 @@ app.add_exception_handler(RateLimitExceeded, custom_rate_limit_exceeded_handler)
 async def interval_validation_error_handler(request: Request, exc: RequestValidationError):
     """Custom handler for interval validation errors."""
     for error in exc.errors():
-        # Check if this is an interval validation error
         if error.get("loc") == ("query", "interval"):
             return JSONResponse(
                 status_code=400,
                 content={"detail": f"Invalid interval. Valid values: {', '.join(sorted(VALID_INTERVAL))}"},
             )
-    # For other validation errors, return the default 422 response
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
@@ -236,7 +235,6 @@ async def root():
     return {"message": "Crypto Data API", "version": "1.0.0"}
 
 
-# Prometheus metrics instrumentation
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 
@@ -360,13 +358,13 @@ def determine_overall_status(redis_healthy: bool, postgres_healthy: bool, kafka_
 def normalize_time_range(
     start: datetime | None, end: datetime | None, default_hours: int = 1
 ) -> tuple[datetime, datetime]:
-    now = datetime.now(UTC)
+    now = datetime.now()
     if end:
-        end = end if end.tzinfo else end.replace(tzinfo=UTC)
+        end = end if end.tzinfo else end
     else:
         end = now
     if start:
-        start = start if start.tzinfo else start.replace(tzinfo=UTC)
+        start = start if start.tzinfo else start
     else:
         start = now - timedelta(hours=default_hours)
     return start, end
@@ -407,8 +405,8 @@ def query_alerts_by_type(
 
 def ensure_tz(dt: datetime | None) -> datetime:
     if dt is None:
-        return datetime.now(UTC)
-    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+        return datetime.now()
+    return dt if dt.tzinfo else dt
 
 
 def validate_time_range(start: datetime, end: datetime) -> None:
@@ -431,7 +429,7 @@ def query_klines_with_fallback(
     interval: str = "1m",
 ) -> tuple[list[dict], str]:
     """Query klines with automatic tier selection (RedisStorage cache or PostgreSQL)."""
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now()
     redis_cutoff = now - timedelta(hours=1)
 
     if start >= redis_cutoff:
@@ -624,26 +622,89 @@ async def get_top_by_volume(
     return results[:limit]
 
 
-@app.get("/api/v1/analytics/klines/{symbol}", response_model=list[KlineResponse], tags=["analytics"])
+@app.get("/api/v1/market/recent-trades", response_model=list[RecentTradeResponse], tags=["market"])
+async def get_recent_trades(
+    response: Response,
+    symbol: str = Query(description="Trading pair symbol (e.g., BTCUSDT)"),
+    limit: int = Query(default=20, ge=1, le=100, description="Number of trades to return"),
+    storage: RedisStorage = Depends(get_ticker_storage),
+) -> list[RecentTradeResponse]:
+    """Get recent trades for a symbol from Redis cache."""
+    start_time = time.time()
+
+    trades = storage.get_trade(symbol.upper(), limit)
+
+    results = []
+    for trade in trades:
+        try:
+            price = float(trade.get("price", 0))
+            quantity = float(trade.get("quantity", 0))
+
+            results.append(
+                RecentTradeResponse(
+                    trade_id=int(trade.get("trade_id", 0)),
+                    timestamp=int(trade.get("timestamp", 0)),
+                    price=price,
+                    quantity=quantity,
+                    side=trade.get("side", "BUY"),
+                    total=price * quantity,
+                )
+            )
+        except Exception as e:
+            logger.warning(f"Failed to parse trade data for {symbol}: {e}")
+            continue
+
+    response_time_ms = (time.time() - start_time) * 1000
+    response.headers["X-Response-Time-Ms"] = f"{response_time_ms:.2f}"
+    response.headers["X-Data-Source"] = "redis"
+
+    return results
+
+
+@app.get(
+    "/api/v1/analytics/klines/{symbol}",
+    response_model=list[KlineResponse],
+    tags=["analytics"],
+    summary="Get OHLCV klines for a symbol",
+    description="""
+    Retrieve OHLCV (Open, High, Low, Close, Volume) kline data for a trading pair.
+
+    **Kline**: Binance term for candlestick/OHLCV data representing price action in a time interval.
+
+    **Metrics included:**
+    - OHLCV: Open, High, Low, Close, Volume (core price and volume data)
+    - VWAP: Volume Weighted Average Price
+    - Order flow: Buy/sell trade counts and ratios
+    - Quote volume: Total value traded (price × quantity sum)
+
+    **Supported timeframes:** 1m, 5m, 15m, 1h
+
+    **Data source routing:**
+    - Recent data (< cache window): Redis (sub-millisecond latency)
+    - Historical data: PostgreSQL (persistent storage)
+    - Check X-Data-Source response header to see which tier served the data
+    """,
+)
 async def get_klines(
     symbol: str,
     response: Response,
     interval: str = Query(default="1m", pattern="^(1m|5m|15m|1h)$", description="Time interval (1m, 5m, 15m, 1h)"),
-    start: datetime | None = Query(default=None, description="Start time"),
-    end: datetime | None = Query(default=None, description="End time"),
+    minutes: int = Query(default=60, description="Number of minutes to fetch (only used if start is not provided)"),
+    start: datetime | None = Query(default=None, description="Start time (ISO 8601 format)"),
+    end: datetime | None = Query(default=None, description="End time (ISO 8601 format, defaults to now)"),
     query_router: QueryRouter = Depends(get_query_router),
 ) -> list[KlineResponse]:
-    """Get OHLCV klines for a symbol with automatic tier selection."""
+    """Get OHLCV klines for a symbol with automatic tier selection (Redis/PostgreSQL)."""
     validate_interval(interval)
 
     start = start.replace(tzinfo=None) if start and start.tzinfo else start
     end = end.replace(tzinfo=None) if end and end.tzinfo else end
 
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now()
     if end is None:
         end = now
     if start is None:
-        start = end - timedelta(hours=24)
+        start = end - timedelta(minutes=minutes)
 
     validate_time_range(start, end)
 
@@ -654,7 +715,7 @@ async def get_klines(
 
     return [
         KlineResponse(
-            timestamp=record.get("timestamp").replace(tzinfo=UTC),
+            timestamp=record.get("timestamp"),
             open=record.get("open", 0.0),
             high=record.get("high", 0.0),
             low=record.get("low", 0.0),
@@ -683,7 +744,7 @@ async def get_trades_count(
             status_code=400, detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_TRADE_COUNT_INTERVAL))}"
         )
 
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now()
     interval_durations = {
         "1m": timedelta(minutes=1),
         "1h": timedelta(hours=1),
@@ -703,7 +764,7 @@ async def get_trades_count(
 
         return [
             TradesCountResponse(
-                timestamp=record["timestamp"].replace(tzinfo=UTC),
+                timestamp=record["timestamp"],
                 trade_count=record.get("trade_count", 0),
                 interval=record["interval"],
             )
@@ -857,16 +918,25 @@ async def get_health(
         status=overall_status,
         redis=redis_health.healthy,
         postgres=postgres_health.healthy,
-        timestamp=datetime.now(UTC),
+        timestamp=datetime.now(),
         services=[redis_health, postgres_health],
     )
 
 
 def classify_volatility_level(volatility: float) -> str:
-    """Classify volatility into LOW/MEDIUM/HIGH levels."""
-    if volatility < 0.5:
+    """Classify volatility into LOW/MEDIUM/HIGH levels.
+
+    Args:
+        volatility: Volatility value in decimal format (e.g., 0.02 = 2%)
+
+    Returns:
+        LOW: < 0.5% (< 0.005)
+        MEDIUM: 0.5% - 1.5% (0.005 - 0.015)
+        HIGH: > 1.5% (> 0.015)
+    """
+    if volatility < 0.005:
         return "LOW"
-    elif volatility <= 1.5:
+    elif volatility <= 0.015:
         return "MEDIUM"
     else:
         return "HIGH"

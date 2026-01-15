@@ -1,4 +1,4 @@
-"""Kafka ticker consumer - reads tickers from Kafka, writes to Redis cache."""
+"""Kafka trade consumer - reads trades from Kafka, writes to Redis cache."""
 
 import signal
 
@@ -14,8 +14,8 @@ from util.logging import get_logger, setup_logging
 logger = get_logger(__name__)
 
 
-class TickerConsumer:
-    """Consume ticker messages from Kafka and cache in Redis."""
+class TradeConsumer:
+    """Consume trade messages from Kafka and cache in Redis."""
 
     def __init__(self):
         self.running = True
@@ -26,15 +26,15 @@ class TickerConsumer:
         self.consumer = Consumer(
             {
                 "bootstrap.servers": KAFKA_SERVER,
-                "group.id": "ticker-consumer",
+                "group.id": "trade-consumer",
                 "auto.offset.reset": "latest",
             }
         )
-        self.consumer.subscribe(["raw_tickers"])
+        self.consumer.subscribe(["raw_trades"])
 
     def run(self):
-        logger.info("Started consuming tickers")
-        ctx = SerializationContext("raw_tickers", MessageField.VALUE)
+        logger.info("Started consuming trades")
+        ctx = SerializationContext("raw_trades", MessageField.VALUE)
 
         while self.running:
             msg = self.consumer.poll(1.0)
@@ -42,7 +42,18 @@ class TickerConsumer:
                 continue
 
             data = self.deserializer(msg.value(), ctx)
-            self.redis.write_ticker(data["symbol"], data)
+
+            # Transform trade data for Redis storage
+            trade = {
+                "symbol": data["symbol"],
+                "price": str(data["price"]),
+                "quantity": str(data["quantity"]),
+                "timestamp": data["trade_time"],
+                "trade_id": data["trade_id"],
+                "side": "SELL" if data["is_buyer_maker"] else "BUY",
+            }
+
+            self.redis.write_trade(data["symbol"], trade)
 
         self.consumer.close()
         self.redis.close()
@@ -52,8 +63,8 @@ class TickerConsumer:
 
 
 def main():
-    setup_logging(level="INFO")
-    c = TickerConsumer()
+    setup_logging(level="INFO", json_output=True)
+    c = TradeConsumer()
     signal.signal(signal.SIGTERM, lambda *_: c.stop())
     signal.signal(signal.SIGINT, lambda *_: c.stop())
     c.run()

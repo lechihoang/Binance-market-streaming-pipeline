@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TickerDataResponse(BaseModel):
@@ -47,17 +47,32 @@ class TopTradingResponse(BaseModel):
     quote_volume: float
 
 
+class RecentTradeResponse(BaseModel):
+    trade_id: int
+    timestamp: int
+    price: float
+    quantity: float
+    side: str  # BUY or SELL
+    total: float
+
+
 class KlineResponse(BaseModel):
-    timestamp: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    quote_volume: float | None = None
-    trade_count: int | None = None
-    buy_count: int | None = None
-    sell_count: int | None = None
+    """OHLCV kline data for a time interval.
+
+    Kline: Binance term for candlestick/OHLCV data.
+    OHLCV: Open, High, Low, Close, Volume - standard price format.
+    """
+
+    timestamp: datetime = Field(description="Kline interval start time")
+    open: float = Field(description="Opening price (OHLCV)")
+    high: float = Field(description="Highest price during interval (OHLCV)")
+    low: float = Field(description="Lowest price during interval (OHLCV)")
+    close: float = Field(description="Closing price (OHLCV)")
+    volume: float = Field(description="Total volume traded (OHLCV)")
+    quote_volume: float | None = Field(default=None, description="Total value traded (price × quantity sum)")
+    trade_count: int | None = Field(default=None, description="Number of trades in interval")
+    buy_count: int | None = Field(default=None, description="Number of buyer-initiated trades")
+    sell_count: int | None = Field(default=None, description="Number of seller-initiated trades")
 
 
 class TradesCountResponse(BaseModel):

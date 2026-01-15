@@ -176,6 +176,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-crypto}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
       POSTGRES_DB: ${POSTGRES_DB:-crypto_data}
+      TZ: Asia/Ho_Chi_Minh
     ports:
       - "${POSTGRES_PORT:-5434}:5432"
     volumes:
@@ -344,6 +345,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-crypto}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
       POSTGRES_DB: ${POSTGRES_DB:-crypto_data}
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./dags:/opt/airflow/dags
       - ./storage:/opt/airflow/storage
@@ -479,6 +481,7 @@ services:
       POSTGRES_DATA_PASSWORD: ${POSTGRES_PASSWORD:-crypto}
       POSTGRES_DATA_DB: ${POSTGRES_DB:-crypto_data}
       MODEL_DIR: /app/model
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./api:/app/api
       - ./storage:/app/storage
@@ -529,6 +532,7 @@ services:
       TICKER_MAX_FUTURE_MS: "5000"
       TICKER_MAX_TRACKED_SYMBOLS: "100"
       LOG_LEVEL: ${TICKER_LOG_LEVEL:-INFO}
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./ingestion:/app/ingestion
       - ./storage:/app/storage
@@ -542,6 +546,42 @@ services:
       timeout: 10s
       retries: 5
       start_period: 15s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  # Trade Consumer - Real-time trade data consumer (Hot Path)
+  trade-consumer:
+    build:
+      context: .
+      dockerfile: docker/consumer/Dockerfile
+    hostname: trade-consumer
+    container_name: trade-consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_SERVER: kafka:29092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      LOG_LEVEL: ${TRADE_LOG_LEVEL:-INFO}
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - ./ingestion:/app/ingestion
+      - ./storage:/app/storage
+      - ./util:/app/util
+    command: python -m ingestion.trade_consumer
+    networks:
+      - streaming-network
     restart: unless-stopped
     deploy:
       resources:
@@ -603,6 +643,8 @@ services:
       - "8501:8501"
     environment:
       API_URL: http://crypto-api:8000
+      TZ: Asia/Ho_Chi_Minh
+      PYTHONUNBUFFERED: "1"
     networks:
       - streaming-network
     healthcheck:

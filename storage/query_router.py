@@ -1,6 +1,13 @@
-"""Auto tier selection for queries based on time range."""
+"""Query router with automatic tier selection (Redis/PostgreSQL).
 
-from datetime import UTC, datetime, timedelta
+Routes data queries to the appropriate storage tier based on time range:
+- Recent data (< CACHE_HOUR): Redis (hot tier, fast access)
+- Historical data (>= CACHE_HOUR): PostgreSQL (warm tier, persistent storage)
+
+Supports kline (OHLCV), trade, and alert data types with automatic fallback.
+"""
+
+from datetime import datetime, timedelta
 from typing import Any
 
 from util.constant import CACHE_HOUR
@@ -13,6 +20,22 @@ logger = get_logger(__name__)
 
 
 class Router:
+    """Smart query router with automatic tier selection and fallback.
+
+    Routes queries to optimal storage tier based on data recency:
+    - Hot tier (Redis): Last N hours of data (configurable via CACHE_HOUR)
+    - Warm tier (PostgreSQL): Historical data beyond cache window
+
+    Features:
+    - Automatic tier selection based on timestamp
+    - Fallback to next tier if query fails or returns empty
+    - Support for multiple data types (klines, alerts, trades)
+    - Multi-timeframe kline queries (1m, 5m, 15m, 1h)
+
+    Terminology:
+    - Kline: OHLCV data (Open, High, Low, Close, Volume) in time intervals
+    """
+
     TIER = ["redis", "postgres"]
     KLINE = "klines"
     ALERT = "alerts"
@@ -24,12 +47,12 @@ class Router:
 
         self.query_map = {
             "redis": {
-                "klines": (lambda s, st, en: self.redis_candle(s), False),
+                "klines": (lambda s, st, en: self.redis_kline(s), False),
                 "trades": (lambda s, st, en: self.redis.get_trade(s, limit=1000), False),
                 "alerts": (lambda s, st, en: self.redis.get_alert(limit=1000), False),
             },
             "postgres": {
-                "klines": (lambda s, st, en: self.pg.get_candle(s, st, en), True),
+                "klines": (lambda s, st, en: self.pg.get_kline(s, st, en), True),
                 "alerts": (lambda s, st, en: self.pg.get_alert(s, st, en), True),
             },
         }
@@ -37,16 +60,16 @@ class Router:
     def wrap_single(self, result: Any) -> list[dict[str, Any]]:
         return [result] if result else []
 
-    def redis_candle(self, symbol: str, interval: str = "1m") -> list[dict[str, Any]]:
+    def redis_kline(self, symbol: str, interval: str = "1m") -> list[dict[str, Any]]:
         if interval == "1m":
             r = self.redis.get_agg(symbol, "1m")
             return [r] if r else []
         return self.redis.get_agg_list(symbol, interval)
 
     def select_tier(self, start: datetime) -> str:
-        now = datetime.now(UTC)
-        start_utc = start if start.tzinfo else start.replace(tzinfo=UTC)
-        if start_utc > now - timedelta(hours=CACHE_HOUR):
+        now = datetime.now()
+        start_local = start if start.tzinfo else start
+        if start_local > now - timedelta(hours=CACHE_HOUR):
             return "redis"
         return "postgres"
 
@@ -66,17 +89,21 @@ class Router:
         self, tier: str, symbol: str, start: datetime, end: datetime, interval: str = "1m"
     ) -> list[dict[str, Any]]:
         if tier == "redis":
-            return self.redis_candle(symbol, interval)
+            # Redis only has latest record - if requesting historical range, return empty to fallback to Postgres
+            now = datetime.now()
+            time_diff = (now - start).total_seconds() / 60  # minutes
+            if time_diff > 5:  # If requesting data older than 5 minutes, use Postgres instead
+                return []
+            return self.redis_kline(symbol, interval)
         elif tier == "postgres":
             if interval == "1m":
-                return self.pg.get_candle(symbol, start, end)
-            return self.pg.get_candle_agg(symbol, start, end, interval)
+                return self.pg.get_kline(symbol, start, end)
+            return self.pg.get_kline_agg(symbol, start, end, interval)
         return []
 
     def query(
         self, data_type: str, symbol: str, start: datetime, end: datetime, interval: str = "1m"
     ) -> list[dict[str, Any]]:
-        """Query with auto tier selection and fallback."""
         tier = self.select_tier(start)
         idx = self.TIER.index(tier)
 

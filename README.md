@@ -1,345 +1,194 @@
 # Real-Time Cryptocurrency Data Pipeline
 
-A production-grade data engineering project that ingests, processes, and visualizes real-time cryptocurrency market data from Binance. Built with modern streaming technologies using PostgreSQL/TimescaleDB for persistent storage and Redis for real-time caching.
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Features](#features)
-- [Storage Architecture](#storage-architecture)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
-- [Airflow DAGs](#airflow-dags)
-- [API Endpoints](#api-endpoints)
-- [Monitoring and Dashboards](#monitoring-and-dashboards)
-- [Configuration](#configuration)
-- [Testing](#testing)
+A production-grade streaming data pipeline that ingests, processes, and visualizes real-time cryptocurrency market data from Binance. Built with Apache Kafka, Spark Streaming, PostgreSQL/TimescaleDB, Redis, and FastAPI.
 
 ## Overview
 
-This project demonstrates a complete real-time data pipeline designed to handle high-throughput streaming data (100-1,000+ messages/second) from cryptocurrency exchanges. The pipeline:
+This project demonstrates a complete event-driven data pipeline handling **100-1,000+ messages/second** from cryptocurrency exchanges:
 
-1. Connects to Binance WebSocket API to receive live trade and ticker data
-2. Streams data through Apache Kafka for reliable message delivery
-3. Processes data using Apache Spark Structured Streaming for aggregations and anomaly detection
-4. Stores data in a **two-tier storage architecture**:
-   - **PostgreSQL/TimescaleDB**: Primary storage with staging + MERGE pattern for reliable upserts
-   - **Redis**: Real-time cache for sub-millisecond access
-5. Exposes data through a FastAPI REST API with automatic tier routing
-6. Visualizes metrics and data through Grafana dashboards
-7. Orchestrates all workflows using Apache Airflow
+- **Ingests** real-time trade and ticker data via Binance WebSocket API
+- **Streams** events through Apache Kafka for reliable message delivery
+- **Processes** data with Apache Spark for OHLCV aggregation, anomaly detection, and volatility prediction
+- **Stores** data in a two-tier architecture (PostgreSQL/TimescaleDB + Redis) for optimal performance
+- **Exposes** data through a FastAPI REST API with intelligent query routing
+- **Visualizes** market data through an interactive Streamlit dashboard
+- **Monitors** system metrics with Prometheus and Grafana
+- **Orchestrates** workflows using Apache Airflow
 
 ## Architecture
 
-![System Architecture](img/system_architechture.png)
+For detailed architecture and design decisions, see [Technical Documentation](docs/TECHNICAL.md).
 
-The system follows an event-driven architecture with the following components:
+## Key Features
 
-- **Data Ingestion Layer**: Binance WebSocket connector pushes real-time data to Kafka
-- **Stream Processing Layer**: Spark Structured Streaming jobs consume from Kafka, compute aggregations, and detect anomalies
-- **Storage Layer**: PostgreSQL/TimescaleDB (primary) + Redis (cache)
-- **API Layer**: FastAPI service with intelligent query routing based on time range
-- **Orchestration Layer**: Airflow manages all pipeline workflows and health checks
-- **Monitoring Layer**: Prometheus metrics with Grafana dashboards
-
-## Tech Stack
-
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Message Broker | Apache Kafka | Real-time event streaming |
-| Stream Processing | Apache Spark (PySpark) | Trade aggregation, anomaly detection |
-| Cache | Redis | Real-time data cache (< 1 hour) |
-| Database | PostgreSQL/TimescaleDB | Primary storage with staging + MERGE |
-| API Framework | FastAPI | REST API with OpenAPI docs |
-| Orchestration | Apache Airflow | Workflow management |
-| Monitoring | Prometheus + Grafana | Metrics and visualization |
-| Containerization | Docker Compose | Local development and deployment |
-
-## Features
-
-### Real-Time Data Ingestion
-- WebSocket connection to Binance with automatic reconnection
-- High-throughput message processing (100-1,000+ messages/second depending on market activity)
-- Support for multiple trading pairs (15+ symbols by default)
-- Trade and ticker data streams
-- Message enrichment with ingestion timestamps
-
-### Stream Processing
-- 1-minute OHLCV (Open, High, Low, Close, Volume) candle aggregation
-- Derived metrics: VWAP, price change percentage, buy/sell ratio
-- Real-time anomaly detection:
-  - Whale alerts (trades > $100,000)
-  - Volume spikes (quote volume > $1M)
-  - Price spikes (> 2% change in 1 minute)
-
-### Storage Architecture
-- **PostgreSQL/TimescaleDB**: Primary storage with staging table + MERGE pattern for handling late-arriving data
-- **Redis (Cache)**: Sub-millisecond access for real-time data (< 1 hour)
-
-### REST API
-- Automatic query routing based on time range
-- Multi-timeframe klines (1m, 5m, 15m intervals)
-- Rate limiting (100 requests/minute)
-- Prometheus metrics endpoint
-- OpenAPI documentation
-
-### Monitoring
-- Pre-configured Grafana dashboards
-- System health monitoring
-- Trading analytics visualization
-- Real-time market overview
-
-## Storage Architecture
-
-The pipeline implements a **two-tier storage architecture**:
-
-```
-Kafka → Spark Streaming ─┬→ PostgreSQL/TimescaleDB (Primary - staging + MERGE)
-                         └→ Redis (Cache - Real-time)
-```
-
-| Tier | Storage | Purpose | Features | Query Latency |
-|------|---------|---------|----------|---------------|
-| Primary | PostgreSQL/TimescaleDB | API queries, analytics | SQL, Indexing, UPSERT via staging, hypertables | < 50ms |
-| Cache | Redis | Real-time dashboards | In-memory, TTL-based expiry | < 1ms |
-
-### Why This Architecture?
-
-1. **Staging + MERGE Pattern**: Reliable upserts without duplicate key errors
-2. **TimescaleDB Hypertables**: Optimized time-series storage with automatic partitioning
-3. **Compression**: TimescaleDB native compression for historical data
-4. **Continuous Aggregates**: Materialized views for faster queries
-5. **Redis Cache**: Sub-millisecond access for real-time dashboards
-
-The `QueryRouter` automatically selects the appropriate storage tier based on the requested time range.
+- **Real-time ingestion** from Binance WebSocket (15+ trading pairs)
+- **Stream processing** with Spark: OHLCV aggregation, anomaly detection, volatility prediction
+- **Two-tier storage**: PostgreSQL/TimescaleDB (primary) + Redis (cache) for optimal performance
+- **REST API** with automatic tier routing based on time range
+- **Interactive dashboard** with Streamlit for market data visualization
+- **Metrics monitoring** with Prometheus and Grafana for system health
+- **Workflow orchestration** with Airflow DAGs
 
 ## Project Structure
 
 ```
 .
+├── api/                           # FastAPI REST API
+│   ├── app.py                     # Main API application with all endpoints
+│   └── schema.py                 # Pydantic models for request/response
+│
 ├── dags/                          # Airflow DAG definitions
-│   ├── binance_connector_dag.py   # WebSocket connector orchestration
-│   └── streaming_processing_dag.py # Spark jobs orchestration
-├── api/
-│   └── app.py                     # FastAPI application
-├── ingestion/                     # Data ingestion layer
-│   ├── connector.py               # Binance WebSocket → Kafka (producer)
-│   └── ticker_consumer.py         # Kafka → Redis (consumer)
-├── processing/                    # Stream processing layer
-│   ├── trade_aggregation_job.py   # OHLCV aggregation
-│   ├── anomaly_detection_job.py   # Alert generation
-│   ├── volatility_prediction_job.py # Volatility prediction
-│   └── validators/                # Data quality validation
-│       ├── aggregation_validator.py   # Aggregation output validation
-│       └── anomaly_validator.py       # Anomaly output validation
-├── storage/
-│   ├── redis.py                   # Redis storage operations
-│   ├── postgres.py                # PostgreSQL storage operations
-│   └── query_router.py            # Automatic tier selection
-├── util/
-│   ├── kafka.py                   # Kafka utilities
+│   ├── binance_connector_dag.py   # WebSocket data ingestion orchestration
+│   └── streaming_processing_dag.py # Spark streaming jobs orchestration
+│
+├── ingestion/                     # Real-time data ingestion
+│   ├── connector.py               # Binance WebSocket → Kafka producer
+│   └── ticker_consumer.py         # Kafka → Redis consumer for ticker data
+│
+├── processing/                    # Spark streaming jobs
+│   ├── trade_aggregation_job.py   # 1-minute OHLCV aggregation
+│   ├── anomaly_detection_job.py   # Anomaly detection (spikes, whales)
+│   └── volatility_prediction_job.py # ML-based volatility prediction
+│
+├── storage/                       # Storage layer
+│   ├── postgres.py                # PostgreSQL/TimescaleDB operations
+│   ├── redis.py                   # Redis cache operations
+│   └── query_router.py            # Intelligent tier selection (Redis/Postgres)
+│
+├── validator/                     # Data quality validation
+│   ├── aggregation_validator.py   # Validate aggregation outputs
+│   └── anomaly_validator.py       # Validate anomaly detection outputs
+│
+├── util/                          # Shared utilities
+│   ├── constant.py                # **All configuration constants** ⚙️
+│   ├── kafka.py                   # Kafka producer/consumer utilities
 │   ├── logging.py                 # Structured logging
-│   ├── metrics.py                 # Prometheus metrics
-│   ├── retry.py                   # Retry with backoff
-│   └── shutdown.py                # Graceful shutdown handling
+│   ├── metric.py                 # Prometheus metrics
+│   ├── retry.py                   # Retry logic with exponential backoff
+│   └── cleanup.py                 # Resource cleanup utilities
+│
+├── streamlit_app/                 # Interactive dashboard
+│   ├── app.py                     # Main Streamlit application
+│   ├── components/                # Reusable UI components
+│   │   ├── api.py                 # API client
+│   │   └── chart.py              # Chart rendering functions
+│   └── pages/                     # Multi-page dashboard
+│       ├── 1_Market_Overview.py   # Market summary and top movers
+│       ├── 2_Symbol_Deep_Dive.py  # Individual symbol analysis
+│       └── 3_Prediction.py        # Volatility predictions
+│
+├── test/                          # Test suite
+│   ├── test_api.py                # API endpoint tests
+│   ├── test_storage.py            # Storage layer tests
+│   ├── test_streaming.py          # Streaming job tests
+│   └── test_airflow.py            # Airflow DAG tests
+│
+├── script/                        # Utility scripts
+│   ├── download_binance_data.py   # Download historical data from Binance
+│   └── gen.py                     # Data generation utilities
+│
+├── notebook/                      # Jupyter notebooks
+│   └── train_volatility_predictor.ipynb # ML model training
+│
+├── model/                         # ML model artifacts
+│   └── volatility_predictor.json  # Trained volatility prediction model
+│
+├── docs/                          # Documentation
+│   ├── SETUP.md                   # Setup and configuration guide
+│   ├── API.md                     # Complete API reference
+│   └── TECHNICAL.md               # Architecture and technical details
+│
+├── grafana/                       # Monitoring configuration
+│   ├── dashboards/                # Pre-configured Grafana dashboards
+│   └── provisioning/              # Grafana auto-provisioning config
+│
 ├── docker/                        # Docker configurations
-│   ├── airflow/                   # Airflow image
-│   ├── api/                       # FastAPI image
-│   ├── consumer/                  # Ticker consumer image
-│   └── streamlit/                 # Streamlit dashboard image
-├── grafana/
-│   ├── dashboards/                # Pre-configured dashboards
-│   ├── provisioning/              # Auto-provisioning config
-│   └── prometheus.yml             # Prometheus configuration
-├── streamlit_app/                 # Streamlit dashboard source
-├── tests/                         # Test suite├── docker-compose.yml             # Container orchestration
-├── Dockerfile                     # Multi-purpose container image
+│   ├── airflow/                   # Airflow Dockerfile
+│   ├── api/                       # FastAPI Dockerfile
+│   ├── consumer/                  # Consumer Dockerfile
+│   └── streamlit/                 # Streamlit Dockerfile
+│
+├── data/                          # Data storage (gitignored)
+│   ├── historical/                # Historical kline data
+│   ├── parquet/                   # Parquet files
+│   └── spark-checkpoints/         # Spark streaming checkpoints
+│
+├── log/                           # Airflow logs (gitignored)
+├── docker-compose.yml             # Container orchestration
+├── Dockerfile                     # Multi-purpose base image
 └── requirements.txt               # Python dependencies
 ```
 
-## Getting Started
+**Key Configuration:** All project settings can be modified in [util/constant.py](util/constant.py) including:
+- Trading symbols, Redis/Kafka/PostgreSQL configs
+- Anomaly detection thresholds, ML model features
+- API rate limits, data retention policies
 
-### Prerequisites
+## Quick Start
 
-- Docker and Docker Compose
-- 8GB+ RAM recommended
-- Python 3.11+ (for local development)
+**Prerequisites:** Docker, Docker Compose, 8GB+ RAM
 
-### Quick Start
-
-1. Clone the repository:
 ```bash
+# 1. Clone the repository
 git clone https://github.com/lechihoang/Binance-market-streaming-pipeline.git
 cd Binance-market-streaming-pipeline
-```
 
-2. Copy environment configuration:
-```bash
-cp .env.example .env
-```
-
-3. Start all services:
-```bash
+# 2. Start all services
 docker-compose up -d
+
+# 3. Wait ~2-3 minutes for initialization
+
+# 4. Access services
+# - Streamlit Dashboard: http://localhost:8501 (Main visualization)
+# - Airflow: http://localhost:8080 (admin/admin)
+# - API Docs: http://localhost:8000/docs
+# - Grafana: http://localhost:3000 (admin/admin - Metrics only)
+
+# 5. Enable DAGs in Airflow UI
+# - binance_connector_dag
+# - streaming_processing_dag
 ```
 
-4. Wait for services to initialize (approximately 2-3 minutes)
+For detailed setup instructions and troubleshooting, see [Setup Guide](docs/SETUP.md).
 
-5. Access the services:
-   - Airflow UI: http://localhost:8080 (admin/admin)
-   - Grafana: http://localhost:3000 (admin/admin)
-   - API Docs: http://localhost:8000/docs
+## Documentation
 
-6. Enable the Airflow DAGs:
-   - `binance_connector_dag` - Start data ingestion
-   - `streaming_processing_dag` - Start stream processing
+- [Setup Guide](docs/SETUP.md) - Installation, configuration, environment variables, testing
+- [API Reference](docs/API.md) - Complete REST API documentation with examples
+- [Technical Documentation](docs/TECHNICAL.md) - Architecture, design decisions, monitoring, glossary
 
-### Stopping Services
+## Tech Stack
 
-```bash
-docker-compose down
-```
+| Component | Technology |
+|-----------|------------|
+| Message Broker | Apache Kafka |
+| Stream Processing | Apache Spark (PySpark) |
+| Cache | Redis |
+| Database | PostgreSQL/TimescaleDB |
+| API | FastAPI |
+| Visualization | Streamlit |
+| Orchestration | Apache Airflow |
+| Monitoring | Prometheus + Grafana |
+| Containerization | Docker Compose |
 
-To remove all data volumes:
-```bash
-docker-compose down -v
-```
+## Visualization & Monitoring
 
-## Airflow DAGs
+### Streamlit Dashboard (Main Visualization)
+Access the interactive dashboard at http://localhost:8501 for:
+- Real-time market data visualization
+- OHLCV charts and trading analytics
+- Market overview and symbol analysis
+- Anomaly alerts and trading patterns
 
-| DAG | Schedule | Description |
-|-----|----------|-------------|
-| `binance_connector_dag` | Manual trigger | Runs WebSocket connector for data ingestion |
-| `streaming_processing_dag` | Every 5 minutes | Executes Spark streaming jobs |
+### Grafana + Prometheus (System Metrics)
+Access metrics monitoring at http://localhost:3000:
+- API performance metrics
+- System health monitoring
+- Infrastructure resource usage
+- Kafka, Redis, PostgreSQL metrics
 
-### 1. Binance Connector DAG
+![Dashboard Preview](img/dashboard1.png)
 
-Manages the WebSocket connection to Binance API for real-time data ingestion. Runs continuously to stream trade and ticker data to Kafka topics.
-
-**Tasks:**
-- `check_kafka_health`: Verify Kafka broker connectivity
-- `run_binance_connector`: Start WebSocket client for trade/ticker streams
-- `run_ticker_consumer`: Consume ticker data from Kafka to Redis
-
-![Binance Connector DAG](img/dag1.png)
-
-### 2. Streaming Processing DAG
-
-Orchestrates Spark streaming jobs for data processing. Runs every 5 minutes to aggregate trades and detect anomalies.
-
-**Tasks:**
-- `health_checks`: Verify Redis and PostgreSQL connectivity
-- `trade_aggregation`: Compute 1-minute OHLCV candles with buy/sell metrics
-- `anomaly_detection`: Detect whale trades, price spikes, and volume anomalies
-- `cleanup_streaming`: Clean up resources after processing
-
-![Streaming Processing DAG](img/dag2.png)
-
-## API Endpoints
-
-### Market Data
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/v1/market/realtime` | All real-time ticker data |
-| `GET /api/v1/market/summary` | Market summary statistics |
-| `GET /api/v1/market/ticker-health` | Ticker service health |
-| `GET /api/v1/market/top-by-trades` | Top symbols by trade count |
-| `GET /api/v1/market/top-by-volume` | Top symbols by volume |
-
-### Analytics
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/v1/analytics/klines/{symbol}` | OHLCV candles (1m, 5m, 15m) |
-| `GET /api/v1/analytics/trades-count` | Trade count aggregations |
-
-### Alerts
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/v1/analytics/alerts/price-spikes` | Price spike alerts (>2% change) |
-| `GET /api/v1/analytics/alerts/volume-spikes` | Volume spike alerts (>$1M) |
-
-### System
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/v1/system/health` | System health status |
-| `GET /metrics` | Prometheus metrics |
-
-## Monitoring and Dashboards
-
-### Pre-configured Dashboards
-
-#### 1. Market Overview
-Real-time prices, volumes, and market summary across all trading pairs.
-
-![Market Overview Dashboard](img/dashboard1.png)
-
-#### 2. Symbol Deep Dive
-Detailed analysis for individual trading pairs with OHLCV charts and trade metrics.
-
-![Symbol Deep Dive Dashboard](img/dashboard2.png)
-
-#### 3. Trading Analytics
-Trade patterns, price spikes, volume spikes, and market anomalies.
-
-![Trading Analytics Dashboard](img/dashboard3.png)
-
-#### 4. System Health
-Infrastructure monitoring, service status, and performance metrics.
-
-![System Health Dashboard](img/dashboard4.png)
-
-### Metrics Collected
-
-- Message processing rates and latencies
-- Storage tier write success/failure rates
-- Kafka consumer lag
-- Redis memory usage
-- API request rates and response times
-
-## Configuration
-
-Key environment variables (see `.env.example` for full list):
-
-```bash
-# Kafka
-KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-
-# Redis (Cache)
-REDIS_HOST=redis
-REDIS_PORT=6379
-
-# PostgreSQL (Primary Storage)
-POSTGRES_HOST=postgres-data
-POSTGRES_PORT=5432
-POSTGRES_USER=crypto
-POSTGRES_PASSWORD=crypto
-POSTGRES_DB=crypto_data
-
-# Trading Pairs
-TICKER_SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT,...
-```
-
-## Testing
-
-Run the test suite:
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run all tests
-pytest tests/
-
-# Run with coverage
-pytest tests/ --cov=src --cov-report=html
-```
-
-Test categories:
-- Unit tests for storage operations
-- Integration tests for API endpoints
-- Property-based tests using Hypothesis
-- End-to-end pipeline tests
+For detailed documentation, see [Technical Documentation](docs/TECHNICAL.md#monitoring-and-dashboards).
 
 

@@ -12,25 +12,30 @@ CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 -- 2. TRADES TABLES
 -- =============================================================================
 
+-- trades_1m: 1-minute OHLCV kline aggregation from raw trades
+-- OHLCV = Open, High, Low, Close, Volume (standard price/volume format)
 CREATE TABLE IF NOT EXISTS trades_1m (
     timestamp TIMESTAMPTZ NOT NULL,
     symbol VARCHAR(20) NOT NULL,
-    open DOUBLE PRECISION,
-    high DOUBLE PRECISION,
-    low DOUBLE PRECISION,
-    close DOUBLE PRECISION,
-    volume DOUBLE PRECISION,
-    quote_volume DOUBLE PRECISION,
-    trade_count INTEGER,
-    buy_count INTEGER,
-    sell_count INTEGER,
-    volume_weighted_avg_price DOUBLE PRECISION,
-    price_change_percent DOUBLE PRECISION,
-    buy_sell_ratio DOUBLE PRECISION,
-    average_price DOUBLE PRECISION,
-    price_volatility DOUBLE PRECISION
+    -- OHLCV core fields
+    open DOUBLE PRECISION,           -- Opening price (first trade in interval)
+    high DOUBLE PRECISION,           -- Highest price during interval
+    low DOUBLE PRECISION,            -- Lowest price during interval
+    close DOUBLE PRECISION,          -- Closing price (last trade in interval)
+    volume DOUBLE PRECISION,         -- Total volume (quantity) traded
+    -- Derived metrics
+    quote_volume DOUBLE PRECISION,   -- Total value traded (price × quantity sum)
+    trade_count INTEGER,             -- Number of trades in interval
+    buy_count INTEGER,               -- Number of buyer-initiated trades
+    sell_count INTEGER,              -- Number of seller-initiated trades
+    volume_weighted_avg_price DOUBLE PRECISION,  -- VWAP: Volume Weighted Average Price
+    price_change_percent DOUBLE PRECISION,       -- Percentage change from open to close
+    buy_sell_ratio DOUBLE PRECISION,             -- buy_count / total_trades
+    average_price DOUBLE PRECISION,              -- Alias for VWAP
+    price_volatility DOUBLE PRECISION            -- Standard deviation of trade prices
 );
 
+-- staging_trades_1m: Temporary staging table for merging into trades_1m
 CREATE TABLE IF NOT EXISTS staging_trades_1m (
     timestamp TIMESTAMPTZ NOT NULL,
     symbol VARCHAR(20) NOT NULL,
@@ -54,6 +59,8 @@ CREATE TABLE IF NOT EXISTS staging_trades_1m (
 -- 3. ML TABLES
 -- =============================================================================
 
+-- ml_features: Feature engineering table for volatility prediction ML model
+-- Contains time-series features computed from OHLCV kline data
 CREATE TABLE IF NOT EXISTS ml_features (
     timestamp TIMESTAMPTZ NOT NULL,
     symbol VARCHAR(20) NOT NULL,
@@ -61,42 +68,43 @@ CREATE TABLE IF NOT EXISTS ml_features (
     volume DOUBLE PRECISION,
     quote_volume DOUBLE PRECISION,
     trade_count INTEGER,
-    -- Return features
-    return_1m DOUBLE PRECISION,
-    return_5m DOUBLE PRECISION,
-    return_15m DOUBLE PRECISION,
-    -- Volatility features
-    volatility_5m DOUBLE PRECISION,
-    volatility_15m DOUBLE PRECISION,
-    volatility_30m DOUBLE PRECISION,
-    volatility_60m DOUBLE PRECISION,
-    volatility_ratio DOUBLE PRECISION,
-    -- Candle features
-    candle_range DOUBLE PRECISION,
-    candle_body DOUBLE PRECISION,
-    -- Volume features
-    volume_ratio_15m DOUBLE PRECISION,
-    volume_ratio_60m DOUBLE PRECISION,
-    -- Order flow features
-    buy_ratio DOUBLE PRECISION,
-    buy_sell_imbalance DOUBLE PRECISION,
-    -- Price vs MA features
-    price_vs_ma_15m DOUBLE PRECISION,
-    price_vs_ma_60m DOUBLE PRECISION,
-    -- Time features
-    hour INTEGER,
-    symbol_encoded INTEGER,
-    -- Target (for training data only)
-    volatility_next_5m DOUBLE PRECISION,
+    -- Return features (price change percentages)
+    return_1m DOUBLE PRECISION,      -- 1-minute price return
+    return_5m DOUBLE PRECISION,      -- 5-minute price return
+    return_15m DOUBLE PRECISION,     -- 15-minute price return
+    -- Volatility features (rolling window standard deviations)
+    volatility_5m DOUBLE PRECISION,  -- 5-minute rolling volatility
+    volatility_15m DOUBLE PRECISION, -- 15-minute rolling volatility
+    volatility_30m DOUBLE PRECISION, -- 30-minute rolling volatility
+    volatility_60m DOUBLE PRECISION, -- 60-minute rolling volatility
+    volatility_ratio DOUBLE PRECISION, -- Current vs historical volatility ratio
+    -- Kline pattern features (price range and body metrics)
+    price_range_pct DOUBLE PRECISION,  -- (high - low) / close × 100: percentage price range
+    price_body_pct DOUBLE PRECISION,   -- |close - open| / close × 100: percentage kline body size
+    -- Volume features (relative volume comparisons)
+    volume_ratio_15m DOUBLE PRECISION, -- Current volume vs 15-minute average
+    volume_ratio_60m DOUBLE PRECISION, -- Current volume vs 60-minute average
+    -- Order flow features (buy/sell pressure metrics)
+    buy_ratio DOUBLE PRECISION,        -- buy_count / total_trades
+    buy_sell_imbalance DOUBLE PRECISION, -- (buy_count - sell_count) / total_trades
+    -- Price vs MA features (moving average comparisons)
+    price_vs_ma_15m DOUBLE PRECISION,  -- Price deviation from 15-minute MA
+    price_vs_ma_60m DOUBLE PRECISION,  -- Price deviation from 60-minute MA
+    -- Time features (temporal patterns)
+    hour INTEGER,                      -- Hour of day (0-23)
+    symbol_encoded INTEGER,            -- Encoded symbol identifier
+    -- Target variable (for supervised learning)
+    volatility_next_5m DOUBLE PRECISION, -- Future 5-minute volatility (label)
     computed_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (symbol, timestamp)
 );
 
+-- volatility_predictions: ML model predictions for future volatility
 CREATE TABLE IF NOT EXISTS volatility_predictions (
     timestamp TIMESTAMPTZ NOT NULL,
     symbol VARCHAR(20) NOT NULL,
-    current_volatility DOUBLE PRECISION,
-    predicted_volatility_5m DOUBLE PRECISION,
+    current_volatility DOUBLE PRECISION,       -- Current observed volatility
+    predicted_volatility_5m DOUBLE PRECISION,  -- Predicted 5-minute ahead volatility
     computed_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (symbol, timestamp)
 );

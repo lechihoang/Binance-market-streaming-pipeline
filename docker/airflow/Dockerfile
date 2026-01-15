@@ -20,6 +20,7 @@ COPY storage/ ./storage/
 COPY processing/ ./processing/
 COPY util/ ./util/
 COPY model/ ./model/
+COPY validator/ ./validator/
 
 ENV AIRFLOW_HOME=/opt/airflow
 ENV PYTHONPATH=/app:/opt/airflow

@@ -1,4 +1,4 @@
-"""Binance WebSocket to Kafka connector."""
+"""Connects to Binance WebSocket, streams raw trades/tickers into Kafka topics."""
 
 import asyncio
 import json
@@ -34,7 +34,12 @@ class BinanceConnector:
     async def run(self):
         while True:
             try:
-                async with websockets.connect(self.url) as ws:
+                async with websockets.connect(
+                    self.url,
+                    ping_interval=20,
+                    ping_timeout=60,
+                    close_timeout=10,
+                ) as ws:
                     logger.info(f"Connected, streaming {len(DEFAULT_SYMBOL)} symbols")
                     async for msg in ws:
                         data = json.loads(msg).get("data", {})

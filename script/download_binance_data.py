@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Download 1-minute klines from Binance Public Data."""
+"""Downloads 1m klines from Binance public data for model training."""
 
 import subprocess
 import sys

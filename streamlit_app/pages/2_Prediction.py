@@ -17,7 +17,7 @@ from components.api import (
     get_volume_spikes,
 )
 
-st.set_page_config(page_title="Prediction & Alerts", page_icon="🔮", layout="wide")
+st.set_page_config(page_title="Prediction & Alerts", layout="wide")
 
 COLORS = {
     "green": "#2E7D32",
@@ -36,7 +36,7 @@ def get_volatility_color(level: str) -> str:
 
 
 def get_volatility_icon(level: str) -> str:
-    return {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(level, "⚪")
+    return {"LOW": "", "MEDIUM": "", "HIGH": ""}.get(level, "")
 
 
 symbols = get_available_symbols()
@@ -48,7 +48,7 @@ placeholder = st.empty()
 
 def render():
     with placeholder.container():
-        st.markdown("## 🔮 Prediction & Alerts")
+        st.markdown("## Prediction & Alerts")
 
         # ML Status
         ml_status = get_ml_status()
@@ -63,7 +63,7 @@ def render():
         st.markdown("---")
 
         # Volatility Prediction Section
-        st.markdown("### 📊 Volatility Prediction")
+        st.markdown("### Volatility Prediction")
 
         col1, col2 = st.columns([1, 3])
         with col1:
@@ -82,9 +82,9 @@ def render():
             with col1:
                 st.markdown(
                     f"""
-                <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; text-align:center;">
-                    <div style="color:#666; font-size:14px;">Current Volatility</div>
-                    <div style="font-size:32px; font-weight:bold; color:{COLORS['blue']};">{current_vol:.2f}%</div>
+                <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; border-left:4px solid {COLORS['blue']};">
+                    <div style="color:#666; font-size:12px; margin-bottom:8px;">Current Volatility</div>
+                    <div style="color:{COLORS['blue']}; font-size:28px; font-weight:bold;">{current_vol:.2f}%</div>
                 </div>
                 """,
                     unsafe_allow_html=True,
@@ -93,9 +93,9 @@ def render():
             with col2:
                 st.markdown(
                     f"""
-                <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; text-align:center;">
-                    <div style="color:#666; font-size:14px;">Predicted (5m)</div>
-                    <div style="font-size:32px; font-weight:bold; color:{COLORS['purple']};">{predicted_vol:.2f}%</div>
+                <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; border-left:4px solid {COLORS['purple']};">
+                    <div style="color:#666; font-size:12px; margin-bottom:8px;">Predicted (5m)</div>
+                    <div style="color:{COLORS['purple']}; font-size:28px; font-weight:bold;">{predicted_vol:.2f}%</div>
                 </div>
                 """,
                     unsafe_allow_html=True,
@@ -103,42 +103,17 @@ def render():
 
             with col3:
                 vol_color = get_volatility_color(level)
-                vol_icon = get_volatility_icon(level)
                 st.markdown(
                     f"""
-                <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; text-align:center;">
-                    <div style="color:#666; font-size:14px;">Risk Level</div>
-                    <div style="font-size:32px; font-weight:bold; color:{vol_color};">{vol_icon} {level}</div>
+                <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; border-left:4px solid {vol_color};">
+                    <div style="color:#666; font-size:12px; margin-bottom:8px;">Risk Level</div>
+                    <div style="color:{vol_color}; font-size:28px; font-weight:bold;">{level}</div>
                 </div>
                 """,
                     unsafe_allow_html=True,
                 )
 
-            # Volatility gauge chart
             st.markdown("<br>", unsafe_allow_html=True)
-
-            fig = go.Figure(
-                go.Indicator(
-                    mode="gauge+number+delta",
-                    value=predicted_vol,
-                    delta={"reference": current_vol, "relative": False, "valueformat": ".2f"},
-                    title={"text": f"Predicted Volatility - {symbol}", "font": {"size": 16}},
-                    gauge={
-                        "axis": {"range": [0, 10], "tickwidth": 1},
-                        "bar": {"color": COLORS["purple"]},
-                        "bgcolor": "white",
-                        "steps": [
-                            {"range": [0, 2], "color": "#E8F5E9"},
-                            {"range": [2, 5], "color": "#FFF3E0"},
-                            {"range": [5, 10], "color": "#FFEBEE"},
-                        ],
-                        "threshold": {"line": {"color": COLORS["red"], "width": 4}, "thickness": 0.75, "value": 5},
-                    },
-                )
-            )
-            fig.update_layout(height=250, margin={"l": 20, "r": 20, "t": 50, "b": 20}, paper_bgcolor=COLORS["bg"])
-            st.plotly_chart(fig, use_container_width=True)
-
             st.caption(f"Last updated: {timestamp}")
         else:
             st.warning(f"No prediction available for {symbol}")
@@ -146,11 +121,9 @@ def render():
         st.markdown("---")
 
         # Alerts Section
-        st.markdown("### ⚠️ Market Alerts")
+        st.markdown("### Market Alerts")
 
-        tab1, tab2, tab3, tab4 = st.tabs(
-            ["🔺 Price Spikes", "📊 Volume Spikes", "⚡ Trade Spikes", "⚖️ Buy/Sell Imbalance"]
-        )
+        tab1, tab2, tab3, tab4 = st.tabs(["Price Spikes", "Volume Spikes", "Trade Spikes", "Buy/Sell Imbalance"])
 
         with tab1:
             st.caption("Price changes > 2% in 1 minute")

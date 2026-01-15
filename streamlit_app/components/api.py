@@ -77,3 +77,7 @@ def get_trade_count_spikes(limit: int = 20) -> list[dict]:
 
 def get_buy_sell_imbalance(limit: int = 20) -> list[dict]:
     return _get("/api/v1/analytics/alerts/buy-sell-imbalance", {"limit": limit}) or []
+
+
+def get_recent_trades(symbol: str, limit: int = 20) -> list[dict]:
+    return _get("/api/v1/market/recent-trades", {"symbol": symbol, "limit": limit}) or []

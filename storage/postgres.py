@@ -1,8 +1,20 @@
-"""PostgreSQL storage module - data operations only."""
+"""PostgreSQL storage module for Binance market data pipeline.
+
+This module handles all PostgreSQL operations including:
+- OHLCV kline data (Open, High, Low, Close, Volume)
+- ML features for volatility prediction
+- Anomaly detection alerts
+- Job checkpoints and validation errors
+
+Terminology:
+- Kline: Binance term for OHLCV candlestick data in a time interval
+- OHLCV: Open, High, Low, Close, Volume - standard price format
+- VWAP: Volume Weighted Average Price
+"""
 
 import json
 from contextlib import contextmanager, suppress
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import psycopg2
@@ -23,14 +35,21 @@ from util.constant import (
     TRADE_FIELD,
 )
 from util.logging import get_logger
-from util.metrics import record_error, record_retry, track_latency
+from util.metric import record_error, record_retry, track_latency
 from util.retry import RetryConfig, retry_operation
 
 logger = get_logger(__name__)
 
 
 class Postgres:
-    """PostgreSQL database operations for crypto data pipeline."""
+    """PostgreSQL database operations for crypto data pipeline.
+
+    Manages connections and operations for:
+    - Kline data: 1-minute OHLCV aggregations and multi-timeframe views
+    - ML features: Time-series features for volatility prediction
+    - Alerts: Anomaly detection alerts (whale trades, price/volume spikes)
+    - Checkpoints: Job state tracking for fault tolerance
+    """
 
     def __init__(
         self,
@@ -136,7 +155,7 @@ class Postgres:
             self.pool.closeall()
             logger.info("PostgreSQL connection pool closed")
 
-    # ========== Merge Operations ==========
+    # Merge Operations
 
     def build_update_clause(self, field_list: list[str]) -> str:
         """Build UPDATE clause for MERGE operations."""
@@ -179,7 +198,7 @@ class Postgres:
         logger.info(f"Merged {count} alerts from staging to alerts")
         return count
 
-    # ========== Read Operations ==========
+    # Read Operations
 
     def query_by_range(
         self, table: str, symbol: str, start: datetime, end: datetime, column: str = "*", order: str = "timestamp ASC"
@@ -192,18 +211,16 @@ class Postgres:
         """
         return self.run(query, (symbol, start, end), fetch=True) or []
 
-    def get_candle(self, symbol: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
-        """Get OHLCV candles from trades_1m table."""
+    def get_kline(self, symbol: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
         return self.query_by_range("trades_1m", symbol, start, end, ", ".join(TRADE_FIELD))
 
-    def get_candle_agg(self, symbol: str, start: datetime, end: datetime, interval: str = "5m") -> list[dict[str, Any]]:
-        """Get candles from materialized views for different timeframes."""
+    def get_kline_agg(self, symbol: str, start: datetime, end: datetime, interval: str = "5m") -> list[dict[str, Any]]:
         if interval == "1m":
-            return self.get_candle(symbol, start, end)
+            return self.get_kline(symbol, start, end)
 
         table_map = {"5m": "trades_5m", "15m": "trades_15m", "1h": "trades_1h"}
         if interval not in table_map:
-            raise ValueError(f"Invalid interval: {interval}")
+            raise ValueError(f"Invalid interval: {interval}. Supported: 1m, 5m, 15m, 1h")
 
         column = "timestamp, symbol, open, high, low, close, volume, quote_volume, trade_count, buy_count, sell_count"
         return self.query_by_range(table_map[interval], symbol, start, end, column)
@@ -237,12 +254,11 @@ class Postgres:
             for r in (result or [])
         ]
 
-    # ========== ML Features ==========
+    # ML Features
 
     def get_ml_features_for_training(
         self, start: datetime, end: datetime, symbols: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        """Get ML features for model training."""
         base = "SELECT * FROM ml_features WHERE volatility_next_5m IS NOT NULL AND timestamp >= %s AND timestamp <= %s"
 
         if symbols:
@@ -252,12 +268,11 @@ class Postgres:
         return self.run(f"{base} ORDER BY timestamp", (start, end), fetch=True) or []
 
     def get_ml_features_latest(self, symbol: str) -> dict[str, Any] | None:
-        """Get latest ML features for a symbol."""
         query = "SELECT * FROM ml_features WHERE symbol = %s ORDER BY timestamp DESC LIMIT 1"
         result = self.run(query, (symbol,), fetch=True)
         return result[0] if result else None
 
-    # ========== Volatility Predictions ==========
+    # Volatility Predictions
 
     def get_latest_volatility_prediction(self, symbol: str) -> dict[str, Any] | None:
         """Get latest volatility prediction for a symbol."""
@@ -282,7 +297,7 @@ class Postgres:
         """
         return self.run(query, (symbol, start, end), fetch=True) or []
 
-    # ========== Job Checkpoints ==========
+    # Job Checkpoints
 
     def get_checkpoint(self, job_name: str) -> dict[str, Any] | None:
         """Get checkpoint for a job."""
@@ -309,7 +324,7 @@ class Postgres:
         logger.debug(f"Checkpoint deleted: {job_name}")
         return True
 
-    # ========== Cleanup ==========
+    # Cleanup
 
     def cleanup(self, table: str, retention_days: int, batch_size: int = 1000) -> int:
         """Delete old records from specified table in batches."""
@@ -353,7 +368,7 @@ class Postgres:
         logger.info(f"Cleanup all: {sum(results.values())} total records deleted")
         return results
 
-    # ========== Validation Errors ==========
+    # Validation Errors
 
     def write_validation_errors(
         self, source: str, records: list[dict[str, Any]], failed: list[list[dict[str, Any]]]
@@ -397,7 +412,7 @@ class Postgres:
             logger.error(f"Failed to write validation errors: {e}")
             raise
 
-    # ========== Aggregates Refresh ==========
+    # Aggregates Refresh
 
     def refresh_aggregates(self) -> None:
         """Manually refresh continuous aggregates if needed."""
@@ -452,7 +467,7 @@ def check_health(
             "port": port,
             "database": database,
             "attempt": attempt_count[0],
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now().isoformat(),
         }
 
     try:

@@ -1,4 +1,7 @@
+"""Reads aggregated trades, computes features, predicts next 5min volatility using LightGBM."""
+
 import signal
+
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,21 +25,31 @@ from util.constant import (
     PYSPARK_PYTHON,
 )
 from util.logging import get_logger
-from util.metrics import record_error, record_message_processed
-from util.shutdown import GracefulShutdown
+from util.metric import record_error, record_message_processed
+
+shutdown_requested = False
+signal_name = "Unknown"
+
+
+def request_shutdown(sig, frame):
+    """Handle shutdown signal."""
+    global shutdown_requested, signal_name
+    shutdown_requested = True
+    names = {2: "SIGINT", 15: "SIGTERM"}
+    signal_name = names.get(sig, f"Signal {sig}")
+
 
 logger = get_logger(__name__)
 
 JDBC_URL = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
-# Features used by the trained model (must match exactly with notebook)
 FEATURE_COLUMNS = [
     "return_1m",
     "volatility_15m",
     "volatility_30m",
     "volatility_60m",
-    "candle_range",
-    "candle_body",
+    "price_range_pct",
+    "price_body_pct",
     "volume_ratio_15m",
     "volume_ratio_60m",
     "buy_ratio",
@@ -92,16 +105,14 @@ SYMBOL_ENCODING: dict[str, int] = {
 
 
 class VolatilityPredictionJob:
-
     def __init__(self):
-        self.shutdown = GracefulShutdown(graceful_shutdown_timeout=15)
         self.spark: SparkSession | None = None
         self.pg: Postgres | None = None
         self.model: lgb.Booster | None = None
         self._max_ts: datetime | None = None
         self._records_processed: int = 0
-        signal.signal(signal.SIGTERM, lambda sig, _: self.shutdown.request_shutdown(sig))
-        signal.signal(signal.SIGINT, lambda sig, _: self.shutdown.request_shutdown(sig))
+        signal.signal(signal.SIGTERM, request_shutdown)
+        signal.signal(signal.SIGINT, request_shutdown)
 
     def load_model(self) -> bool:
         model_path = Path(MODEL_DIR) / MODEL_FILE
@@ -193,8 +204,8 @@ class VolatilityPredictionJob:
         features = features.withColumn("volatility_ratio", F.col("volatility_5m") / (F.col("volatility_30m") + 1e-8))
 
         features = features.withColumn(
-            "candle_range", ((F.col("high") - F.col("low")) / (F.col("close") + 1e-8)) * 100
-        ).withColumn("candle_body", (F.abs(F.col("close") - F.col("open")) / (F.col("close") + 1e-8)) * 100)
+            "price_range_pct", ((F.col("high") - F.col("low")) / (F.col("close") + 1e-8)) * 100
+        ).withColumn("price_body_pct", (F.abs(F.col("close") - F.col("open")) / (F.col("close") + 1e-8)) * 100)
 
         features = (
             features.withColumn("avg_volume_60", F.avg("volume").over(w_60))
@@ -249,7 +260,6 @@ class VolatilityPredictionJob:
             "volume",
             "quote_volume",
             "trade_count",
-            # Features for database (all computed features)
             "return_1m",
             "return_5m",
             "return_15m",
@@ -258,8 +268,8 @@ class VolatilityPredictionJob:
             "volatility_30m",
             "volatility_60m",
             "volatility_ratio",
-            "candle_range",
-            "candle_body",
+            "price_range_pct",
+            "price_body_pct",
             "volume_ratio_15m",
             "volume_ratio_60m",
             "buy_ratio",
@@ -276,11 +286,9 @@ class VolatilityPredictionJob:
             logger.warning("Model not loaded, skipping predictions")
             return features_df.withColumn("predicted_volatility_5m", F.lit(None).cast(DoubleType()))
 
-        # Broadcast model once to all executors
         broadcasted_model = self.spark.sparkContext.broadcast(self.model)
         feature_cols = FEATURE_COLUMNS
 
-        # UDF that uses broadcasted model - predicts row by row
         predict_udf = F.udf(
             lambda *features: float(broadcasted_model.value.predict([[*features]])[0]),
             DoubleType(),
@@ -308,8 +316,8 @@ class VolatilityPredictionJob:
             "volatility_30m",
             "volatility_60m",
             "volatility_ratio",
-            "candle_range",
-            "candle_body",
+            "price_range_pct",
+            "price_body_pct",
             "volume_ratio_15m",
             "volume_ratio_60m",
             "buy_ratio",
@@ -335,8 +343,6 @@ class VolatilityPredictionJob:
             logger.info("No volatility predictions to write")
             return 0
 
-        # Select and rename columns to match table schema
-        # Table schema: timestamp, symbol, current_volatility, predicted_volatility_5m
         predictions_df = df.select(
             F.col("timestamp"),
             F.col("symbol"),
@@ -344,7 +350,6 @@ class VolatilityPredictionJob:
             F.col("predicted_volatility_5m"),
         )
 
-        # Use provided count if available (from cached df), otherwise count
         record_count = count if count is not None else predictions_df.count()
 
         predictions_df.write.format("jdbc").option("url", JDBC_URL).option("dbtable", "volatility_predictions").option(
@@ -397,7 +402,6 @@ class VolatilityPredictionJob:
 
             trades = self.read_trades(start_time)
 
-            # Cache trades since we use it multiple times
             trades = trades.cache()
             row_count = trades.count()
             logger.info(f"Read {row_count} rows from trades_1m")
@@ -407,17 +411,15 @@ class VolatilityPredictionJob:
                 trades.unpersist()
                 return
 
-            # Track max timestamp for checkpoint
             max_ts_row = trades.agg(F.max("timestamp").alias("max_ts")).collect()[0]
             self._max_ts = max_ts_row["max_ts"]
             self._records_processed = row_count
 
             features = self.compute_features(trades)
-            trades.unpersist()  # Done with trades, free memory
+            trades.unpersist()
 
-            # Cache features since we use it multiple times (write_features, predict, write_predictions)
             features = features.cache()
-            feature_count = features.count()  # Single count, triggers cache
+            feature_count = features.count()
             logger.info(f"Computed {feature_count} feature rows")
 
             written_features = self.write_features(features, count=feature_count)
@@ -443,7 +445,6 @@ class VolatilityPredictionJob:
                     f"Feature computation completed: {written_features} features (no model, checkpoint not updated)"
                 )
 
-            # Unpersist features after done
             features.unpersist()
 
         except Exception as e:

@@ -9,7 +9,7 @@ sys.path.insert(0, "/app")
 
 from components.api import get_market_summary, get_realtime_tickers, get_top_by_trades, get_top_by_volume
 
-st.set_page_config(page_title="Market Overview", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Market Overview", layout="wide")
 
 COLORS = {
     "blue": "#1976D2",
@@ -76,7 +76,7 @@ def render():
         top_vol = get_top_by_volume(5)
         top_trades = get_top_by_trades(5)
 
-        st.markdown("## 📈 Market Overview")
+        st.markdown("## Market Overview")
         st.caption("Real-time cryptocurrency market data • Auto-refresh every 5s")
 
         st.markdown("---")

@@ -1,4 +1,4 @@
-"""Trade Aggregation Job - 1-minute OHLCV from trades."""
+"""Spark job - consumes raw trades from Kafka, outputs 1-minute trade aggregates to PostgreSQL/Redis."""
 
 import signal
 from typing import Any
@@ -27,7 +27,7 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.types import DoubleType, TimestampType
 
-from processing.validators.aggregation_validator import validate_aggregation_records
+from validator.aggregation_validator import validate_aggregation_records
 from storage.postgres import Postgres
 from storage.redis import Redis
 from util.constant import (
@@ -46,8 +46,19 @@ from util.constant import (
     TRADE_FIELD,
 )
 from util.logging import get_logger
-from util.metrics import record_error, record_message_processed
-from util.shutdown import GracefulShutdown
+from util.metric import record_error, record_message_processed
+
+shutdown_requested = False
+signal_name = "Unknown"
+
+
+def request_shutdown(sig, frame):
+    """Handle shutdown signal."""
+    global shutdown_requested, signal_name
+    shutdown_requested = True
+    names = {2: "SIGINT", 15: "SIGTERM"}
+    signal_name = names.get(sig, f"Signal {sig}")
+
 
 logger = get_logger(__name__)
 
@@ -58,14 +69,13 @@ class TradeAggJob:
     """1-minute OHLCV aggregation from trades."""
 
     def __init__(self):
-        self.shutdown = GracefulShutdown(graceful_shutdown_timeout=15)
         self.spark: SparkSession | None = None
         self.query: Any = None
         self.redis: Redis | None = None
         self.pg: Postgres | None = None
         self.schema_cache = ""
-        signal.signal(signal.SIGTERM, lambda sig, _: self.shutdown.request_shutdown(sig))
-        signal.signal(signal.SIGINT, lambda sig, _: self.shutdown.request_shutdown(sig))
+        signal.signal(signal.SIGTERM, request_shutdown)
+        signal.signal(signal.SIGINT, request_shutdown)
 
     def get_schema(self) -> str:
         if self.schema_cache:
@@ -136,9 +146,7 @@ class TradeAggJob:
             "dbtable", "staging_trades_1m"
         ).option("user", POSTGRES_USER).option("password", POSTGRES_PASSWORD).option(
             "driver", "org.postgresql.Driver"
-        ).mode(
-            "overwrite"
-        ).save()
+        ).mode("overwrite").save()
 
         if self.pg:
             self.pg.merge_staging_to_trade()
@@ -160,12 +168,12 @@ class TradeAggJob:
         return self.redis.write_agg_batch(redis_records)
 
     def write_batch(self, batch_df: DataFrame, batch_id: int) -> None:
-        if self.shutdown.shutdown_requested:
+        if shutdown_requested:
+            logger.info(f"Batch {batch_id}: Shutdown requested ({signal_name}), skipping")
             raise InterruptedError("Shutdown requested")
         if batch_df.isEmpty():
             return
 
-        # Validate records
         records = [row.asDict() for row in batch_df.collect()]
         valid, invalid, _ = validate_aggregation_records(records, None)
 
@@ -173,11 +181,9 @@ class TradeAggJob:
             logger.warning(f"Batch {batch_id}: No valid records to write")
             return
 
-        # Filter DataFrame to only valid records (by symbol+timestamp)
         valid_keys = {(r["symbol"], r["timestamp"]) for r in valid}
         valid_df = batch_df.filter(expr("concat(symbol, '|', timestamp)").isin([f"{k[0]}|{k[1]}" for k in valid_keys]))
 
-        # 1. Write to PostgreSQL via staging + MERGE (primary storage)
         try:
             self.write_to_postgres(valid_df)
             logger.info(f"Batch {batch_id}: Wrote {len(valid)} records to PostgreSQL")
@@ -185,7 +191,6 @@ class TradeAggJob:
             logger.error(f"Batch {batch_id}: Failed to write to PostgreSQL: {e}")
             record_error("spark_trade_aggregation", "postgres_write_error", "error")
 
-        # 2. Write to Redis cache (for real-time queries)
         try:
             redis_count = self.write_to_redis(valid)
             logger.info(f"Batch {batch_id}: Wrote {redis_count} records to Redis")
@@ -193,7 +198,6 @@ class TradeAggJob:
             logger.error(f"Batch {batch_id}: Failed to write to Redis: {e}")
             record_error("spark_trade_aggregation", "redis_write_error", "error")
 
-        # Record metrics
         for _ in valid:
             record_message_processed("spark_trade_aggregation", "processed_aggregations", "success")
 
