@@ -47,7 +47,7 @@ TOPIC_TRADE = "raw_trades"
 TOPIC_TICKER = "raw_tickers"
 
 # POSTGRESQL
-POSTGRES_HOST = "postgres-data"
+POSTGRES_HOST = "postgres"
 POSTGRES_PORT = 5432
 POSTGRES_USER = "crypto"
 POSTGRES_PASSWORD = "crypto"
@@ -58,33 +58,8 @@ POSTGRES_MAX_CONN = 10
 POSTGRES_MAX_RETRY = 3
 POSTGRES_RETRY_DELAY = 1.0
 
-TRADE_FIELD = [
-    "timestamp",
-    "symbol",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "quote_volume",
-    "trade_count",
-    "buy_count",
-    "sell_count",
-    "volume_weighted_avg_price",
-    "price_change_percent",
-    "buy_sell_ratio",
-    "average_price",
-    "price_volatility",
-]
-
-ALERT_FIELD = [
-    "timestamp",
-    "symbol",
-    "alert_type",
-    "severity",
-    "message",
-    "metadata",
-]
+# Note: TRADE_FIELD and ALERT_FIELD moved to model/market.py
+# Use Kline.db_fields() and Alert.db_fields() instead
 
 # BINANCE
 BINANCE_WS_URL = "wss://stream.binance.com:9443/stream"
@@ -156,7 +131,7 @@ MAX_RUNTIME = 180
 LOOKBACK_HOUR = 2
 
 # MODEL
-MODEL_DIR = "model"
+MODEL_DIR = "ml/model"
 MODEL_FILE = "volatility_predictor.json"
 
 # ML model features for volatility prediction

@@ -1,13 +1,13 @@
 """Reads aggregated trades, detects anomalies - volume spikes, price spikes, trade count spikes, buy/sell imbalance."""
 
-import json
 import signal
 from datetime import datetime, timedelta
 
+from loguru import logger
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from validator.anomaly_validator import validate_alert_records
+from schema.market import Alert
 from storage.postgres import Postgres
 from storage.redis import Redis
 from util.constant import (
@@ -27,8 +27,8 @@ from util.constant import (
     TRADE_COUNT_MULTIPLIER,
     VOLUME_THRESHOLD,
 )
-from util.logging import get_logger
 from util.metric import record_error, record_message_processed
+from processing.validator.anomaly_validator import validate_alert_records
 
 shutdown_requested = False
 signal_name = "Unknown"
@@ -41,8 +41,6 @@ def request_shutdown(sig, frame):
     names = {2: "SIGINT", 15: "SIGTERM"}
     signal_name = names.get(sig, f"Signal {sig}")
 
-
-logger = get_logger(__name__)
 
 JDBC_URL = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
@@ -131,9 +129,7 @@ class AnomalyJob:
                 F.col("buy_sell_ratio").isNotNull()
                 & ((F.col("buy_sell_ratio") < BUY_RATIO_LOW) | (F.col("buy_sell_ratio") > BUY_RATIO_HIGH))
             )
-            .withColumn(
-                "pressure", F.when(F.col("buy_sell_ratio") < BUY_RATIO_LOW, "More Sell").otherwise("More Buy")
-            )
+            .withColumn("pressure", F.when(F.col("buy_sell_ratio") < BUY_RATIO_LOW, "More Sell").otherwise("More Buy"))
             .select(
                 F.col("timestamp"),
                 F.col("symbol"),
@@ -157,19 +153,8 @@ class AnomalyJob:
         if not records:
             return 0
 
-        pg_records = []
-        for r in records:
-            pg_records.append(
-                {
-                    "timestamp": r["timestamp"],
-                    "symbol": r["symbol"],
-                    "alert_type": r["alert_type"],
-                    "severity": r["alert_level"],
-                    "message": f"{r['alert_type']}: {r['symbol']}",
-                    "metadata": r["details"],
-                }
-            )
-
+        # Use Alert model for consistent field mapping
+        pg_records = [Alert.model_validate(r).to_pg_dict() for r in records]
         staging_df = self.spark.createDataFrame(pg_records)
 
         staging_df.write.format("jdbc").option("url", JDBC_URL).option("dbtable", "staging_alerts").option(
@@ -179,30 +164,6 @@ class AnomalyJob:
         if self.pg:
             return self.pg.merge_staging_to_alert()
         return 0
-
-    def write_alerts_to_redis(self, records: list) -> None:
-        if not self.redis or not records:
-            return
-
-        redis_records = []
-        for r in records:
-            redis_records.append(
-                {
-                    "alert_id": r["alert_id"],
-                    "timestamp": (
-                        r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else str(r["timestamp"])
-                    ),
-                    "symbol": r["symbol"],
-                    "alert_type": r["alert_type"],
-                    "alert_level": r["alert_level"],
-                    "created_at": (
-                        r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"])
-                    ),
-                    "details": json.loads(r["details"]) if isinstance(r["details"], str) else r["details"],
-                }
-            )
-
-        self.redis.write_alert_batch(redis_records)
 
     def run(self) -> None:
         logger.info("Starting AnomalyJob")
@@ -256,35 +217,28 @@ class AnomalyJob:
             max_ts = None
             batch = []
 
-            for row in alerts_df.toLocalIterator():
-                batch.append(row.asDict())
-
-                if len(batch) >= BATCH_SIZE:
-                    valid, invalid, _ = validate_alert_records(batch, self.pg)
-
-                    if valid:
-                        self.write_alerts_to_postgres(valid)
-                        self.write_alerts_to_redis(valid)
-                        batch_max_ts = max(r["timestamp"] for r in valid)
-                        max_ts = batch_max_ts if max_ts is None else max(max_ts, batch_max_ts)
-                        total_valid += len(valid)
-
-                    total_invalid += len(invalid)
-                    logger.info(f"Batch processed: {len(valid)} valid, {len(invalid)} invalid")
-                    batch = []
-
-            if batch:
-                valid, invalid, _ = validate_alert_records(batch, self.pg)
-
+            def process_batch(records: list, is_final: bool = False) -> None:
+                nonlocal total_valid, total_invalid, max_ts
+                if not records:
+                    return
+                valid, invalid, _ = validate_alert_records(records, self.pg)
                 if valid:
                     self.write_alerts_to_postgres(valid)
-                    self.write_alerts_to_redis(valid)
+                    self.redis.save_alerts(valid)
                     batch_max_ts = max(r["timestamp"] for r in valid)
                     max_ts = batch_max_ts if max_ts is None else max(max_ts, batch_max_ts)
                     total_valid += len(valid)
-
                 total_invalid += len(invalid)
-                logger.info(f"Final batch processed: {len(valid)} valid, {len(invalid)} invalid")
+                label = "Final batch" if is_final else "Batch"
+                logger.info(f"{label} processed: {len(valid)} valid, {len(invalid)} invalid")
+
+            for row in alerts_df.toLocalIterator():
+                batch.append(row.asDict())
+                if len(batch) >= BATCH_SIZE:
+                    process_batch(batch)
+                    batch = []
+
+            process_batch(batch, is_final=True)
 
             alerts_df.unpersist()
 

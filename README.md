@@ -55,9 +55,6 @@ For detailed architecture and design decisions, see [Technical Documentation](do
 │   ├── redis.py                   # Redis cache operations
 │   └── query_router.py            # Intelligent tier selection (Redis/Postgres)
 │
-├── validator/                     # Data quality validation
-│   ├── aggregation_validator.py   # Validate aggregation outputs
-│   └── anomaly_validator.py       # Validate anomaly detection outputs
 │
 ├── util/                          # Shared utilities
 │   ├── constant.py                # **All configuration constants** ⚙️
@@ -87,13 +84,12 @@ For detailed architecture and design decisions, see [Technical Documentation](do
 │   ├── download_binance_data.py   # Download historical data from Binance
 │   └── gen.py                     # Data generation utilities
 │
-├── notebook/                      # Jupyter notebooks
-│   └── train_volatility_predictor.ipynb # ML model training
-│
-├── model/                         # ML model artifacts
-│   └── volatility_predictor.json  # Trained volatility prediction model
+├── ml/                            # Machine learning
+│   ├── volatility_predictor.json  # Trained volatility prediction model
+│   └── train_volatility_predictor.ipynb # ML model training notebook
 │
 ├── docs/                          # Documentation
+│   ├── img/                       # Screenshots and images
 │   ├── SETUP.md                   # Setup and configuration guide
 │   ├── API.md                     # Complete API reference
 │   └── TECHNICAL.md               # Architecture and technical details
@@ -187,7 +183,7 @@ Access metrics monitoring at http://localhost:3000:
 - Infrastructure resource usage
 - Kafka, Redis, PostgreSQL metrics
 
-![Dashboard Preview](img/dashboard1.png)
+![Dashboard Preview](docs/img/dashboard1.png)
 
 For detailed documentation, see [Technical Documentation](docs/TECHNICAL.md#monitoring-and-dashboards).
 

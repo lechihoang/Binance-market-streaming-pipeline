@@ -6,21 +6,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ curl libpq-dev libsnappy-dev libsnappy1v5 librdkafka-dev \
     openjdk-21-jre-headless procps && rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
+# Auto-detect Java path for both ARM64 and AMD64
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-${TARGETARCH:-$(dpkg --print-architecture)}
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 ENV _JAVA_OPTIONS="--add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED"
 
-COPY docker/airflow/requirements.txt ./requirements.txt
+COPY docker/requirements.airflow.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-COPY api/ ./api/
 COPY ingestion/ ./ingestion/
 COPY storage/ ./storage/
 COPY processing/ ./processing/
 COPY util/ ./util/
-COPY model/ ./model/
-COPY validator/ ./validator/
+COPY ml/ ./ml/
+COPY schema/ ./schema/
 
 ENV AIRFLOW_HOME=/opt/airflow
 ENV PYTHONPATH=/app:/opt/airflow

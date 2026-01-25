@@ -8,14 +8,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY docker/api/requirements.txt ./requirements.txt
+COPY docker/requirements.api.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY api/ ./api/
 COPY storage/ ./storage/
 COPY util/ ./util/
 COPY ml/ ./ml/
-COPY model/ ./model/
+COPY schema/ ./schema/
 
 ENV PYTHONPATH=/app
 

@@ -8,9 +8,9 @@ from great_expectations import expectations as gxe
 
 from storage.postgres import Postgres
 from util.constant import VALID_ALERT_LEVEL, VALID_ALERT_TYPE
-from util.logging import get_logger
+from loguru import logger
 
-logger = get_logger(__name__)
+# logger = get_logger(__name__)
 
 
 def build_anomaly_expectations() -> list[gxe.Expectation]:

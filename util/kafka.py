@@ -1,8 +1,8 @@
 from typing import Any
 
-from util.logging import get_logger
+from loguru import logger
 
-logger = get_logger(__name__)
+# logger = get_logger(__name__)
 
 
 class KafkaProducer:

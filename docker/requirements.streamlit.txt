@@ -1,0 +1,10 @@
+# Streamlit
+streamlit>=1.40.0
+plotly>=5.24.0
+
+# Data
+pandas>=2.0.0
+requests>=2.32.0
+
+# Logging
+loguru

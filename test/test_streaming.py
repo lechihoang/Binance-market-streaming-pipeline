@@ -16,10 +16,10 @@ from great_expectations import expectations as gxe
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
-from validator.aggregation_validator import build_aggregation_expectations
-from validator.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
-from validator.anomaly_validator import build_anomaly_expectations
-from validator.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
+from processing.validator.aggregation_validator import build_aggregation_expectations
+from processing.validator.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
+from processing.validator.anomaly_validator import build_anomaly_expectations
+from processing.validator.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
 
 
 def calculate_ohlcv(trades: list[dict[str, Any]]) -> dict[str, float]:

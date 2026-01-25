@@ -15,7 +15,7 @@ Deep dive into the architecture, design decisions, and technical implementation 
 
 ## Architecture Overview
 
-![System Architecture](../img/system_architechture.png)
+![System Architecture](./img/system_architechture.png)
 
 The system follows an **event-driven architecture** with the following layers:
 
@@ -476,7 +476,7 @@ See [API.md](API.md) for complete endpoint documentation.
 **Schedule:** Manual trigger
 **Purpose:** Manage WebSocket connection lifecycle
 
-![Binance Connector DAG](../img/dag1.png)
+![Binance Connector DAG](./img/dag1.png)
 
 **Tasks:**
 
@@ -522,7 +522,7 @@ dag = DAG(
 **Schedule:** Every 5 minutes
 **Purpose:** Execute Spark streaming jobs
 
-![Streaming Processing DAG](../img/dag2.png)
+![Streaming Processing DAG](./img/dag2.png)
 
 **Tasks:**
 
@@ -534,19 +534,19 @@ dag = DAG(
 2. **trade_aggregation**
    - Type: BashOperator
    - Spark job: Trade → OHLCV aggregation
-   - Command: `spark-submit processing/trade_aggregation_job.py`
+   - Command: `spark-submit processing/job/trade_aggregation_job.py`
    - Duration: ~2-3 minutes
 
 3. **anomaly_detection**
    - Type: BashOperator
    - Spark job: Anomaly detection
-   - Command: `spark-submit processing/anomaly_detection_job.py`
+   - Command: `spark-submit processing/job/anomaly_detection_job.py`
    - Duration: ~1-2 minutes
 
 4. **volatility_prediction**
    - Type: BashOperator
    - Spark job: ML volatility forecasting
-   - Command: `spark-submit processing/volatility_prediction_job.py`
+   - Command: `spark-submit processing/job/volatility_prediction_job.py`
    - Duration: ~2-3 minutes
 
 5. **cleanup_streaming**
@@ -603,7 +603,7 @@ The project uses **two separate visualization systems**:
 
 **Technology:** Built with Streamlit for rapid prototyping and interactive data apps.
 
-![Streamlit Dashboard Preview](../img/dashboard1.png)
+![Streamlit Dashboard Preview](./img/dashboard1.png)
 
 ---
 
@@ -626,7 +626,7 @@ The project uses **two separate visualization systems**:
 - PostgreSQL query performance
 - Container resource usage (CPU, memory, disk)
 
-![System Health Dashboard](../img/dashboard4.png)
+![System Health Dashboard](./img/dashboard4.png)
 
 ### Prometheus Metrics
 

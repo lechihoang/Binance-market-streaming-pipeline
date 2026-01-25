@@ -1,11 +1,11 @@
 """Reads aggregated trades, computes features, predicts next 5min volatility using LightGBM."""
 
 import signal
-
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import lightgbm as lgb
+from loguru import logger
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType, IntegerType
@@ -24,7 +24,6 @@ from util.constant import (
     POSTGRES_USER,
     PYSPARK_PYTHON,
 )
-from util.logging import get_logger
 from util.metric import record_error, record_message_processed
 
 shutdown_requested = False
@@ -38,8 +37,6 @@ def request_shutdown(sig, frame):
     names = {2: "SIGINT", 15: "SIGTERM"}
     signal_name = names.get(sig, f"Signal {sig}")
 
-
-logger = get_logger(__name__)
 
 JDBC_URL = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 

@@ -8,9 +8,11 @@ import websockets
 
 from util.constant import BINANCE_WS_URL, DEFAULT_SYMBOL, KAFKA_SERVER, SCHEMA_REGISTRY_URL
 from util.kafka import KafkaProducer
-from util.logging import get_logger, setup_logging
 
-logger = get_logger(__name__)
+import sys
+from loguru import logger
+
+# logger = get_logger(__name__)
 
 
 class BinanceConnector:
@@ -94,7 +96,8 @@ class BinanceConnector:
 
 
 def main():
-    setup_logging(level="INFO", json_output=True)
+    logger.remove()
+    logger.add(sys.stderr, level="INFO", serialize=True)
     logger.info("Starting Binance Connector...")
     asyncio.run(BinanceConnector().run())
 

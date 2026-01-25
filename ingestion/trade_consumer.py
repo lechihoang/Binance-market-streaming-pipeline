@@ -9,9 +9,11 @@ from confluent_kafka.serialization import MessageField, SerializationContext
 
 from storage.redis import Redis
 from util.constant import KAFKA_SERVER, REDIS_HOST, REDIS_PORT, SCHEMA_REGISTRY_URL
-from util.logging import get_logger, setup_logging
 
-logger = get_logger(__name__)
+import sys
+from loguru import logger
+
+# logger = get_logger(__name__)
 
 
 class TradeConsumer:
@@ -42,18 +44,8 @@ class TradeConsumer:
                 continue
 
             data = self.deserializer(msg.value(), ctx)
-
-            # Transform trade data for Redis storage
-            trade = {
-                "symbol": data["symbol"],
-                "price": str(data["price"]),
-                "quantity": str(data["quantity"]),
-                "timestamp": data["trade_time"],
-                "trade_id": data["trade_id"],
-                "side": "SELL" if data["is_buyer_maker"] else "BUY",
-            }
-
-            self.redis.write_trade(data["symbol"], trade)
+            # Trade model handles field mapping (trade_time -> timestamp, is_buyer_maker -> side)
+            self.redis.write_trade(data["symbol"], data)
 
         self.consumer.close()
         self.redis.close()
@@ -63,7 +55,8 @@ class TradeConsumer:
 
 
 def main():
-    setup_logging(level="INFO", json_output=True)
+    logger.remove()
+    logger.add(sys.stderr, level="INFO", serialize=True)
     c = TradeConsumer()
     signal.signal(signal.SIGTERM, lambda *_: c.stop())
     signal.signal(signal.SIGINT, lambda *_: c.stop())

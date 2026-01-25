@@ -9,9 +9,10 @@ from confluent_kafka.serialization import MessageField, SerializationContext
 
 from storage.redis import Redis
 from util.constant import KAFKA_SERVER, REDIS_HOST, REDIS_PORT, SCHEMA_REGISTRY_URL
-from util.logging import get_logger, setup_logging
+import sys
+from loguru import logger
 
-logger = get_logger(__name__)
+# logger = get_logger(__name__)
 
 
 class TickerConsumer:
@@ -52,7 +53,8 @@ class TickerConsumer:
 
 
 def main():
-    setup_logging(level="INFO")
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
     c = TickerConsumer()
     signal.signal(signal.SIGTERM, lambda *_: c.stop())
     signal.signal(signal.SIGINT, lambda *_: c.stop())

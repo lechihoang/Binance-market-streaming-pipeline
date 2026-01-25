@@ -11,10 +11,10 @@ from great_expectations import expectations as gxe
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from validator.aggregation_validator import build_aggregation_expectations
-from validator.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
-from validator.anomaly_validator import build_anomaly_expectations
-from validator.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
+from processing.validator.aggregation_validator import build_aggregation_expectations
+from processing.validator.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
+from processing.validator.anomaly_validator import build_anomaly_expectations
+from processing.validator.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
 from storage.postgres import Postgres
 from storage.postgres import check_health as check_postgres_health
 from storage.query_router import Router

@@ -1,5 +1,6 @@
 import json as json_module
 import os
+import sys
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -46,9 +47,9 @@ from util.constant import (
     VALID_INTERVAL,
     VALID_TRADE_COUNT_INTERVAL,
 )
-from util.logging import get_logger
+from loguru import logger
 
-logger = get_logger(__name__)
+# logger = get_logger(__name__)
 
 ALERT_SYMBOLS = DEFAULT_SYMBOL
 
@@ -133,6 +134,7 @@ def custom_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded)
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown."""
     app.state.start_time = time.time()
+    logger.add(sys.stderr, level="INFO", serialize=True)
     yield
 
 
@@ -277,42 +279,6 @@ def get_ticker_storage() -> RedisStorage:
         port=int(os.getenv("REDIS_PORT", "6379")),
         db=int(os.getenv("REDIS_DB", "0")),
         ttl_seconds=int(os.getenv("TICKER_TTL_SECONDS", "60")),
-    )
-
-
-OPTIONAL_FIELDS = {"trade_count", "quote_volume"}
-
-
-def is_ticker_complete(data: dict) -> bool:
-    """Check if ticker has all optional fields present and valid."""
-    for field in OPTIONAL_FIELDS:
-        if field not in data:
-            return False
-        value = data[field]
-        if value is None or value == "" or value == "0":
-            return False
-    return True
-
-
-def format_ticker_response(data: dict) -> TickerDataResponse:
-    """Format ticker data to API response model."""
-    updated_at = data.get("updated_at", 0)
-    if not updated_at or updated_at == 0:
-        updated_at = int(time.time() * 1000)
-
-    return TickerDataResponse(
-        symbol=data.get("symbol", ""),
-        last_price=str(data.get("last_price", "0")),
-        price_change=str(data.get("price_change", "0")),
-        price_change_pct=str(data.get("price_change_pct", "0")),
-        open=str(data.get("open", "0")),
-        high=str(data.get("high", "0")),
-        low=str(data.get("low", "0")),
-        volume=str(data.get("volume", "0")),
-        quote_volume=str(data.get("quote_volume", "0")),
-        trade_count=int(data.get("trade_count", 0)),
-        updated_at=int(updated_at),
-        complete=is_ticker_complete(data),
     )
 
 
@@ -525,7 +491,7 @@ async def get_all_realtime_tickers(
     start_time = time.time()
 
     tickers_data = storage.get_ticker_all()
-    tickers = [format_ticker_response(data) for data in tickers_data]
+    tickers = [TickerDataResponse(**data) for data in tickers_data]
 
     response_time_ms = (time.time() - start_time) * 1000
     response.headers["X-Response-Time-Ms"] = f"{response_time_ms:.2f}"
@@ -637,19 +603,7 @@ async def get_recent_trades(
     results = []
     for trade in trades:
         try:
-            price = float(trade.get("price", 0))
-            quantity = float(trade.get("quantity", 0))
-
-            results.append(
-                RecentTradeResponse(
-                    trade_id=int(trade.get("trade_id", 0)),
-                    timestamp=int(trade.get("timestamp", 0)),
-                    price=price,
-                    quantity=quantity,
-                    side=trade.get("side", "BUY"),
-                    total=price * quantity,
-                )
-            )
+            results.append(RecentTradeResponse(**trade))
         except Exception as e:
             logger.warning(f"Failed to parse trade data for {symbol}: {e}")
             continue
@@ -665,25 +619,7 @@ async def get_recent_trades(
     "/api/v1/analytics/klines/{symbol}",
     response_model=list[KlineResponse],
     tags=["analytics"],
-    summary="Get OHLCV klines for a symbol",
-    description="""
-    Retrieve OHLCV (Open, High, Low, Close, Volume) kline data for a trading pair.
-
-    **Kline**: Binance term for candlestick/OHLCV data representing price action in a time interval.
-
-    **Metrics included:**
-    - OHLCV: Open, High, Low, Close, Volume (core price and volume data)
-    - VWAP: Volume Weighted Average Price
-    - Order flow: Buy/sell trade counts and ratios
-    - Quote volume: Total value traded (price × quantity sum)
-
-    **Supported timeframes:** 1m, 5m, 15m, 1h
-
-    **Data source routing:**
-    - Recent data (< cache window): Redis (sub-millisecond latency)
-    - Historical data: PostgreSQL (persistent storage)
-    - Check X-Data-Source response header to see which tier served the data
-    """,
+    summary="Get OHLCV klines for a symbol(Open, High, Low, Close, Volume)",
 )
 async def get_klines(
     symbol: str,

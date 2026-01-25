@@ -4,30 +4,16 @@ import signal
 from typing import Any
 
 import requests
+from loguru import logger
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.avro.functions import from_avro
-from pyspark.sql.functions import (
-    col,
-    count,
-    expr,
-    lit,
-    stddev,
-    struct,
-    when,
-    window,
-)
-from pyspark.sql.functions import (
-    max as spark_max,
-)
-from pyspark.sql.functions import (
-    min as spark_min,
-)
-from pyspark.sql.functions import (
-    sum as spark_sum,
-)
+from pyspark.sql.functions import col, count, expr, lit, stddev, struct, when, window
+from pyspark.sql.functions import max as spark_max
+from pyspark.sql.functions import min as spark_min
+from pyspark.sql.functions import sum as spark_sum
 from pyspark.sql.types import DoubleType, TimestampType
 
-from validator.aggregation_validator import validate_aggregation_records
+from schema.market import Kline
 from storage.postgres import Postgres
 from storage.redis import Redis
 from util.constant import (
@@ -43,10 +29,9 @@ from util.constant import (
     SCHEMA_REGISTRY_URL,
     SPARK_CHECKPOINT,
     TOPIC_TRADE,
-    TRADE_FIELD,
 )
-from util.logging import get_logger
 from util.metric import record_error, record_message_processed
+from processing.validator.aggregation_validator import validate_aggregation_records
 
 shutdown_requested = False
 signal_name = "Unknown"
@@ -59,8 +44,6 @@ def request_shutdown(sig, frame):
     names = {2: "SIGINT", 15: "SIGTERM"}
     signal_name = names.get(sig, f"Signal {sig}")
 
-
-logger = get_logger(__name__)
 
 JDBC_URL = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
@@ -142,7 +125,7 @@ class TradeAggJob:
         )
 
     def write_to_postgres(self, df: DataFrame) -> None:
-        df.select(*TRADE_FIELD).write.format("jdbc").option("url", JDBC_URL).option(
+        df.select(*Kline.db_fields()).write.format("jdbc").option("url", JDBC_URL).option(
             "dbtable", "staging_trades_1m"
         ).option("user", POSTGRES_USER).option("password", POSTGRES_PASSWORD).option(
             "driver", "org.postgresql.Driver"
@@ -156,21 +139,18 @@ class TradeAggJob:
         if not self.redis or not records:
             return 0
 
-        # Convert timestamp to ISO string for Redis
-        redis_records = []
-        for r in records:
-            record = dict(r)
-            ts = record.get("timestamp")
-            if ts and hasattr(ts, "isoformat"):
-                record["timestamp"] = ts.isoformat()
-            redis_records.append(record)
-
-        return self.redis.write_agg_batch(redis_records)
+        # Pass raw records directly - Redis class handles timestamp formatting
+        return self.redis.write_agg_batch(records)
 
     def write_batch(self, batch_df: DataFrame, batch_id: int) -> None:
         if shutdown_requested:
-            logger.info(f"Batch {batch_id}: Shutdown requested ({signal_name}), skipping")
-            raise InterruptedError("Shutdown requested")
+            logger.warning(
+                f"Batch {batch_id}: Shutdown requested ({signal_name}). Skipping batch processing to exit immediately."
+            )
+            if self.query and self.query.isActive:
+                self.query.stop()
+            return
+
         if batch_df.isEmpty():
             return
 

@@ -5,6 +5,11 @@
 -- Docker will auto-execute this file on first container startup.
 -- =============================================================================
 
+-- 0. Create Airflow database (for orchestration)
+-- This allows us to use a single PostgreSQL instance for both app data and Airflow
+SELECT 'CREATE DATABASE airflow'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'airflow')\gexec
+
 -- 1. TimescaleDB Extension
 CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 

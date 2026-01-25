@@ -5,11 +5,6 @@ This module handles all PostgreSQL operations including:
 - ML features for volatility prediction
 - Anomaly detection alerts
 - Job checkpoints and validation errors
-
-Terminology:
-- Kline: Binance term for OHLCV candlestick data in a time interval
-- OHLCV: Open, High, Low, Close, Volume - standard price format
-- VWAP: Volume Weighted Average Price
 """
 
 import json
@@ -18,11 +13,14 @@ from datetime import datetime
 from typing import Any
 
 import psycopg2
+from loguru import logger
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 
+from tenacity import Retrying, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
+
+from schema.market import Alert, Kline
 from util.constant import (
-    ALERT_FIELD,
     POSTGRES_DB,
     POSTGRES_HOST,
     POSTGRES_MAX_CONN,
@@ -32,24 +30,12 @@ from util.constant import (
     POSTGRES_PORT,
     POSTGRES_RETRY_DELAY,
     POSTGRES_USER,
-    TRADE_FIELD,
 )
-from util.logging import get_logger
 from util.metric import record_error, record_retry, track_latency
-from util.retry import RetryConfig, retry_operation
-
-logger = get_logger(__name__)
 
 
 class Postgres:
-    """PostgreSQL database operations for crypto data pipeline.
-
-    Manages connections and operations for:
-    - Kline data: 1-minute OHLCV aggregations and multi-timeframe views
-    - ML features: Time-series features for volatility prediction
-    - Alerts: Anomaly detection alerts (whale trades, price/volume spikes)
-    - Checkpoints: Job state tracking for fault tolerance
-    """
+    """PostgreSQL database operations for crypto data pipeline."""
 
     def __init__(
         self,
@@ -71,18 +57,33 @@ class Postgres:
         self.min_connections = min_connections
         self.max_connections = max_connections
 
-        self.retry = RetryConfig(
-            max_retries=max_retries,
-            initial_delay_ms=int(retry_delay * 1000),
-            max_delay_ms=60000,
-            multiplier=2.0,
-            jitter_factor=0.1,
-            retryable_exceptions=(psycopg2.OperationalError, psycopg2.InterfaceError),
-        )
+        self._max_retries = max_retries
+        self._initial_delay = retry_delay
+        self._retryable_exceptions = (psycopg2.OperationalError, psycopg2.InterfaceError)
 
         self.pool: pool.ThreadedConnectionPool | None = None
         self.connect()
         logger.info(f"Postgres initialized at {host}:{port}/{database}")
+
+    def _run_with_retry(self, operation, operation_name: str, on_retry=None):
+        """Execute operation with tenacity retry logic."""
+        retryer = Retrying(
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_exponential_jitter(initial=self._initial_delay, max=60, jitter=self._initial_delay * 0.1),
+            retry=retry_if_exception_type(self._retryable_exceptions),
+            before_sleep=lambda rs: (
+                logger.warning(
+                    f"{operation_name} failed (attempt {rs.attempt_number}/{self._max_retries}): "
+                    f"{rs.outcome.exception()}. Retrying..."
+                ),
+                on_retry(rs.attempt_number, 0, rs.outcome.exception()) if on_retry else None,
+            ),
+            reraise=True,
+        )
+        result = retryer(operation)
+        if retryer.statistics.get("attempt_number", 1) > 1:
+            logger.info(f"{operation_name} succeeded after {retryer.statistics['attempt_number']} attempts")
+        return result
 
     def connect(self) -> None:
         """Establish connection pool with retry."""
@@ -100,9 +101,8 @@ class Postgres:
             return self.pool
 
         try:
-            retry_operation(
+            self._run_with_retry(
                 create_pool,
-                config=self.retry,
                 operation_name="PostgreSQL connection",
                 on_retry=lambda a, d, e: record_retry("postgres", "connect", "failed"),
             )
@@ -137,9 +137,8 @@ class Postgres:
 
         try:
             with track_latency("postgres", "query"):
-                result = retry_operation(
+                result = self._run_with_retry(
                     do_run,
-                    config=self.retry,
                     operation_name="PostgreSQL query",
                     on_retry=lambda a, d, e: record_retry("postgres", "query", "failed"),
                 )
@@ -155,16 +154,15 @@ class Postgres:
             self.pool.closeall()
             logger.info("PostgreSQL connection pool closed")
 
+    # ==========================================
     # Merge Operations
-
-    def build_update_clause(self, field_list: list[str]) -> str:
-        """Build UPDATE clause for MERGE operations."""
-        return ", ".join(f"{f}=EXCLUDED.{f}" for f in field_list if f not in ("timestamp", "symbol"))
+    # ==========================================
 
     def merge_staging_to_trade(self) -> int:
         """Merge staging trades to main trades table."""
-        fields_str = ", ".join(TRADE_FIELD)
-        update_clause = self.build_update_clause(TRADE_FIELD)
+        fields = Kline.db_fields()
+        fields_str = ", ".join(fields)
+        update_clause = ", ".join(f"{f}=EXCLUDED.{f}" for f in fields if f not in ("timestamp", "symbol"))
 
         merge_sql = f"""
             INSERT INTO trades_1m ({fields_str})
@@ -182,7 +180,7 @@ class Postgres:
 
     def merge_staging_to_alert(self) -> int:
         """Merge staging alerts to main alerts table."""
-        fields_str = ", ".join(ALERT_FIELD)
+        fields_str = ", ".join(Alert.db_fields())
 
         merge_sql = f"""
             INSERT INTO alerts ({fields_str})
@@ -198,42 +196,66 @@ class Postgres:
         logger.info(f"Merged {count} alerts from staging to alerts")
         return count
 
-    # Read Operations
+    # ==========================================
+    # Kline Operations
+    # ==========================================
 
-    def query_by_range(
-        self, table: str, symbol: str, start: datetime, end: datetime, column: str = "*", order: str = "timestamp ASC"
-    ) -> list[dict[str, Any]]:
-        """Generic query by symbol and time range."""
+    def get_klines(self, symbol: str, start: datetime, end: datetime, interval: str = "1m") -> list[Kline]:
+        """Get klines for symbol in time range, returns Kline models."""
+        if interval == "1m":
+            table = "trades_1m"
+            columns = ", ".join(Kline.db_fields())
+        else:
+            table_map = {"5m": "trades_5m", "15m": "trades_15m", "1h": "trades_1h"}
+            if interval not in table_map:
+                raise ValueError(f"Invalid interval: {interval}. Supported: 1m, 5m, 15m, 1h")
+            table = table_map[interval]
+            columns = "timestamp, symbol, open, high, low, close, volume, quote_volume, trade_count, buy_count, sell_count"
+
         query = f"""
-            SELECT {column} FROM {table}
+            SELECT {columns} FROM {table}
             WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
-            ORDER BY {order}
+            ORDER BY timestamp ASC
         """
-        return self.run(query, (symbol, start, end), fetch=True) or []
+        rows = self.run(query, (symbol, start, end), fetch=True) or []
+        return [Kline.model_validate({**row, "interval": interval}) for row in rows]
 
     def get_kline(self, symbol: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
-        return self.query_by_range("trades_1m", symbol, start, end, ", ".join(TRADE_FIELD))
+        """Legacy: Get klines as dicts."""
+        return [k.model_dump() for k in self.get_klines(symbol, start, end, "1m")]
 
     def get_kline_agg(self, symbol: str, start: datetime, end: datetime, interval: str = "5m") -> list[dict[str, Any]]:
-        if interval == "1m":
-            return self.get_kline(symbol, start, end)
+        """Legacy: Get aggregated klines as dicts."""
+        return [k.model_dump() for k in self.get_klines(symbol, start, end, interval)]
 
-        table_map = {"5m": "trades_5m", "15m": "trades_15m", "1h": "trades_1h"}
-        if interval not in table_map:
-            raise ValueError(f"Invalid interval: {interval}. Supported: 1m, 5m, 15m, 1h")
+    # ==========================================
+    # Alert Operations
+    # ==========================================
 
-        column = "timestamp, symbol, open, high, low, close, volume, quote_volume, trade_count, buy_count, sell_count"
-        return self.query_by_range(table_map[interval], symbol, start, end, column)
+    def get_alerts(self, symbol: str, start: datetime, end: datetime) -> list[Alert]:
+        """Get alerts for symbol in time range, returns Alert models."""
+        query = f"""
+            SELECT {", ".join(Alert.db_fields())} FROM alerts
+            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+            ORDER BY timestamp DESC
+        """
+        rows = self.run(query, (symbol, start, end), fetch=True) or []
+        return [Alert.from_pg_dict(row) for row in rows]
 
     def get_alert(self, symbol: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
-        """Get alerts for a symbol in time range."""
-        result = self.query_by_range("alerts", symbol, start, end, ", ".join(ALERT_FIELD), "timestamp DESC")
-
-        for row in result:
-            if row.get("metadata") and isinstance(row["metadata"], str):
-                with suppress(json.JSONDecodeError):
-                    row["metadata"] = json.loads(row["metadata"])
+        """Legacy: Get alerts as dicts."""
+        alerts = self.get_alerts(symbol, start, end)
+        result = []
+        for alert in alerts:
+            d = alert.model_dump()
+            # Keep backward compatibility with 'metadata' key
+            d["metadata"] = d.pop("details", {})
+            result.append(d)
         return result
+
+    # ==========================================
+    # Trade Count
+    # ==========================================
 
     def get_trades_count(
         self, symbol: str, start: datetime, end: datetime, interval: str = "1h"
@@ -254,7 +276,9 @@ class Postgres:
             for r in (result or [])
         ]
 
+    # ==========================================
     # ML Features
+    # ==========================================
 
     def get_ml_features_for_training(
         self, start: datetime, end: datetime, symbols: list[str] | None = None
@@ -272,7 +296,9 @@ class Postgres:
         result = self.run(query, (symbol,), fetch=True)
         return result[0] if result else None
 
+    # ==========================================
     # Volatility Predictions
+    # ==========================================
 
     def get_latest_volatility_prediction(self, symbol: str) -> dict[str, Any] | None:
         """Get latest volatility prediction for a symbol."""
@@ -297,7 +323,9 @@ class Postgres:
         """
         return self.run(query, (symbol, start, end), fetch=True) or []
 
+    # ==========================================
     # Job Checkpoints
+    # ==========================================
 
     def get_checkpoint(self, job_name: str) -> dict[str, Any] | None:
         """Get checkpoint for a job."""
@@ -324,7 +352,9 @@ class Postgres:
         logger.debug(f"Checkpoint deleted: {job_name}")
         return True
 
+    # ==========================================
     # Cleanup
+    # ==========================================
 
     def cleanup(self, table: str, retention_days: int, batch_size: int = 1000) -> int:
         """Delete old records from specified table in batches."""
@@ -368,7 +398,9 @@ class Postgres:
         logger.info(f"Cleanup all: {sum(results.values())} total records deleted")
         return results
 
+    # ==========================================
     # Validation Errors
+    # ==========================================
 
     def write_validation_errors(
         self, source: str, records: list[dict[str, Any]], failed: list[list[dict[str, Any]]]
@@ -398,9 +430,8 @@ class Postgres:
 
         try:
             with track_latency("postgres", "write_validation_errors"):
-                result = retry_operation(
+                result = self._run_with_retry(
                     do_run,
-                    config=self.retry,
                     operation_name="PostgreSQL batch insert validation errors",
                     on_retry=lambda a, d, e: record_retry("postgres", "write_validation_errors", "failed"),
                 )
@@ -412,7 +443,9 @@ class Postgres:
             logger.error(f"Failed to write validation errors: {e}")
             raise
 
+    # ==========================================
     # Aggregates Refresh
+    # ==========================================
 
     def refresh_aggregates(self) -> None:
         """Manually refresh continuous aggregates if needed."""
@@ -441,14 +474,6 @@ def check_health(
     actual_retries = max_retries if max_retries is not None else retries
     actual_delay = retry_delay if retry_delay is not None else delay
 
-    retry_config = RetryConfig(
-        max_retries=actual_retries,
-        initial_delay_ms=int(actual_delay * 1000),
-        max_delay_ms=60000,
-        multiplier=2.0,
-        jitter_factor=0.1,
-    )
-
     attempt_count = [0]
 
     def do_check():
@@ -470,14 +495,22 @@ def check_health(
             "timestamp": datetime.now().isoformat(),
         }
 
+    retryer = Retrying(
+        stop=stop_after_attempt(actual_retries),
+        wait=wait_exponential_jitter(initial=actual_delay, max=60, jitter=actual_delay * 0.1),
+        before_sleep=lambda rs: (
+            logger.warning(
+                f"PostgreSQL health check failed (attempt {rs.attempt_number}/{actual_retries}): "
+                f"{rs.outcome.exception()}. Retrying..."
+            ),
+            record_retry("postgres_health", "check", "failed"),
+        ),
+        reraise=True,
+    )
+
     try:
         with track_latency("postgres_health", "check"):
-            result = retry_operation(
-                do_check,
-                config=retry_config,
-                operation_name="PostgreSQL health check",
-                on_retry=lambda a, d, e: record_retry("postgres_health", "check", "failed"),
-            )
+            result = retryer(do_check)
         logger.info(f"PostgreSQL health check passed: {host}:{port}/{database}")
         record_retry("postgres_health", "check", "success")
         return result
