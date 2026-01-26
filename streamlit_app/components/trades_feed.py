@@ -25,20 +25,19 @@ def render_trades_feed(trades: list[dict], height: int = 400, show_symbol: bool 
 
     df = pd.DataFrame(trades)
 
-    # Convert timestamp from milliseconds to datetime
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df["time"] = df["timestamp"].dt.strftime("%H:%M:%S")
+    # API returns ISO datetime string, convert to datetime for display
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
 
     # Format display columns
     display_cols = {
-        "time": st.column_config.TextColumn("Time", width="small"),
+        "timestamp": st.column_config.TimeColumn("Time", format="HH:mm:ss"),
         "price": st.column_config.NumberColumn("Price", format="$%.2f"),
         "quantity": st.column_config.NumberColumn("Qty", format="%.4f"),
         "total": st.column_config.NumberColumn("Total", format="$%.2f"),
         "side": st.column_config.TextColumn("Side", width="small"),
     }
 
-    cols_to_show = ["time", "price", "quantity", "total", "side"]
+    cols_to_show = ["timestamp", "price", "quantity", "total", "side"]
 
     if show_symbol and "symbol" in df.columns:
         cols_to_show.insert(1, "symbol")
@@ -63,7 +62,7 @@ def metric_card(label: str, value: str, color: str):
     """
     st.markdown(
         f"""
-    <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; border-left:4px solid {color};">
+    <div style="background:{COLORS["card"]}; padding:20px; border-radius:8px; border-left:4px solid {color};">
         <div style="color:#666; font-size:12px; margin-bottom:8px;">{label}</div>
         <div style="color:{color}; font-size:28px; font-weight:bold;">{value}</div>
     </div>

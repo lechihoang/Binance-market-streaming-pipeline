@@ -12,9 +12,6 @@ from util.constant import KAFKA_SERVER, REDIS_HOST, REDIS_PORT, SCHEMA_REGISTRY_
 import sys
 from loguru import logger
 
-# logger = get_logger(__name__)
-
-
 class TickerConsumer:
     """Consume ticker messages from Kafka and cache in Redis."""
 

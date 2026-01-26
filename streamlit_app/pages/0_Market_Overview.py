@@ -100,16 +100,17 @@ def render():
         if tickers:
             df = pd.DataFrame(tickers)
 
+            # API returns proper types (float/int), no conversion needed
             display_df = pd.DataFrame()
             display_df["Symbol"] = df["symbol"]
-            display_df["Price"] = df["last_price"].apply(lambda x: float(x) if x else 0)
-            display_df["Change"] = df["price_change"].apply(lambda x: float(x) if x else 0)
-            display_df["Change %"] = df["price_change_pct"].apply(lambda x: float(x) if x else 0)
-            display_df["High"] = df["high"].apply(lambda x: float(x) if x else 0)
-            display_df["Low"] = df["low"].apply(lambda x: float(x) if x else 0)
-            display_df["Volume"] = df["volume"].apply(lambda x: float(x) if x else 0)
-            display_df["Quote Vol"] = df["quote_volume"].apply(lambda x: float(x) if x else 0)
-            display_df["Trades"] = df["trade_count"].apply(lambda x: int(x) if x else 0)
+            display_df["Price"] = df["last_price"]
+            display_df["Change"] = df["price_change"]
+            display_df["Change %"] = df["price_change_pct"]
+            display_df["High"] = df["high"]
+            display_df["Low"] = df["low"]
+            display_df["Volume"] = df["volume"]
+            display_df["Quote Vol"] = df["quote_volume"]
+            display_df["Trades"] = df["trade_count"]
 
             st.dataframe(
                 display_df,
@@ -138,15 +139,13 @@ def render():
 
         with col_left:
             if top_trades:
-                for t in top_trades:
-                    t["trade_count"] = int(t.get("trade_count", 0))
+                # API returns proper types, no conversion needed
                 fig = horizontal_bar_chart(top_trades, "trade_count", "symbol", "Top 5 by Trade Count", COLORS["blue"])
                 st.plotly_chart(fig, use_container_width=True)
 
         with col_right:
             if top_vol:
-                for v in top_vol:
-                    v["quote_volume"] = float(v.get("quote_volume", 0))
+                # API returns proper types, no conversion needed
                 fig = horizontal_bar_chart(top_vol, "quote_volume", "symbol", "Top 5 by Quote Volume", COLORS["green"])
                 st.plotly_chart(fig, use_container_width=True)
 

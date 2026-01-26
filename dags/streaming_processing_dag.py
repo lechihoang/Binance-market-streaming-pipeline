@@ -36,6 +36,7 @@ default_args = {
 }
 
 spark_job_env = {
+    "TZ": "Asia/Ho_Chi_Minh",
     "KAFKA_BOOTSTRAP_SERVERS": KAFKA_SERVER,
     "REDIS_HOST": REDIS_HOST,
     "REDIS_PORT": str(REDIS_PORT),
@@ -86,7 +87,7 @@ with DAG(
     with TaskGroup("trade_aggregation") as trade_aggregation:
         run_trade_aggregation_job = BashOperator(
             task_id="run_trade_aggregation_job",
-            bash_command="PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/processing/job/trade_aggregation_job.py",
+            bash_command="PYTHONPATH=/opt/airflow:$PYTHONPATH /usr/local/bin/python /opt/airflow/processing/job/trade_aggregation_job.py",
             cwd="/opt/airflow",
             env=spark_job_env,
         )
@@ -94,7 +95,7 @@ with DAG(
     with TaskGroup("volatility_prediction") as volatility_prediction:
         run_volatility_prediction_job = BashOperator(
             task_id="run_volatility_prediction_job",
-            bash_command="PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/processing/job/volatility_prediction_job.py",
+            bash_command="PYTHONPATH=/opt/airflow:$PYTHONPATH /usr/local/bin/python /opt/airflow/processing/job/volatility_prediction_job.py",
             cwd="/opt/airflow",
             env=spark_job_env,
         )
@@ -102,7 +103,7 @@ with DAG(
     with TaskGroup("anomaly_detection") as anomaly_detection:
         run_anomaly_detection_job = BashOperator(
             task_id="run_anomaly_detection_job",
-            bash_command="PYTHONPATH=/app:$PYTHONPATH /usr/local/bin/python /app/processing/job/anomaly_detection_job.py",
+            bash_command="PYTHONPATH=/opt/airflow:$PYTHONPATH /usr/local/bin/python /opt/airflow/processing/job/anomaly_detection_job.py",
             cwd="/opt/airflow",
             env=spark_job_env,
         )

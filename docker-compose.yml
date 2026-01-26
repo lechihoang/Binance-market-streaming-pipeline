@@ -29,6 +29,7 @@ x-airflow-common: &airflow-common
     POSTGRES_USER: crypto
     POSTGRES_PASSWORD: crypto
     POSTGRES_DB: crypto_data
+    TZ: Asia/Ho_Chi_Minh
   volumes:
     - ./dags:/opt/airflow/dags
     - ./storage:/opt/airflow/storage
@@ -134,6 +135,7 @@ services:
       POSTGRES_USER: crypto
       POSTGRES_PASSWORD: crypto
       POSTGRES_DB: crypto_data
+      TZ: Asia/Ho_Chi_Minh
     ports:
       - "5433:5432"  # Host 5433 -> Container 5432 (tránh conflict với PostgreSQL local)
     volumes:
@@ -144,7 +146,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    command: postgres -c shared_buffers=128MB -c max_connections=100 -c shared_preload_libraries=timescaledb
+    command: postgres -c shared_buffers=128MB -c max_connections=100 -c shared_preload_libraries=timescaledb -c timezone=Asia/Ho_Chi_Minh
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
@@ -172,6 +174,7 @@ services:
       POSTGRES_DATA_PASSWORD: crypto
       POSTGRES_DATA_DB: crypto_data
       MODEL_DIR: /app/ml/model
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./api:/app/api
       - ./storage:/app/storage
@@ -204,6 +207,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       LOG_LEVEL: INFO
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./ingestion:/app/ingestion
       - ./storage:/app/storage
@@ -236,6 +240,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       LOG_LEVEL: INFO
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./ingestion:/app/ingestion
       - ./storage:/app/storage
@@ -257,6 +262,9 @@ services:
       - "8501:8501"
     environment:
       API_URL: http://crypto-api:8000
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - ./streamlit_app:/app
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s

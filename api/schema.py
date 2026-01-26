@@ -1,5 +1,3 @@
-"""API response schemas - extends base models from schema.market."""
-
 from datetime import datetime
 from typing import Any
 
@@ -8,54 +6,37 @@ from pydantic import BaseModel, Field, computed_field, field_validator, model_va
 from schema.market import Alert, Kline, Ticker, Trade
 
 
-def _to_ms(v: Any) -> int:
-    """Convert various timestamp formats to milliseconds."""
-    if isinstance(v, datetime):
-        return int(v.timestamp() * 1000)
-    if isinstance(v, (int, float)):
-        return int(v)
-    if isinstance(v, str):
-        try:
-            return int(float(v))
-        except ValueError:
-            pass
-    return 0
-
-
 # ==========================================
 # Ticker Responses
 # ==========================================
 
 
 class TickerDataResponse(BaseModel):
-    """API response for ticker data (extends base Ticker model)."""
-
     symbol: str
-    last_price: str
-    price_change: str
-    price_change_pct: str
-    open: str
-    high: str
-    low: str
-    volume: str
-    quote_volume: str
+    last_price: float
+    price_change: float
+    price_change_pct: float
+    open: float
+    high: float
+    low: float
+    volume: float
+    quote_volume: float
     trade_count: int
-    updated_at: int
+    updated_at: datetime
     complete: bool = False
 
-    @field_validator("updated_at", mode="before")
+    @field_validator(
+        "last_price", "price_change", "price_change_pct", "open", "high", "low", "volume", "quote_volume", mode="before"
+    )
     @classmethod
-    def parse_updated_at(cls, v: Any) -> int:
-        return _to_ms(v)
+    def ensure_float(cls, v: Any) -> float:
+        return float(v) if v is not None else 0.0
 
     @model_validator(mode="before")
     @classmethod
     def check_complete(cls, values: dict[str, Any]) -> dict[str, Any]:
         required = {"trade_count", "quote_volume"}
-        is_complete = all(
-            values.get(f) not in (None, "", "0", 0)
-            for f in required
-        )
+        is_complete = all(values.get(f) not in (None, "", "0", 0, 0.0) for f in required)
         values["complete"] = is_complete
         return values
 
@@ -64,16 +45,16 @@ class TickerDataResponse(BaseModel):
         """Create from base Ticker model."""
         return cls(
             symbol=ticker.symbol,
-            last_price=str(ticker.last_price),
-            price_change=str(ticker.price_change),
-            price_change_pct=str(ticker.price_change_pct),
-            open=str(ticker.open),
-            high=str(ticker.high),
-            low=str(ticker.low),
-            volume=str(ticker.volume),
-            quote_volume=str(ticker.quote_volume),
+            last_price=ticker.last_price,
+            price_change=ticker.price_change,
+            price_change_pct=ticker.price_change_pct,
+            open=ticker.open,
+            high=ticker.high,
+            low=ticker.low,
+            volume=ticker.volume,
+            quote_volume=ticker.quote_volume,
             trade_count=ticker.trade_count,
-            updated_at=int(ticker.updated_at.timestamp() * 1000),
+            updated_at=ticker.updated_at,
             complete=ticker.is_complete,
         )
 
@@ -81,7 +62,7 @@ class TickerDataResponse(BaseModel):
 class TickerListResponse(BaseModel):
     tickers: list[TickerDataResponse]
     count: int
-    timestamp: int
+    timestamp: datetime
 
 
 class TickerHealthResponse(BaseModel):
@@ -89,7 +70,7 @@ class TickerHealthResponse(BaseModel):
     redis_connected: bool
     ticker_count: int
     latency_ms: float
-    timestamp: int
+    timestamp: datetime
 
 
 class MarketSummaryResponse(BaseModel):
@@ -97,7 +78,7 @@ class MarketSummaryResponse(BaseModel):
     total_trades: int
     total_quote_volume: float
     avg_trade_value: float
-    timestamp: int
+    timestamp: datetime
 
 
 class TopTradingResponse(BaseModel):
@@ -106,26 +87,14 @@ class TopTradingResponse(BaseModel):
     trade_count: int
     quote_volume: float
 
-
-# ==========================================
-# Trade Responses
-# ==========================================
-
-
 class RecentTradeResponse(BaseModel):
-    """API response for recent trades."""
 
     trade_id: int
-    timestamp: int
+    timestamp: datetime
     price: float
     quantity: float
     side: str
     total: float
-
-    @field_validator("timestamp", mode="before")
-    @classmethod
-    def parse_timestamp(cls, v: Any) -> int:
-        return _to_ms(v)
 
     @model_validator(mode="before")
     @classmethod
@@ -136,18 +105,6 @@ class RecentTradeResponse(BaseModel):
             values["total"] = price * qty
         return values
 
-    @classmethod
-    def from_trade(cls, trade: Trade) -> "RecentTradeResponse":
-        """Create from base Trade model."""
-        return cls(
-            trade_id=trade.trade_id,
-            timestamp=int(trade.timestamp.timestamp() * 1000),
-            price=trade.price,
-            quantity=trade.quantity,
-            side=trade.side,
-            total=trade.total,
-        )
-
 
 # ==========================================
 # Kline Responses
@@ -155,8 +112,6 @@ class RecentTradeResponse(BaseModel):
 
 
 class KlineResponse(BaseModel):
-    """OHLCV kline response - mirrors base Kline model."""
-
     timestamp: datetime = Field(description="Kline interval start time")
     open: float = Field(description="Opening price")
     high: float = Field(description="Highest price")
@@ -197,7 +152,6 @@ class TradesCountResponse(BaseModel):
 
 
 class PriceSpikeResponse(BaseModel):
-    """Price spike alert response."""
 
     timestamp: datetime
     symbol: str
@@ -218,7 +172,6 @@ class PriceSpikeResponse(BaseModel):
 
 
 class VolumeSpikeResponse(BaseModel):
-    """Volume spike alert response."""
 
     timestamp: datetime
     symbol: str
@@ -228,7 +181,6 @@ class VolumeSpikeResponse(BaseModel):
 
     @classmethod
     def from_alert(cls, alert: Alert) -> "VolumeSpikeResponse":
-        """Create from base Alert model."""
         return cls(
             timestamp=alert.timestamp,
             symbol=alert.symbol,
@@ -260,7 +212,6 @@ class TradeCountSpikeResponse(BaseModel):
 
 
 class BuySellImbalanceResponse(BaseModel):
-    """Buy/sell imbalance alert response."""
 
     timestamp: datetime
     symbol: str
@@ -271,7 +222,6 @@ class BuySellImbalanceResponse(BaseModel):
 
     @classmethod
     def from_alert(cls, alert: Alert) -> "BuySellImbalanceResponse":
-        """Create from base Alert model."""
         ratio = float(alert.details.get("buy_sell_ratio", 0))
         return cls(
             timestamp=alert.timestamp,

@@ -38,6 +38,7 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+.sisyphus/
 *~
 
 # OS

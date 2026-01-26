@@ -12,9 +12,6 @@ from util.kafka import KafkaProducer
 import sys
 from loguru import logger
 
-# logger = get_logger(__name__)
-
-
 class BinanceConnector:
     """Stream trades and tickers from Binance WebSocket to Kafka."""
 

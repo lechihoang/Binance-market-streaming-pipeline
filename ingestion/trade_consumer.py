@@ -13,8 +13,6 @@ from util.constant import KAFKA_SERVER, REDIS_HOST, REDIS_PORT, SCHEMA_REGISTRY_
 import sys
 from loguru import logger
 
-# logger = get_logger(__name__)
-
 
 class TradeConsumer:
     """Consume trade messages from Kafka and cache in Redis."""
@@ -44,7 +42,6 @@ class TradeConsumer:
                 continue
 
             data = self.deserializer(msg.value(), ctx)
-            # Trade model handles field mapping (trade_time -> timestamp, is_buyer_maker -> side)
             self.redis.write_trade(data["symbol"], data)
 
         self.consumer.close()

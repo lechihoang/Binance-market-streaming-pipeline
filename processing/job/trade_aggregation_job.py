@@ -49,7 +49,6 @@ shutdown_signal = "Unknown"
 
 
 def handle_shutdown(sig: int, frame: Any) -> None:
-    """Set global shutdown flag on SIGTERM/SIGINT."""
     global shutdown_requested, shutdown_signal
     shutdown_requested = True
     shutdown_signal = {2: "SIGINT", 15: "SIGTERM"}.get(sig, f"Signal-{sig}")
@@ -57,7 +56,6 @@ def handle_shutdown(sig: int, frame: Any) -> None:
 
 
 class TradeAggregationJob:
-    """Kafka raw trades -> 1m OHLCV candles -> PostgreSQL (staging/merge) + Redis cache."""
 
     def __init__(self):
         self.spark: SparkSession | None = None
@@ -69,7 +67,6 @@ class TradeAggregationJob:
         signal.signal(signal.SIGINT, handle_shutdown)
 
     def fetch_avro_schema(self) -> str:
-        """Fetch Avro schema from Schema Registry, cached after first call."""
         if self.avro_schema_cache:
             return self.avro_schema_cache
         url = f"{SCHEMA_REGISTRY_URL}/subjects/raw_trades-value/versions/latest"
@@ -79,7 +76,6 @@ class TradeAggregationJob:
         return self.avro_schema_cache
 
     def parse_trades(self, raw_df: DataFrame) -> DataFrame:
-        """Decode Avro from Kafka (skip 5-byte Confluent header), return structured trades with watermark."""
         avro_schema = self.fetch_avro_schema()
         parsed = raw_df.select(
             from_avro(expr("substring(value, 6)"), avro_schema).alias("trade"),
@@ -141,7 +137,6 @@ class TradeAggregationJob:
         )
 
     def filter_valid_records(self, batch_df: DataFrame, batch_id: int) -> DataFrame | None:
-        """Validate with Great Expectations, return only valid records joined back to full DataFrame."""
         records = [row.asDict() for row in batch_df.collect()]
         valid_records, invalid_records, _ = validate_aggregation_records(records, None)
 
@@ -160,7 +155,6 @@ class TradeAggregationJob:
         return valid_df
 
     def write_to_postgres(self, df: DataFrame) -> None:
-        """Write to staging_trades_1m via JDBC, then merge into trades_1m."""
         (
             df.write.format("jdbc")
             .option("url", JDBC_URL)
@@ -175,13 +169,11 @@ class TradeAggregationJob:
             self.postgres.merge_staging_to_trade()
 
     def write_to_redis(self, records: list[dict]) -> int:
-        """Write aggregated records to Redis cache."""
         if not self.redis or not records:
             return 0
         return self.redis.write_agg_batch(records)
 
     def process_batch(self, batch_df: DataFrame, batch_id: int) -> None:
-        """Callback for each Spark Structured Streaming micro-batch (60s trigger)."""
         if shutdown_requested:
             logger.warning(f"Batch {batch_id}: Shutdown signal ({shutdown_signal}), skipping")
             if self.query and self.query.isActive:
@@ -216,7 +208,6 @@ class TradeAggregationJob:
             record_message_processed("spark_trade_aggregation", "processed_aggregations", "success")
 
     def run(self) -> None:
-        """Initialize Spark + storage, start streaming query, run until shutdown or MAX_RUNTIME."""
         try:
             self.spark = (
                 SparkSession.builder.appName("TradeAggregationJob")

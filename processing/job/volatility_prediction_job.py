@@ -76,8 +76,6 @@ def handle_shutdown(sig, frame):
 
 
 class VolatilityPredictionJob:
-    """Compute ML features from trades_1m and predict next 5-minute volatility with LightGBM."""
-
     def __init__(self):
         self.spark: SparkSession | None = None
         self.pg: Postgres | None = None
@@ -88,7 +86,6 @@ class VolatilityPredictionJob:
         signal.signal(signal.SIGINT, handle_shutdown)
 
     def load_model(self) -> bool:
-        """Load LightGBM model from disk. Returns False if file not found."""
         model_path = Path(MODEL_DIR) / MODEL_FILE
         if not model_path.exists():
             logger.warning(f"Volatility model not found at {model_path}")
@@ -98,7 +95,6 @@ class VolatilityPredictionJob:
         return True
 
     def read_trades(self, start_time: datetime) -> DataFrame:
-        """Read trades_1m from PostgreSQL via JDBC, starting after given timestamp."""
         if not self.spark:
             raise RuntimeError("SparkSession not initialized")
         return (
@@ -120,7 +116,6 @@ class VolatilityPredictionJob:
         )
 
     def compute_features(self, df: DataFrame) -> DataFrame:
-        """Compute 24 rolling features: returns, volatilities, volume ratios, order flow, price vs MA, temporal."""
         w_symbol = Window.partitionBy("symbol").orderBy("timestamp")
         w5 = Window.partitionBy("symbol").orderBy("timestamp").rowsBetween(-4, 0)
         w15 = Window.partitionBy("symbol").orderBy("timestamp").rowsBetween(-14, 0)
@@ -135,7 +130,6 @@ class VolatilityPredictionJob:
             F.col("trade_count"), F.col("buy_count"), F.col("sell_count"),
         )
 
-        # Returns: 1m, 5m, 15m
         for lag, name in [(1, "return_1m"), (5, "return_5m"), (15, "return_15m")]:
             lag_col = f"close_{lag}"
             features = features.withColumn(lag_col, F.lag("close", lag).over(w_symbol)).withColumn(
@@ -146,7 +140,6 @@ class VolatilityPredictionJob:
                 ).otherwise(0.0),
             )
 
-        # Rolling volatilities: stddev of return_1m over 5m/15m/30m/60m
         features = (
             features
             .withColumn("volatility_5m", F.coalesce(F.stddev("return_1m").over(w5), F.lit(0.0)))
@@ -156,14 +149,12 @@ class VolatilityPredictionJob:
             .withColumn("volatility_ratio", F.col("volatility_5m") / (F.col("volatility_30m") + 1e-8))
         )
 
-        # Kline pattern: price range and body as percentage of close
         features = (
             features
             .withColumn("price_range_pct", ((F.col("high") - F.col("low")) / (F.col("close") + 1e-8)) * 100)
             .withColumn("price_body_pct", (F.abs(F.col("close") - F.col("open")) / (F.col("close") + 1e-8)) * 100)
         )
 
-        # Volume ratios: current volume vs 15m/60m averages
         features = (
             features
             .withColumn("avg_volume_60", F.avg("volume").over(w60))
@@ -172,14 +163,12 @@ class VolatilityPredictionJob:
             .withColumn("volume_ratio_15m", F.when(F.col("avg_volume_15") > 0, F.col("volume") / F.col("avg_volume_15")).otherwise(1.0))
         )
 
-        # Order flow: buy ratio and buy/sell imbalance
         features = (
             features
             .withColumn("buy_ratio", F.when(F.col("trade_count") > 0, F.col("buy_count").cast(DoubleType()) / F.col("trade_count").cast(DoubleType())).otherwise(0.5))
             .withColumn("buy_sell_imbalance", F.when(F.col("trade_count") > 0, (2.0 * F.col("buy_count").cast(DoubleType()) - F.col("trade_count").cast(DoubleType())) / F.col("trade_count").cast(DoubleType())).otherwise(0.0))
         )
 
-        # Price vs moving averages: 15m and 60m
         features = (
             features
             .withColumn("price_ma_15", F.avg("close").over(w15))
@@ -188,7 +177,6 @@ class VolatilityPredictionJob:
             .withColumn("price_vs_ma_60m", ((F.col("close") - F.col("price_ma_60")) / (F.col("price_ma_60") + 1e-8)) * 100)
         )
 
-        # Temporal and symbol encoding
         symbol_map = F.create_map([F.lit(x) for kv in SYMBOL_ENCODING.items() for x in kv])
         features = (
             features
@@ -208,7 +196,6 @@ class VolatilityPredictionJob:
         ).filter(F.col("return_15m").isNotNull())
 
     def predict_volatility(self, features_df: DataFrame) -> DataFrame:
-        """Predict next 5-minute volatility using broadcast LightGBM model + UDF."""
         if self.model is None:
             logger.warning("Model not loaded, skipping predictions")
             return features_df.withColumn("predicted_volatility_5m", F.lit(None).cast(DoubleType()))
@@ -221,7 +208,6 @@ class VolatilityPredictionJob:
         return features_df.withColumn("predicted_volatility_5m", predict_udf(*[F.col(c) for c in FEATURE_COLUMNS]))
 
     def write_features(self, df: DataFrame, count: int | None = None) -> int:
-        """Write computed features to staging_ml_features, then merge into ml_features."""
         if df.isEmpty():
             logger.info("No features to write")
             return 0
@@ -258,7 +244,6 @@ class VolatilityPredictionJob:
         return record_count
 
     def write_predictions(self, df: DataFrame, count: int | None = None) -> int:
-        """Write volatility predictions to staging table, then merge into volatility_predictions."""
         if df.isEmpty():
             logger.info("No volatility predictions to write")
             return 0
@@ -290,7 +275,6 @@ class VolatilityPredictionJob:
         return record_count
 
     def save_checkpoint(self) -> None:
-        """Save job checkpoint with last processed timestamp."""
         if not self.pg or not self.max_ts:
             return
         try:
@@ -300,7 +284,6 @@ class VolatilityPredictionJob:
             logger.error(f"Failed to save checkpoint: {e}")
 
     def run(self) -> None:
-        """Read trades, compute features, predict volatility, write results, update checkpoint."""
         try:
             self.spark = (
                 SparkSession.builder.appName("VolatilityPredictionJob")

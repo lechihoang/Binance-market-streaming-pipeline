@@ -27,7 +27,10 @@ class RedisLimit:
     MAX_ALERT = 1000
 
 
-TICKER_MAP = {
+# Binance field mapping - maps both WebSocket short names AND connector long names to standard field names
+# This is the single source of truth for ticker field normalization
+TICKER_BINANCE_MAP = {
+    # Binance WebSocket short names
     "c": "last_price",
     "p": "price_change",
     "P": "price_change_pct",
@@ -38,7 +41,16 @@ TICKER_MAP = {
     "q": "quote_volume",
     "n": "trade_count",
     "E": "updated_at",
+    # Connector long names (from ingestion/connector.py to_ticker)
+    "price_change_percent": "price_change_pct",
+    "open_price": "open",
+    "high_price": "high",
+    "low_price": "low",
+    "event_time": "updated_at",
 }
+
+# Backward compatibility alias
+TICKER_MAP = TICKER_BINANCE_MAP
 
 # KAFKA
 KAFKA_SERVER = "kafka:29092"

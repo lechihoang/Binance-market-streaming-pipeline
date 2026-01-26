@@ -36,6 +36,8 @@ from api.schema import (
     TradesCountResponse,
     VolumeSpikeResponse,
 )
+from schema.market import Alert, Kline, Ticker
+from pydantic import ValidationError
 from storage.postgres import Postgres as PostgresStorage
 from storage.query_router import Router as QueryRouter
 from storage.redis import Redis as RedisStorage
@@ -325,25 +327,11 @@ def normalize_time_range(
     start: datetime | None, end: datetime | None, default_hours: int = 1
 ) -> tuple[datetime, datetime]:
     now = datetime.now()
-    if end:
-        end = end if end.tzinfo else end
-    else:
+    if not end:
         end = now
-    if start:
-        start = start if start.tzinfo else start
-    else:
+    if not start:
         start = now - timedelta(hours=default_hours)
     return start, end
-
-
-def parse_alert_details(alert: dict[str, Any]) -> dict[str, Any]:
-    details = alert.get("details", alert.get("metadata", {}))
-    if isinstance(details, str):
-        try:
-            return json_module.loads(details)
-        except Exception:
-            return {}
-    return details or {}
 
 
 def query_alerts_by_type(
@@ -367,12 +355,6 @@ def query_alerts_by_type(
         except Exception:
             pass
     return alerts
-
-
-def ensure_tz(dt: datetime | None) -> datetime:
-    if dt is None:
-        return datetime.now()
-    return dt if dt.tzinfo else dt
 
 
 def validate_time_range(start: datetime, end: datetime) -> None:
@@ -442,7 +424,7 @@ async def get_ticker_health(
         redis_connected=redis_connected,
         ticker_count=ticker_count,
         latency_ms=round(latency_ms, 2),
-        timestamp=int(time.time() * 1000),
+        timestamp=datetime.now(),
     )
 
 
@@ -460,11 +442,12 @@ async def get_market_summary(
     total_trades = 0
     total_quote_volume = 0.0
 
-    for ticker in all_tickers:
+    for data in all_tickers:
         try:
-            total_trades += int(ticker.get("trade_count", 0))
-            total_quote_volume += float(ticker.get("quote_volume", 0))
-        except (ValueError, TypeError):
+            ticker = Ticker.model_validate(data)
+            total_trades += ticker.trade_count
+            total_quote_volume += ticker.quote_volume
+        except ValidationError:
             continue
 
     avg_trade_value = total_quote_volume / total_trades if total_trades > 0 else 0.0
@@ -478,7 +461,7 @@ async def get_market_summary(
         total_trades=total_trades,
         total_quote_volume=round(total_quote_volume, 2),
         avg_trade_value=round(avg_trade_value, 2),
-        timestamp=int(time.time() * 1000),
+        timestamp=datetime.now(),
     )
 
 
@@ -500,7 +483,7 @@ async def get_all_realtime_tickers(
     return TickerListResponse(
         tickers=tickers,
         count=len(tickers),
-        timestamp=int(time.time() * 1000),
+        timestamp=datetime.now(),
     )
 
 
@@ -516,25 +499,21 @@ async def get_top_by_trades(
     all_tickers = storage.get_ticker_all()
 
     results = []
-    for ticker in all_tickers:
+    for data in all_tickers:
         try:
-            symbol = ticker.get("symbol", "")
-            if not symbol:
+            ticker = Ticker.model_validate(data)
+            if not ticker.symbol:
                 continue
-
-            last_price = float(ticker.get("last_price", 0))
-            trade_count = int(ticker.get("trade_count", 0))
-            quote_volume = float(ticker.get("quote_volume", 0))
 
             results.append(
                 TopTradingResponse(
-                    symbol=symbol,
-                    last_price=last_price,
-                    trade_count=trade_count,
-                    quote_volume=quote_volume,
+                    symbol=ticker.symbol,
+                    last_price=ticker.last_price,
+                    trade_count=ticker.trade_count,
+                    quote_volume=ticker.quote_volume,
                 )
             )
-        except Exception as e:
+        except ValidationError as e:
             logger.warning(f"Failed to parse ticker data for top-by-trades: {e}")
             continue
 
@@ -558,25 +537,21 @@ async def get_top_by_volume(
     all_tickers = storage.get_ticker_all()
 
     results = []
-    for ticker in all_tickers:
+    for data in all_tickers:
         try:
-            symbol = ticker.get("symbol", "")
-            if not symbol:
+            ticker = Ticker.model_validate(data)
+            if not ticker.symbol:
                 continue
-
-            last_price = float(ticker.get("last_price", 0))
-            trade_count = int(ticker.get("trade_count", 0))
-            quote_volume = float(ticker.get("quote_volume", 0))
 
             results.append(
                 TopTradingResponse(
-                    symbol=symbol,
-                    last_price=last_price,
-                    trade_count=trade_count,
-                    quote_volume=quote_volume,
+                    symbol=ticker.symbol,
+                    last_price=ticker.last_price,
+                    trade_count=ticker.trade_count,
+                    quote_volume=ticker.quote_volume,
                 )
             )
-        except Exception as e:
+        except ValidationError as e:
             logger.warning(f"Failed to parse ticker data for top-by-volume: {e}")
             continue
 
@@ -633,9 +608,6 @@ async def get_klines(
     """Get OHLCV klines for a symbol with automatic tier selection (Redis/PostgreSQL)."""
     validate_interval(interval)
 
-    start = start.replace(tzinfo=None) if start and start.tzinfo else start
-    end = end.replace(tzinfo=None) if end and end.tzinfo else end
-
     now = datetime.now()
     if end is None:
         end = now
@@ -649,21 +621,15 @@ async def get_klines(
     response.headers["X-Data-Source"] = data_source
     response.headers["X-Interval"] = interval
 
-    return [
-        KlineResponse(
-            timestamp=record.get("timestamp"),
-            open=record.get("open", 0.0),
-            high=record.get("high", 0.0),
-            low=record.get("low", 0.0),
-            close=record.get("close", 0.0),
-            volume=record.get("volume", 0.0),
-            quote_volume=record.get("quote_volume"),
-            trade_count=record.get("trade_count"),
-            buy_count=record.get("buy_count"),
-            sell_count=record.get("sell_count"),
-        )
-        for record in data
-    ]
+    results = []
+    for record in data:
+        try:
+            kline = Kline.model_validate(record)
+            results.append(KlineResponse.from_kline(kline))
+        except ValidationError as e:
+            logger.warning(f"Failed to parse kline data for {symbol}: {e}")
+            continue
+    return results
 
 
 @app.get("/api/v1/analytics/trades-count", response_model=list[TradesCountResponse], tags=["analytics"])
@@ -724,18 +690,13 @@ async def get_price_spikes(
     raw_alerts = query_alerts_by_type(query_router, ["PRICE_SPIKE"], start, end)
 
     price_spikes = []
-    for alert in raw_alerts:
-        details = parse_alert_details(alert)
-        ts = ensure_tz(alert.get("timestamp"))
-        price_spikes.append(
-            PriceSpikeResponse(
-                timestamp=ts,
-                symbol=alert.get("symbol", "UNKNOWN"),
-                open_price=float(details.get("open", 0)),
-                close_price=float(details.get("close", 0)),
-                price_change_pct=float(details.get("price_change_pct", 0)),
-            )
-        )
+    for raw_alert in raw_alerts:
+        try:
+            alert = Alert.model_validate(raw_alert)
+            price_spikes.append(PriceSpikeResponse.from_alert(alert))
+        except ValidationError as e:
+            logger.warning(f"Failed to parse price spike alert: {e}")
+            continue
 
     price_spikes.sort(key=lambda x: x.timestamp, reverse=True)
     return price_spikes[: min(limit, 500)]
@@ -753,18 +714,13 @@ async def get_volume_spikes(
     raw_alerts = query_alerts_by_type(query_router, ["VOLUME_SPIKE"], start, end)
 
     volume_spikes = []
-    for alert in raw_alerts:
-        details = parse_alert_details(alert)
-        ts = ensure_tz(alert.get("timestamp"))
-        volume_spikes.append(
-            VolumeSpikeResponse(
-                timestamp=ts,
-                symbol=alert.get("symbol", "UNKNOWN"),
-                volume=float(details.get("volume", 0)),
-                quote_volume=float(details.get("quote_volume", 0)),
-                trade_count=int(details.get("trade_count", 0)),
-            )
-        )
+    for raw_alert in raw_alerts:
+        try:
+            alert = Alert.model_validate(raw_alert)
+            volume_spikes.append(VolumeSpikeResponse.from_alert(alert))
+        except ValidationError as e:
+            logger.warning(f"Failed to parse volume spike alert: {e}")
+            continue
 
     volume_spikes.sort(key=lambda x: x.timestamp, reverse=True)
     return volume_spikes[: min(limit, 500)]
@@ -782,18 +738,13 @@ async def get_trade_count_spikes(
     raw_alerts = query_alerts_by_type(query_router, ["TRADE_COUNT_SPIKE"], start, end)
 
     trade_spikes = []
-    for alert in raw_alerts:
-        details = parse_alert_details(alert)
-        ts = ensure_tz(alert.get("timestamp"))
-        trade_spikes.append(
-            TradeCountSpikeResponse(
-                timestamp=ts,
-                symbol=alert.get("symbol", "UNKNOWN"),
-                trade_count=int(details.get("trade_count", 0)),
-                buy_count=int(details.get("buy_count", 0)),
-                sell_count=int(details.get("sell_count", 0)),
-            )
-        )
+    for raw_alert in raw_alerts:
+        try:
+            alert = Alert.model_validate(raw_alert)
+            trade_spikes.append(TradeCountSpikeResponse.from_alert(alert))
+        except ValidationError as e:
+            logger.warning(f"Failed to parse trade count spike alert: {e}")
+            continue
 
     trade_spikes.sort(key=lambda x: x.timestamp, reverse=True)
     return trade_spikes[: min(limit, 500)]
@@ -811,24 +762,13 @@ async def get_buy_sell_imbalance(
     raw_alerts = query_alerts_by_type(query_router, ["BUY_SELL_IMBALANCE"], start, end)
 
     imbalances = []
-    for alert in raw_alerts:
-        details = parse_alert_details(alert)
-        ts = ensure_tz(alert.get("timestamp"))
-        buy_count = int(details.get("buy_count", 0))
-        sell_count = int(details.get("sell_count", 0))
-        ratio = float(details.get("buy_sell_ratio", 0))
-        direction = "BUY_HEAVY" if ratio > 1 else "SELL_HEAVY"
-
-        imbalances.append(
-            BuySellImbalanceResponse(
-                timestamp=ts,
-                symbol=alert.get("symbol", "UNKNOWN"),
-                buy_count=buy_count,
-                sell_count=sell_count,
-                buy_sell_ratio=ratio,
-                imbalance_direction=direction,
-            )
-        )
+    for raw_alert in raw_alerts:
+        try:
+            alert = Alert.model_validate(raw_alert)
+            imbalances.append(BuySellImbalanceResponse.from_alert(alert))
+        except ValidationError as e:
+            logger.warning(f"Failed to parse buy/sell imbalance alert: {e}")
+            continue
 
     imbalances.sort(key=lambda x: x.timestamp, reverse=True)
     return imbalances[: min(limit, 500)]

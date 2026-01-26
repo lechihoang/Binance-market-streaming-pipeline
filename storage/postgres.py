@@ -196,6 +196,72 @@ class Postgres:
         logger.info(f"Merged {count} alerts from staging to alerts")
         return count
 
+    def merge_staging_to_ml_features(self) -> int:
+        """Merge staging ml_features to main ml_features table."""
+        ml_feature_fields = [
+            "timestamp",
+            "symbol",
+            "close",
+            "volume",
+            "quote_volume",
+            "trade_count",
+            "return_1m",
+            "return_5m",
+            "return_15m",
+            "volatility_5m",
+            "volatility_15m",
+            "volatility_30m",
+            "volatility_60m",
+            "volatility_ratio",
+            "price_range_pct",
+            "price_body_pct",
+            "volume_ratio_15m",
+            "volume_ratio_60m",
+            "buy_ratio",
+            "buy_sell_imbalance",
+            "price_vs_ma_15m",
+            "price_vs_ma_60m",
+            "hour",
+            "symbol_encoded",
+        ]
+
+        fields_str = ", ".join(ml_feature_fields)
+        update_clause = ", ".join(f"{f}=EXCLUDED.{f}" for f in ml_feature_fields if f not in ("timestamp", "symbol"))
+
+        merge_sql = f"""
+            INSERT INTO ml_features ({fields_str})
+            SELECT {fields_str} FROM staging_ml_features
+            ON CONFLICT (symbol, timestamp) DO UPDATE SET {update_clause}
+        """
+
+        with self.conn() as c, c.cursor() as cur:
+            cur.execute(merge_sql)
+            count = cur.rowcount
+            cur.execute("TRUNCATE staging_ml_features")
+
+        logger.info(f"Merged {count} records from staging to ml_features")
+        return count
+
+    def merge_staging_to_volatility_predictions(self) -> int:
+        """Merge staging volatility_predictions to main volatility_predictions table."""
+        fields = ["timestamp", "symbol", "current_volatility", "predicted_volatility_5m"]
+        fields_str = ", ".join(fields)
+        update_clause = ", ".join(f"{f}=EXCLUDED.{f}" for f in fields if f not in ("timestamp", "symbol"))
+
+        merge_sql = f"""
+            INSERT INTO volatility_predictions ({fields_str})
+            SELECT {fields_str} FROM staging_volatility_predictions
+            ON CONFLICT (symbol, timestamp) DO UPDATE SET {update_clause}
+        """
+
+        with self.conn() as c, c.cursor() as cur:
+            cur.execute(merge_sql)
+            count = cur.rowcount
+            cur.execute("TRUNCATE staging_volatility_predictions")
+
+        logger.info(f"Merged {count} records from staging to volatility_predictions")
+        return count
+
     # ==========================================
     # Kline Operations
     # ==========================================
@@ -210,7 +276,9 @@ class Postgres:
             if interval not in table_map:
                 raise ValueError(f"Invalid interval: {interval}. Supported: 1m, 5m, 15m, 1h")
             table = table_map[interval]
-            columns = "timestamp, symbol, open, high, low, close, volume, quote_volume, trade_count, buy_count, sell_count"
+            columns = (
+                "timestamp, symbol, open, high, low, close, volume, quote_volume, trade_count, buy_count, sell_count"
+            )
 
         query = f"""
             SELECT {columns} FROM {table}

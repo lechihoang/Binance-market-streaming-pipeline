@@ -1,6 +1,4 @@
 """
-Anomaly Detection Job
-
 Reads aggregated trades from PostgreSQL, detects 4 anomaly types:
 volume spikes, price spikes, trade count spikes, buy/sell imbalance.
 Writes alerts to PostgreSQL (staging/merge) + Redis cache.
@@ -43,15 +41,12 @@ shutdown_signal = "Unknown"
 
 
 def handle_shutdown(sig, frame):
-    """Set global shutdown flag on SIGTERM/SIGINT."""
     global shutdown_requested, shutdown_signal
     shutdown_requested = True
     shutdown_signal = {2: "SIGINT", 15: "SIGTERM"}.get(sig, f"Signal {sig}")
 
 
 class AnomalyJob:
-    """Detect anomalies in trades_1m, write alerts to PostgreSQL + Redis."""
-
     def __init__(self):
         self.spark: SparkSession | None = None
         self.redis: Redis | None = None
@@ -60,7 +55,6 @@ class AnomalyJob:
         signal.signal(signal.SIGINT, handle_shutdown)
 
     def read_trades(self, start: datetime, end: datetime, lookback_minutes: int = 0) -> DataFrame:
-        """Read trades_1m via JDBC with optional lookback window for moving averages."""
         query_start = start - timedelta(minutes=lookback_minutes)
         return (
             self.spark.read.format("jdbc")
@@ -81,7 +75,6 @@ class AnomalyJob:
         )
 
     def detect_anomalies(self, df: DataFrame, start: datetime) -> DataFrame:
-        """Detect volume spikes, price spikes, trade count spikes, and buy/sell imbalance in one pass."""
         current = df.filter(F.col("timestamp") > start)
 
         volume_spike = current.filter(F.col("quote_volume") > VOLUME_THRESHOLD).select(
@@ -152,7 +145,6 @@ class AnomalyJob:
         )
 
     def write_alerts_to_postgres(self, records: list) -> int:
-        """Write alerts to staging_alerts via JDBC, then merge into alerts table."""
         if not records:
             return 0
         pg_records = [Alert.model_validate(r).to_pg_dict() for r in records]

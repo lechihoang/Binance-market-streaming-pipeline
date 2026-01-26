@@ -1,5 +1,6 @@
 import sys
 import time
+from datetime import datetime
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -82,9 +83,9 @@ def render():
             with col1:
                 st.markdown(
                     f"""
-                <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; border-left:4px solid {COLORS['blue']};">
+                <div style="background:{COLORS["card"]}; padding:20px; border-radius:8px; border-left:4px solid {COLORS["blue"]};">
                     <div style="color:#666; font-size:12px; margin-bottom:8px;">Current Volatility</div>
-                    <div style="color:{COLORS['blue']}; font-size:28px; font-weight:bold;">{current_vol:.2f}%</div>
+                    <div style="color:{COLORS["blue"]}; font-size:28px; font-weight:bold;">{current_vol:.2f}%</div>
                 </div>
                 """,
                     unsafe_allow_html=True,
@@ -93,9 +94,9 @@ def render():
             with col2:
                 st.markdown(
                     f"""
-                <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; border-left:4px solid {COLORS['purple']};">
+                <div style="background:{COLORS["card"]}; padding:20px; border-radius:8px; border-left:4px solid {COLORS["purple"]};">
                     <div style="color:#666; font-size:12px; margin-bottom:8px;">Predicted (5m)</div>
-                    <div style="color:{COLORS['purple']}; font-size:28px; font-weight:bold;">{predicted_vol:.2f}%</div>
+                    <div style="color:{COLORS["purple"]}; font-size:28px; font-weight:bold;">{predicted_vol:.2f}%</div>
                 </div>
                 """,
                     unsafe_allow_html=True,
@@ -105,7 +106,7 @@ def render():
                 vol_color = get_volatility_color(level)
                 st.markdown(
                     f"""
-                <div style="background:{COLORS['card']}; padding:20px; border-radius:8px; border-left:4px solid {vol_color};">
+                <div style="background:{COLORS["card"]}; padding:20px; border-radius:8px; border-left:4px solid {vol_color};">
                     <div style="color:#666; font-size:12px; margin-bottom:8px;">Risk Level</div>
                     <div style="color:{vol_color}; font-size:28px; font-weight:bold;">{level}</div>
                 </div>

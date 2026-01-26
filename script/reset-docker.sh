@@ -37,17 +37,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+echo ""
 echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW}  RESET DOCKER - Crypto Streaming      ${NC}"
+echo -e "${YELLOW}  RESET DOCKER - Binance Market Pipeline${NC}"
 echo -e "${YELLOW}========================================${NC}"
 echo ""
 
 echo -e "${RED}WARNING: This will delete all data!${NC}"
 echo "Including:"
 echo "  - All containers"
-echo "  - All volumes (PostgreSQL, Redis, Grafana, Prometheus)"
+echo "  - All volumes (PostgreSQL, Redis, Grafana, Prometheus, Spark)"
+echo "  - Kafka topics (raw_trades, raw_tickers)"
+echo "  - Redis cache"
 echo "  - Airflow metadata and logs"
 echo "  - Spark checkpoints"
+echo "  - Local data files"
 if [ "$HARD_RESET" = true ]; then
     echo -e "  ${RED}- All Docker images (will rebuild)${NC}"
 fi
@@ -59,49 +63,62 @@ if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
 fi
 
 echo ""
-echo -e "${GREEN}[1/6] Stopping containers...${NC}"
+echo -e "${GREEN}[1/7] Stopping containers...${NC}"
 docker compose down --remove-orphans 2>/dev/null || true
 
 echo ""
-echo -e "${GREEN}[2/6] Removing Docker volumes...${NC}"
+echo -e "${GREEN}[2/7] Removing Docker volumes...${NC}"
 docker volume rm -f \
-    $(docker volume ls -q --filter name=postgres-db-volume) \
-    $(docker volume ls -q --filter name=postgres-data-volume) \
-    $(docker volume ls -q --filter name=grafana-storage) \
-    $(docker volume ls -q --filter name=prometheus-data) \
-    $(docker volume ls -q --filter name=spark-checkpoints) \
+    binance-market-streaming-pipeline_postgres-data \
+    binance-market-streaming-pipeline_grafana-storage \
+    binance-market-streaming-pipeline_prometheus-data \
+    binance-market-streaming-pipeline_spark-checkpoints \
     2>/dev/null || true
-
-PROJECT_NAME=$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g')
-docker volume ls -q --filter "name=${PROJECT_NAME}" | xargs -r docker volume rm 2>/dev/null || true
+echo "  Removed all volumes"
 
 echo ""
-echo -e "${GREEN}[3/6] Removing Airflow logs...${NC}"
-rm -rf dags/logs 2>/dev/null || true
-mkdir -p dags/logs
-echo "  Cleared dags/logs/"
+echo -e "${GREEN}[3/7] Clearing Kafka topics...${NC}"
+if docker ps --format '{{.Names}}' | grep -q '^kafka$'; then
+    docker exec kafka kafka-topics --bootstrap-server localhost:29092 --delete --topic raw_trades 2>/dev/null || true
+    docker exec kafka kafka-topics --bootstrap-server localhost:29092 --delete --topic raw_tickers 2>/dev/null || true
+    echo "  Cleared Kafka topics: raw_trades, raw_tickers"
+else
+    echo "  Kafka not running, skipping topic cleanup"
+fi
 
 echo ""
-echo -e "${GREEN}[4/6] Spark checkpoints in Docker volume (auto-cleaned)${NC}"
-echo "  Volume: spark-checkpoints"
+echo -e "${GREEN}[4/7] Clearing Redis cache...${NC}"
+if docker ps --format '{{.Names}}' | grep -q '^redis$'; then
+    docker exec redis redis-cli FLUSHALL 2>/dev/null || true
+    echo "  Flushed all Redis data"
+else
+    echo "  Redis not running, skipping"
+fi
 
 echo ""
-echo -e "${GREEN}[5/6] Removing local data files...${NC}"
+echo -e "${GREEN}[5/7] Removing Airflow logs...${NC}"
+rm -rf log/* 2>/dev/null || true
+mkdir -p log
+echo "  Cleared log/"
+
+echo ""
+echo -e "${GREEN}[6/7] Removing local data files...${NC}"
 rm -rf data/parquet 2>/dev/null || true
-mkdir -p data/parquet
+rm -rf data/spark-checkpoints/* 2>/dev/null || true
+mkdir -p data/parquet data/spark-checkpoints
 find data -type f -name "*.parquet" -delete 2>/dev/null || true
 find data -type f -name "*.json" -delete 2>/dev/null || true
-echo "  Cleared data files"
+echo "  Cleared data files and Spark checkpoints"
 
 if [ "$HARD_RESET" = true ]; then
     echo ""
-    echo -e "${GREEN}[6/6] Removing Docker images...${NC}"
+    echo -e "${GREEN}[7/7] Removing Docker images...${NC}"
     docker compose down --rmi local 2>/dev/null || true
     docker image prune -f 2>/dev/null || true
     echo "  Removed local images"
 else
     echo ""
-    echo -e "${GREEN}[6/6] Keeping Docker images (use --hard to remove)${NC}"
+    echo -e "${GREEN}[7/7] Keeping Docker images (use --hard to remove)${NC}"
 fi
 
 echo ""
