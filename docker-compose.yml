@@ -15,9 +15,12 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://crypto:crypto@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg=
+    AIRFLOW__WEBSERVER__SECRET_KEY: my_super_secret_key_12345
+    AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/log
+    AIRFLOW__LOGGING__WORKER_LOG_SERVER_PORT: 8793
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 30
-    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     SCHEMA_REGISTRY_URL: http://schema-registry:8081
     REDIS_HOST: redis
     REDIS_PORT: 6379
@@ -26,7 +29,6 @@ x-airflow-common: &airflow-common
     POSTGRES_USER: crypto
     POSTGRES_PASSWORD: crypto
     POSTGRES_DB: crypto_data
-    TZ: Asia/Ho_Chi_Minh
   volumes:
     - ./dags:/opt/airflow/dags
     - ./storage:/opt/airflow/storage
@@ -36,7 +38,7 @@ x-airflow-common: &airflow-common
     - ./ml:/opt/airflow/ml
     - ./log:/opt/airflow/log
     - spark-checkpoints:/opt/airflow/data/spark-checkpoints
-    - ./schema:/app/schema
+    - ./schema:/opt/airflow/schema
   logging: *default-logging
 
 services:
@@ -52,14 +54,14 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_PROCESS_ROLES: 'broker,controller'
       KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
-      KAFKA_LISTENERS: 'PLAINTEXT://kafka:9092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092'
       KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
       KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
       KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
@@ -84,7 +86,7 @@ services:
     environment:
       KARAPACE_KARAPACE_REGISTRY: "true"
       KARAPACE_ADVERTISED_HOSTNAME: schema-registry
-      KARAPACE_BOOTSTRAP_URI: kafka:9092
+      KARAPACE_BOOTSTRAP_URI: kafka:29092
       KARAPACE_PORT: 8081
       KARAPACE_HOST: 0.0.0.0
       KARAPACE_CLIENT_ID: karapace
@@ -132,9 +134,8 @@ services:
       POSTGRES_USER: crypto
       POSTGRES_PASSWORD: crypto
       POSTGRES_DB: crypto_data
-      TZ: Asia/Ho_Chi_Minh
     ports:
-      - "5432:5432"
+      - "5433:5432"  # Host 5433 -> Container 5432 (tránh conflict với PostgreSQL local)
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./script/init_schema.sql:/docker-entrypoint-initdb.d/01-init-schema.sql:ro
@@ -165,13 +166,12 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: crypto
-      POSTGRES_PASSWORD: crypto
-      POSTGRES_DB: crypto_data
+      POSTGRES_DATA_HOST: postgres
+      POSTGRES_DATA_PORT: 5432
+      POSTGRES_DATA_USER: crypto
+      POSTGRES_DATA_PASSWORD: crypto
+      POSTGRES_DATA_DB: crypto_data
       MODEL_DIR: /app/ml/model
-      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./api:/app/api
       - ./storage:/app/storage
@@ -198,13 +198,12 @@ services:
       redis:
         condition: service_healthy
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TICKER_TOPIC: raw_tickers
       TICKER_CONSUMER_GROUP: ticker-consumer-group
       REDIS_HOST: redis
       REDIS_PORT: 6379
       LOG_LEVEL: INFO
-      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./ingestion:/app/ingestion
       - ./storage:/app/storage
@@ -232,12 +231,11 @@ services:
       schema-init:
         condition: service_completed_successfully
     environment:
-      KAFKA_SERVER: kafka:9092
+      KAFKA_SERVER: kafka:29092
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
       REDIS_HOST: redis
       REDIS_PORT: 6379
       LOG_LEVEL: INFO
-      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./ingestion:/app/ingestion
       - ./storage:/app/storage
@@ -259,7 +257,6 @@ services:
       - "8501:8501"
     environment:
       API_URL: http://crypto-api:8000
-      TZ: Asia/Ho_Chi_Minh
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s
@@ -319,6 +316,7 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow-scheduler
+    hostname: airflow-scheduler
     depends_on:
       postgres:
         condition: service_healthy
@@ -328,7 +326,12 @@ services:
         condition: service_healthy
       schema-init:
         condition: service_completed_successfully
+    environment:
+      <<: *airflow_env
+      AIRFLOW__CORE__HOSTNAME_CALLABLE: airflow.utils.net:getfqdn
     command: airflow scheduler
+    ports:
+      - "8793:8793"
     healthcheck:
       test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname)"]
       interval: 30s
@@ -410,7 +413,7 @@ services:
     ports:
       - "9308:9308"
     command:
-      - '--kafka.server=kafka:9092'
+      - '--kafka.server=kafka:29092'
       - '--web.listen-address=:9308'
     logging: *default-logging
 
