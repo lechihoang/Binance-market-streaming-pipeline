@@ -1,9 +1,7 @@
 import sys
 import time
-from datetime import datetime
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, "/app")

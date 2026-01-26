@@ -52,16 +52,46 @@ FEATURE_COLUMNS = [
 ]
 
 SYMBOL_ENCODING: dict[str, int] = {
-    "AAVEUSDT": 0, "ADAUSDT": 1, "ALGOUSDT": 2, "APTUSDT": 3,
-    "ARBUSDT": 4, "ATOMUSDT": 5, "AVAXUSDT": 6, "BCHUSDT": 7,
-    "BNBUSDT": 8, "BONKUSDT": 9, "BTCUSDT": 10, "DOGEUSDT": 11,
-    "DOTUSDT": 12, "ENAUSDT": 13, "ETCUSDT": 14, "ETHUSDT": 15,
-    "FILUSDT": 16, "HBARUSDT": 17, "ICPUSDT": 18, "LINKUSDT": 19,
-    "LTCUSDT": 20, "NEARUSDT": 21, "ONDOUSDT": 22, "OPUSDT": 23,
-    "PEPEUSDT": 24, "RENDERUSDT": 25, "SHIBUSDT": 26, "SOLUSDT": 27,
-    "SUIUSDT": 28, "TAOUSDT": 29, "TONUSDT": 30, "TRUMPUSDT": 31,
-    "TRXUSDT": 32, "UNIUSDT": 33, "VETUSDT": 34, "WLDUSDT": 35,
-    "WLFIUSDT": 36, "XLMUSDT": 37, "XRPUSDT": 38, "ZECUSDT": 39,
+    "AAVEUSDT": 0,
+    "ADAUSDT": 1,
+    "ALGOUSDT": 2,
+    "APTUSDT": 3,
+    "ARBUSDT": 4,
+    "ATOMUSDT": 5,
+    "AVAXUSDT": 6,
+    "BCHUSDT": 7,
+    "BNBUSDT": 8,
+    "BONKUSDT": 9,
+    "BTCUSDT": 10,
+    "DOGEUSDT": 11,
+    "DOTUSDT": 12,
+    "ENAUSDT": 13,
+    "ETCUSDT": 14,
+    "ETHUSDT": 15,
+    "FILUSDT": 16,
+    "HBARUSDT": 17,
+    "ICPUSDT": 18,
+    "LINKUSDT": 19,
+    "LTCUSDT": 20,
+    "NEARUSDT": 21,
+    "ONDOUSDT": 22,
+    "OPUSDT": 23,
+    "PEPEUSDT": 24,
+    "RENDERUSDT": 25,
+    "SHIBUSDT": 26,
+    "SOLUSDT": 27,
+    "SUIUSDT": 28,
+    "TAOUSDT": 29,
+    "TONUSDT": 30,
+    "TRUMPUSDT": 31,
+    "TRXUSDT": 32,
+    "UNIUSDT": 33,
+    "VETUSDT": 34,
+    "WLDUSDT": 35,
+    "WLFIUSDT": 36,
+    "XLMUSDT": 37,
+    "XRPUSDT": 38,
+    "ZECUSDT": 39,
 }
 
 shutdown_requested = False
@@ -123,11 +153,17 @@ class VolatilityPredictionJob:
         w60 = Window.partitionBy("symbol").orderBy("timestamp").rowsBetween(-59, 0)
 
         features = df.select(
-            F.col("timestamp"), F.col("symbol"),
-            F.col("open").cast(DoubleType()), F.col("high").cast(DoubleType()),
-            F.col("low").cast(DoubleType()), F.col("close").cast(DoubleType()),
-            F.col("volume").cast(DoubleType()), F.col("quote_volume").cast(DoubleType()),
-            F.col("trade_count"), F.col("buy_count"), F.col("sell_count"),
+            F.col("timestamp"),
+            F.col("symbol"),
+            F.col("open").cast(DoubleType()),
+            F.col("high").cast(DoubleType()),
+            F.col("low").cast(DoubleType()),
+            F.col("close").cast(DoubleType()),
+            F.col("volume").cast(DoubleType()),
+            F.col("quote_volume").cast(DoubleType()),
+            F.col("trade_count"),
+            F.col("buy_count"),
+            F.col("sell_count"),
         )
 
         for lag, name in [(1, "return_1m"), (5, "return_5m"), (15, "return_15m")]:
@@ -141,58 +177,86 @@ class VolatilityPredictionJob:
             )
 
         features = (
-            features
-            .withColumn("volatility_5m", F.coalesce(F.stddev("return_1m").over(w5), F.lit(0.0)))
+            features.withColumn("volatility_5m", F.coalesce(F.stddev("return_1m").over(w5), F.lit(0.0)))
             .withColumn("volatility_15m", F.coalesce(F.stddev("return_1m").over(w15), F.lit(0.0)))
             .withColumn("volatility_30m", F.coalesce(F.stddev("return_1m").over(w30), F.lit(0.0)))
             .withColumn("volatility_60m", F.coalesce(F.stddev("return_1m").over(w60), F.lit(0.0)))
             .withColumn("volatility_ratio", F.col("volatility_5m") / (F.col("volatility_30m") + 1e-8))
         )
 
-        features = (
-            features
-            .withColumn("price_range_pct", ((F.col("high") - F.col("low")) / (F.col("close") + 1e-8)) * 100)
-            .withColumn("price_body_pct", (F.abs(F.col("close") - F.col("open")) / (F.col("close") + 1e-8)) * 100)
-        )
+        features = features.withColumn(
+            "price_range_pct", ((F.col("high") - F.col("low")) / (F.col("close") + 1e-8)) * 100
+        ).withColumn("price_body_pct", (F.abs(F.col("close") - F.col("open")) / (F.col("close") + 1e-8)) * 100)
 
         features = (
-            features
-            .withColumn("avg_volume_60", F.avg("volume").over(w60))
-            .withColumn("volume_ratio_60m", F.when(F.col("avg_volume_60") > 0, F.col("volume") / F.col("avg_volume_60")).otherwise(1.0))
+            features.withColumn("avg_volume_60", F.avg("volume").over(w60))
+            .withColumn(
+                "volume_ratio_60m",
+                F.when(F.col("avg_volume_60") > 0, F.col("volume") / F.col("avg_volume_60")).otherwise(1.0),
+            )
             .withColumn("avg_volume_15", F.avg("volume").over(w15))
-            .withColumn("volume_ratio_15m", F.when(F.col("avg_volume_15") > 0, F.col("volume") / F.col("avg_volume_15")).otherwise(1.0))
+            .withColumn(
+                "volume_ratio_15m",
+                F.when(F.col("avg_volume_15") > 0, F.col("volume") / F.col("avg_volume_15")).otherwise(1.0),
+            )
+        )
+
+        features = features.withColumn(
+            "buy_ratio",
+            F.when(
+                F.col("trade_count") > 0,
+                F.col("buy_count").cast(DoubleType()) / F.col("trade_count").cast(DoubleType()),
+            ).otherwise(0.5),
+        ).withColumn(
+            "buy_sell_imbalance",
+            F.when(
+                F.col("trade_count") > 0,
+                (2.0 * F.col("buy_count").cast(DoubleType()) - F.col("trade_count").cast(DoubleType()))
+                / F.col("trade_count").cast(DoubleType()),
+            ).otherwise(0.0),
         )
 
         features = (
-            features
-            .withColumn("buy_ratio", F.when(F.col("trade_count") > 0, F.col("buy_count").cast(DoubleType()) / F.col("trade_count").cast(DoubleType())).otherwise(0.5))
-            .withColumn("buy_sell_imbalance", F.when(F.col("trade_count") > 0, (2.0 * F.col("buy_count").cast(DoubleType()) - F.col("trade_count").cast(DoubleType())) / F.col("trade_count").cast(DoubleType())).otherwise(0.0))
-        )
-
-        features = (
-            features
-            .withColumn("price_ma_15", F.avg("close").over(w15))
-            .withColumn("price_vs_ma_15m", ((F.col("close") - F.col("price_ma_15")) / (F.col("price_ma_15") + 1e-8)) * 100)
+            features.withColumn("price_ma_15", F.avg("close").over(w15))
+            .withColumn(
+                "price_vs_ma_15m", ((F.col("close") - F.col("price_ma_15")) / (F.col("price_ma_15") + 1e-8)) * 100
+            )
             .withColumn("price_ma_60", F.avg("close").over(w60))
-            .withColumn("price_vs_ma_60m", ((F.col("close") - F.col("price_ma_60")) / (F.col("price_ma_60") + 1e-8)) * 100)
+            .withColumn(
+                "price_vs_ma_60m", ((F.col("close") - F.col("price_ma_60")) / (F.col("price_ma_60") + 1e-8)) * 100
+            )
         )
 
         symbol_map = F.create_map([F.lit(x) for kv in SYMBOL_ENCODING.items() for x in kv])
-        features = (
-            features
-            .withColumn("hour", F.hour("timestamp").cast(IntegerType()))
-            .withColumn("symbol_encoded", F.coalesce(symbol_map[F.col("symbol")], F.lit(99)).cast(IntegerType()))
+        features = features.withColumn("hour", F.hour("timestamp").cast(IntegerType())).withColumn(
+            "symbol_encoded", F.coalesce(symbol_map[F.col("symbol")], F.lit(99)).cast(IntegerType())
         )
 
         return features.select(
-            "timestamp", "symbol", "close", "volume", "quote_volume", "trade_count",
-            "return_1m", "return_5m", "return_15m",
-            "volatility_5m", "volatility_15m", "volatility_30m", "volatility_60m", "volatility_ratio",
-            "price_range_pct", "price_body_pct",
-            "volume_ratio_15m", "volume_ratio_60m",
-            "buy_ratio", "buy_sell_imbalance",
-            "price_vs_ma_15m", "price_vs_ma_60m",
-            "hour", "symbol_encoded",
+            "timestamp",
+            "symbol",
+            "close",
+            "volume",
+            "quote_volume",
+            "trade_count",
+            "return_1m",
+            "return_5m",
+            "return_15m",
+            "volatility_5m",
+            "volatility_15m",
+            "volatility_30m",
+            "volatility_60m",
+            "volatility_ratio",
+            "price_range_pct",
+            "price_body_pct",
+            "volume_ratio_15m",
+            "volume_ratio_60m",
+            "buy_ratio",
+            "buy_sell_imbalance",
+            "price_vs_ma_15m",
+            "price_vs_ma_60m",
+            "hour",
+            "symbol_encoded",
         ).filter(F.col("return_15m").isNotNull())
 
     def predict_volatility(self, features_df: DataFrame) -> DataFrame:
@@ -213,14 +277,30 @@ class VolatilityPredictionJob:
             return 0
 
         feature_cols = [
-            "timestamp", "symbol", "close", "volume", "quote_volume", "trade_count",
-            "return_1m", "return_5m", "return_15m",
-            "volatility_5m", "volatility_15m", "volatility_30m", "volatility_60m", "volatility_ratio",
-            "price_range_pct", "price_body_pct",
-            "volume_ratio_15m", "volume_ratio_60m",
-            "buy_ratio", "buy_sell_imbalance",
-            "price_vs_ma_15m", "price_vs_ma_60m",
-            "hour", "symbol_encoded",
+            "timestamp",
+            "symbol",
+            "close",
+            "volume",
+            "quote_volume",
+            "trade_count",
+            "return_1m",
+            "return_5m",
+            "return_15m",
+            "volatility_5m",
+            "volatility_15m",
+            "volatility_30m",
+            "volatility_60m",
+            "volatility_ratio",
+            "price_range_pct",
+            "price_body_pct",
+            "volume_ratio_15m",
+            "volume_ratio_60m",
+            "buy_ratio",
+            "buy_sell_imbalance",
+            "price_vs_ma_15m",
+            "price_vs_ma_60m",
+            "hour",
+            "symbol_encoded",
         ]
 
         record_count = count if count is not None else df.count()
@@ -296,8 +376,11 @@ class VolatilityPredictionJob:
             )
 
             self.pg = Postgres(
-                host=POSTGRES_HOST, port=POSTGRES_PORT,
-                user=POSTGRES_USER, password=POSTGRES_PASSWORD, database=POSTGRES_DB,
+                host=POSTGRES_HOST,
+                port=POSTGRES_PORT,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD,
+                database=POSTGRES_DB,
             )
 
             checkpoint = self.pg.get_checkpoint(JOB_VOLATILITY)

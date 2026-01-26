@@ -1,12 +1,3 @@
-#!/bin/bash
-#
-# Reset Docker state for Crypto Streaming Pipeline
-# Usage: ./script/reset-docker.sh [--hard]
-#
-# Options:
-#   --hard    Remove images (full rebuild)
-#
-
 set -e
 
 RED='\033[0;31m'

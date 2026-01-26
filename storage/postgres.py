@@ -8,7 +8,7 @@ This module handles all PostgreSQL operations including:
 """
 
 import json
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
@@ -16,8 +16,7 @@ import psycopg2
 from loguru import logger
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
-
-from tenacity import Retrying, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from schema.market import Alert, Kline
 from util.constant import (

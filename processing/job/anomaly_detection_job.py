@@ -195,8 +195,11 @@ class AnomalyJob:
             )
 
             self.pg = Postgres(
-                host=POSTGRES_HOST, port=POSTGRES_PORT,
-                user=POSTGRES_USER, password=POSTGRES_PASSWORD, database=POSTGRES_DB,
+                host=POSTGRES_HOST,
+                port=POSTGRES_PORT,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD,
+                database=POSTGRES_DB,
             )
             self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT)
 

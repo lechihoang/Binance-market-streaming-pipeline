@@ -270,10 +270,13 @@ class Redis:
         key = f"{RedisKey.PRICE}:{symbol}"
         try:
             ts_val = ts or datetime.now()
-            self.client.hset(key, mapping={
-                "price": str(price),
-                "timestamp": ts_val.isoformat(),
-            })
+            self.client.hset(
+                key,
+                mapping={
+                    "price": str(price),
+                    "timestamp": ts_val.isoformat(),
+                },
+            )
             self.client.expire(key, RedisTTL.AGG)
             return True
         except Exception as e:

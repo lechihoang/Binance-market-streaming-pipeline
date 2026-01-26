@@ -5,10 +5,10 @@ from typing import Any
 import great_expectations as gx
 import pandas as pd
 from great_expectations import expectations as gxe
+from loguru import logger
 
 from storage.postgres import Postgres
 from util.constant import VALID_ALERT_LEVEL, VALID_ALERT_TYPE
-from loguru import logger
 
 # logger = get_logger(__name__)
 

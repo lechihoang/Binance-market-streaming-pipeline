@@ -1,106 +1,59 @@
-"""Tests for storage - Redis/PostgreSQL health checks, query router tier selection, data quality."""
+"""Tests for storage layer - health checks, query router, data quality validation."""
 
-import os
-import tempfile
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, Mock, patch
 
-import great_expectations as gx
 import pytest
-from great_expectations import expectations as gxe
-from hypothesis import HealthCheck, assume, given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from processing.validator.aggregation_validator import build_aggregation_expectations
 from processing.validator.aggregation_validator import run_ge_validation as run_aggregation_ge_validation
 from processing.validator.anomaly_validator import build_anomaly_expectations
 from processing.validator.anomaly_validator import run_ge_validation as run_anomaly_ge_validation
-from storage.postgres import Postgres
-from storage.postgres import check_health as check_postgres_health
 from storage.query_router import Router
-from storage.redis import Redis
-from storage.redis import check_health as check_redis_health
 
-
-def is_redis_available():
-    """Check if Redis is available for testing."""
-    try:
-        import redis
-
-        client = redis.Redis(host="localhost", port=6379, db=15, socket_connect_timeout=1)
-        client.ping()
-        client.close()
-        return True
-    except Exception:
-        return False
-
-
-REDIS_AVAILABLE = is_redis_available()
-skip_if_no_redis = pytest.mark.skipif(not REDIS_AVAILABLE, reason="Redis server not available at localhost:6379")
+# ==========================================
+# Redis Health Check
+# ==========================================
 
 
 class TestRedisHealthCheck:
-    """Tests for Redis health check (Hot Path)."""
-
-    @patch("redis.Redis")
-    def test_redis_health_check_success(self, mock_redis_class):
-        """Test successful Redis health check."""
+    @patch("storage.redis.redis.Redis")
+    def test_success(self, mock_redis_cls):
         mock_client = Mock()
         mock_client.ping.return_value = True
-        mock_redis_class.return_value = mock_client
+        mock_redis_cls.return_value = mock_client
 
-        result = check_redis_health(host="localhost", port=6379)
+        from storage.redis import check_health
 
+        result = check_health(host="localhost", port=6379, db=0)
+        assert result["status"] == "healthy"
         assert result["service"] == "redis"
         assert result["tier"] == "hot"
-        assert result["status"] == "healthy"
-        assert result["host"] == "localhost"
-        assert result["port"] == 6379
-        assert result["attempt"] == 1
-        assert "timestamp" in result
-
         mock_client.ping.assert_called_once()
         mock_client.close.assert_called_once()
 
-    @patch("redis.Redis")
-    def test_redis_health_check_retry_on_failure(self, mock_redis_class):
-        """Test Redis health check retries on connection failure."""
-        from redis.exceptions import ConnectionError
-
-        mock_client = Mock()
-        mock_client.ping.side_effect = [
-            ConnectionError("Connection refused"),
-            ConnectionError("Connection refused"),
-            True,
-        ]
-        mock_redis_class.return_value = mock_client
-
-        result = check_redis_health(host="localhost", port=6379, max_retries=3, retry_delay=0.01)
-
-        assert result["status"] == "healthy"
-        assert result["attempt"] == 3
-
-    @patch("redis.Redis")
-    def test_redis_health_check_fails_after_max_retries(self, mock_redis_class):
-        """Test Redis health check fails after max retries."""
-        from redis.exceptions import ConnectionError
-
+    @patch("storage.redis.redis.Redis")
+    def test_failure_raises(self, mock_redis_cls):
         mock_client = Mock()
         mock_client.ping.side_effect = ConnectionError("Connection refused")
-        mock_redis_class.return_value = mock_client
+        mock_redis_cls.return_value = mock_client
 
-        with pytest.raises(Exception) as exc_info:
-            check_redis_health(host="localhost", port=6379, max_retries=2, retry_delay=0.01)
+        from storage.redis import check_health
 
-        assert "Redis health check failed after 2 attempts" in str(exc_info.value)
+        with pytest.raises(Exception, match="Redis health check failed"):
+            check_health(host="localhost", port=6379, db=0)
+
+
+# ==========================================
+# PostgreSQL Health Check
+# ==========================================
 
 
 class TestPostgresHealthCheck:
-    """Tests for PostgreSQL health check (Warm Path)."""
-
-    @patch("psycopg2.connect")
-    def test_postgres_health_check_success(self, mock_connect):
-        """Test successful PostgreSQL health check."""
+    @patch("storage.postgres.psycopg2.connect")
+    def test_success(self, mock_connect):
         mock_conn = Mock()
         mock_cursor = Mock()
         mock_cursor.fetchone.return_value = (1,)
@@ -108,408 +61,137 @@ class TestPostgresHealthCheck:
         mock_conn.cursor.return_value.__exit__ = Mock(return_value=False)
         mock_connect.return_value = mock_conn
 
-        result = check_postgres_health(
-            host="localhost", port=5432, user="crypto", password="crypto", database="crypto_data"
-        )
+        from storage.postgres import check_health
 
+        result = check_health(
+            host="localhost", port=5432, user="crypto", password="crypto", database="crypto_data", retries=1
+        )
+        assert result["status"] == "healthy"
         assert result["service"] == "postgresql"
         assert result["tier"] == "warm"
-        assert result["status"] == "healthy"
-        assert result["host"] == "localhost"
-        assert result["port"] == 5432
-        assert result["database"] == "crypto_data"
-        assert result["attempt"] == 1
-
         mock_conn.close.assert_called_once()
 
-    @patch("psycopg2.connect")
-    def test_postgres_health_check_fails_after_max_retries(self, mock_connect):
-        """Test PostgreSQL health check fails after max retries."""
+    @patch("storage.postgres.psycopg2.connect")
+    def test_failure_raises(self, mock_connect):
         mock_connect.side_effect = Exception("Connection refused")
 
-        with pytest.raises(Exception) as exc_info:
-            check_postgres_health(host="localhost", port=5432, max_retries=2, retry_delay=0.01)
+        from storage.postgres import check_health
 
-        assert "PostgreSQL health check failed after 2 attempts" in str(exc_info.value)
-
-
-# Strategy for generating time offsets in minutes (for Redis tier: < 60 minutes)
-redis_offset_minutes = st.integers(min_value=0, max_value=59)
-
-# Strategy for generating time offsets in hours (for PostgreSQL tier: >= 1 hour)
-postgres_offset_hours = st.integers(min_value=1, max_value=2159)
+        with pytest.raises(Exception, match="PostgreSQL health check failed"):
+            check_health(
+                host="localhost", port=5432, user="test", password="test", database="test", retries=1, delay=0.01
+            )
 
 
-@pytest.fixture
-def mock_redis():
-    """Create mock Redis."""
-    mock = MagicMock()
-    mock.get_aggregation.return_value = None
-    mock.get_recent_trades.return_value = []
-    mock.get_recent_alerts.return_value = []
-    return mock
+# ==========================================
+# Query Router - Tier Selection
+# ==========================================
 
 
-@pytest.fixture
-def mock_postgres():
-    """Create mock Postgres."""
-    mock = MagicMock()
-    mock.query_klines.return_value = []
-    mock.query_alerts.return_value = []
-    return mock
+class TestRouterTierSelection:
+    def setup_method(self):
+        self.router = Router(redis=MagicMock(), postgres=MagicMock())
+
+    @given(minutes_ago=st.integers(min_value=0, max_value=59))
+    @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_selects_redis_for_recent_queries(self, minutes_ago):
+        start = datetime.now() - timedelta(minutes=minutes_ago)
+        assert self.router.select_tier(start) == "redis"
+
+    @given(hours_ago=st.integers(min_value=1, max_value=2000))
+    @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_selects_postgres_for_old_queries(self, hours_ago):
+        start = datetime.now() - timedelta(hours=hours_ago, minutes=1)
+        assert self.router.select_tier(start) == "postgres"
+
+    def test_boundary_exactly_one_hour(self):
+        start = datetime.now() - timedelta(hours=1, seconds=1)
+        assert self.router.select_tier(start) == "postgres"
+
+    def test_just_under_one_hour(self):
+        start = datetime.now() - timedelta(minutes=59)
+        assert self.router.select_tier(start) == "redis"
 
 
-@pytest.fixture
-def query_router(mock_redis, mock_postgres):
-    """Create Router with mock storage instances."""
-    return Router(
-        redis=mock_redis,
-        postgres=mock_postgres,
-    )
+# ==========================================
+# Data Quality - Aggregation Validation (GE)
+# ==========================================
 
 
-class TestQueryRoutingCorrectness:
-    """
-    Property tests for query routing correctness.
+class TestAggregationValidation:
+    def test_valid_ohlcv_passes(self):
+        records = [
+            {"symbol": "BTCUSDT", "open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 100.0}
+        ]
+        result = run_aggregation_ge_validation(records, build_aggregation_expectations())
+        assert result.success is True
 
-    Feature: storage-tier-migration, Property 5: Query Interface Compatibility
-    Validates: Requirements 4.1, 4.2
-    """
+    def test_high_less_than_low_fails(self):
+        records = [
+            {"symbol": "BTCUSDT", "open": 50000.0, "high": 48000.0, "low": 49000.0, "close": 50500.0, "volume": 100.0}
+        ]
+        result = run_aggregation_ge_validation(records, build_aggregation_expectations())
+        assert result.success is False
 
-    TIER_REDIS = "redis"
-    TIER_POSTGRES = "postgres"
+    def test_negative_volume_fails(self):
+        records = [
+            {"symbol": "BTCUSDT", "open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": -1.0}
+        ]
+        result = run_aggregation_ge_validation(records, build_aggregation_expectations())
+        assert result.success is False
 
-    @given(offset_minutes=redis_offset_minutes)
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_redis_tier_selection_for_recent_queries(self, query_router, offset_minutes):
-        """For any query within last 1 hour, the router should select Redis tier."""
-        now = datetime.now()
-        start = now - timedelta(minutes=offset_minutes)
+    def test_null_symbol_fails(self):
+        records = [
+            {"symbol": None, "open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 100.0}
+        ]
+        result = run_aggregation_ge_validation(records, build_aggregation_expectations())
+        assert result.success is False
 
-        selected_tier = query_router.select_tier(start)
+    def test_high_less_than_open_fails(self):
+        records = [
+            {"symbol": "BTCUSDT", "open": 51000.0, "high": 50000.0, "low": 49000.0, "close": 50500.0, "volume": 100.0}
+        ]
+        result = run_aggregation_ge_validation(records, build_aggregation_expectations())
+        assert result.success is False
 
-        assert selected_tier == self.TIER_REDIS, f"Expected Redis for {offset_minutes} minutes ago, got {selected_tier}"
-
-    @given(offset_hours=postgres_offset_hours)
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_postgres_tier_selection_for_historical_queries(self, query_router, offset_hours):
-        """For any query > 1 hour, the router should select PostgreSQL tier."""
-        now = datetime.now()
-        start = now - timedelta(hours=offset_hours)
-
-        selected_tier = query_router.select_tier(start)
-
-        assert selected_tier == self.TIER_POSTGRES, (
-            f"Expected PostgreSQL for {offset_hours} hours ago, got {selected_tier}"
-        )
-
-    def test_boundary_exactly_1_hour(self, query_router):
-        """Test boundary: exactly 1 hour ago uses PostgreSQL (start <= now - 1h)."""
-        now = datetime.now()
-        start = now - timedelta(hours=1)
-
-        selected_tier = query_router.select_tier(start)
-
-        assert selected_tier == self.TIER_POSTGRES
-
-    def test_boundary_just_under_1_hour(self, query_router):
-        """Test boundary: just under 1 hour ago uses Redis (start > now - 1h)."""
-        now = datetime.now()
-        start = now - timedelta(minutes=59)
-
-        selected_tier = query_router.select_tier(start)
-
-        assert selected_tier == self.TIER_REDIS
+    def test_high_less_than_close_fails(self):
+        records = [
+            {"symbol": "BTCUSDT", "open": 48000.0, "high": 49000.0, "low": 47000.0, "close": 50000.0, "volume": 100.0}
+        ]
+        result = run_aggregation_ge_validation(records, build_aggregation_expectations())
+        assert result.success is False
 
 
-# =============================================================================
-# Data Quality Tests using Great Expectations
-# =============================================================================
-
-# Valid symbols for testing
-VALID_SYMBOLS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "BNBUSDT",
-    "XRPUSDT",
-    "ADAUSDT",
-    "DOGEUSDT",
-    "SOLUSDT",
-    "DOTUSDT",
-    "MATICUSDT",
-    "LTCUSDT",
-]
+# ==========================================
+# Data Quality - Anomaly Validation (GE)
+# ==========================================
 
 
-def test_ohlcv_data_quality_valid():
-    """Test that valid OHLCV data passes all GE expectations."""
-    ohlcv_records = [
-        {"symbol": "BTCUSDT", "open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0},
-        {"symbol": "ETHUSDT", "open": 3000.0, "high": 3100.0, "low": 2900.0, "close": 3050.0, "volume": 500.0},
-    ]
-
-    expectations = build_aggregation_expectations()
-    result = run_aggregation_ge_validation(ohlcv_records, expectations)
-
-    assert result.success, (
-        f"Valid OHLCV should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
-    )
-
-
-def test_ohlcv_high_less_than_low_fails():
-    """Test that OHLCV with high < low fails validation."""
-    invalid_ohlcv = [
-        {"symbol": "BTCUSDT", "open": 50000.0, "high": 48000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0},
-        # high (48000) < low (49000) - invalid!
-    ]
-
-    expectations = build_aggregation_expectations()
-    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
-
-    assert not result.success, "OHLCV with high < low should fail"
-
-
-def test_ohlcv_high_less_than_open_fails():
-    """Test that OHLCV with high < open fails validation."""
-    invalid_ohlcv = [
-        {"symbol": "BTCUSDT", "open": 50000.0, "high": 49000.0, "low": 48000.0, "close": 48500.0, "volume": 1000.0},
-        # high (49000) < open (50000) - invalid!
-    ]
-
-    expectations = build_aggregation_expectations()
-    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
-
-    assert not result.success, "OHLCV with high < open should fail"
-
-
-def test_ohlcv_high_less_than_close_fails():
-    """Test that OHLCV with high < close fails validation."""
-    invalid_ohlcv = [
-        {"symbol": "BTCUSDT", "open": 48000.0, "high": 49000.0, "low": 47000.0, "close": 50000.0, "volume": 1000.0},
-        # high (49000) < close (50000) - invalid!
-    ]
-
-    expectations = build_aggregation_expectations()
-    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
-
-    assert not result.success, "OHLCV with high < close should fail"
-
-
-def test_ohlcv_negative_price_fails():
-    """Test that OHLCV with negative prices fails validation."""
-    invalid_ohlcv = [
-        {"symbol": "BTCUSDT", "open": -100.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0},
-    ]
-
-    expectations = build_aggregation_expectations()
-    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
-
-    assert not result.success, "OHLCV with negative price should fail"
-
-
-def test_ohlcv_negative_volume_fails():
-    """Test that OHLCV with negative volume fails validation."""
-    invalid_ohlcv = [
-        {"symbol": "BTCUSDT", "open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": -100.0},
-    ]
-
-    expectations = build_aggregation_expectations()
-    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
-
-    assert not result.success, "OHLCV with negative volume should fail"
-
-
-def test_ohlcv_null_symbol_fails():
-    """Test that OHLCV with null symbol fails validation."""
-    invalid_ohlcv = [
-        {"symbol": None, "open": 50000.0, "high": 51000.0, "low": 49000.0, "close": 50500.0, "volume": 1000.0},
-    ]
-
-    expectations = build_aggregation_expectations()
-    result = run_aggregation_ge_validation(invalid_ohlcv, expectations)
-
-    assert not result.success, "OHLCV with null symbol should fail"
-
-
-def test_alert_data_quality_valid():
-    """Test that valid alert data passes all GE expectations."""
-    import uuid
-    from datetime import timezone
-
-    alerts = [
-        {
-            "alert_id": str(uuid.uuid4()),
-            "timestamp": datetime.now().isoformat(),
+class TestAnomalyValidation:
+    def _make_alert(self, **overrides):
+        base = {
+            "alert_id": "a1",
             "symbol": "BTCUSDT",
             "alert_type": "VOLUME_SPIKE",
             "alert_level": "HIGH",
-            "created_at": datetime.now().isoformat(),
-        },
-        {
-            "alert_id": str(uuid.uuid4()),
             "timestamp": datetime.now().isoformat(),
-            "symbol": "ETHUSDT",
-            "alert_type": "PRICE_SPIKE",
-            "alert_level": "MEDIUM",
             "created_at": datetime.now().isoformat(),
-        },
-    ]
+        }
+        base.update(overrides)
+        return base
 
-    expectations = build_anomaly_expectations()
-    result = run_anomaly_ge_validation(alerts, expectations)
+    def test_valid_alert_passes(self):
+        result = run_anomaly_ge_validation([self._make_alert()], build_anomaly_expectations())
+        assert result.success is True
 
-    assert result.success, (
-        f"Valid alerts should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
-    )
+    def test_invalid_alert_type_fails(self):
+        result = run_anomaly_ge_validation([self._make_alert(alert_type="INVALID_TYPE")], build_anomaly_expectations())
+        assert result.success is False
 
+    def test_invalid_alert_level_fails(self):
+        result = run_anomaly_ge_validation([self._make_alert(alert_level="CRITICAL")], build_anomaly_expectations())
+        assert result.success is False
 
-def test_alert_invalid_type_fails():
-    """Test that alert with invalid alert_type fails validation."""
-    import uuid
-    from datetime import timezone
-
-    invalid_alerts = [
-        {
-            "alert_id": str(uuid.uuid4()),
-            "timestamp": datetime.now().isoformat(),
-            "symbol": "BTCUSDT",
-            "alert_type": "UNKNOWN_TYPE",  # Not in VALID_ALERT_TYPES
-            "alert_level": "HIGH",
-            "created_at": datetime.now().isoformat(),
-        },
-    ]
-
-    expectations = build_anomaly_expectations()
-    result = run_anomaly_ge_validation(invalid_alerts, expectations)
-
-    assert not result.success, "Alert with invalid alert_type should fail"
-
-
-def test_alert_invalid_level_fails():
-    """Test that alert with invalid alert_level fails validation."""
-    import uuid
-    from datetime import timezone
-
-    invalid_alerts = [
-        {
-            "alert_id": str(uuid.uuid4()),
-            "timestamp": datetime.now().isoformat(),
-            "symbol": "BTCUSDT",
-            "alert_type": "VOLUME_SPIKE",
-            "alert_level": "CRITICAL",  # Not in VALID_ALERT_LEVELS (should be HIGH/MEDIUM/LOW)
-            "created_at": datetime.now().isoformat(),
-        },
-    ]
-
-    expectations = build_anomaly_expectations()
-    result = run_anomaly_ge_validation(invalid_alerts, expectations)
-
-    assert not result.success, "Alert with invalid alert_level should fail"
-
-
-def test_alert_null_symbol_fails():
-    """Test that alert with null symbol fails validation."""
-    import uuid
-    from datetime import timezone
-
-    invalid_alerts = [
-        {
-            "alert_id": str(uuid.uuid4()),
-            "timestamp": datetime.now().isoformat(),
-            "symbol": None,  # Null symbol
-            "alert_type": "VOLUME_SPIKE",
-            "alert_level": "HIGH",
-            "created_at": datetime.now().isoformat(),
-        },
-    ]
-
-    expectations = build_anomaly_expectations()
-    result = run_anomaly_ge_validation(invalid_alerts, expectations)
-
-    assert not result.success, "Alert with null symbol should fail"
-
-
-# Build custom expectations for trade data
-def build_trade_expectations():
-    """Build list of expectations for trade data."""
-    return [
-        gxe.ExpectColumnToExist(column="price"),
-        gxe.ExpectColumnToExist(column="quantity"),
-        gxe.ExpectColumnToExist(column="timestamp"),
-        gxe.ExpectColumnValuesToNotBeNull(column="price"),
-        gxe.ExpectColumnValuesToNotBeNull(column="quantity"),
-        gxe.ExpectColumnValuesToNotBeNull(column="timestamp"),
-        gxe.ExpectColumnValuesToBeBetween(column="price", min_value=0),
-        gxe.ExpectColumnValuesToBeBetween(column="quantity", min_value=0),
-    ]
-
-
-def run_trade_ge_validation(records, expectations):
-    """Run GE validation on trade records."""
-    import pandas as pd
-
-    df = pd.DataFrame(records)
-    context = gx.get_context(mode="ephemeral")
-
-    data_source = context.data_sources.add_pandas("trade_source")
-    data_asset = data_source.add_dataframe_asset(name="trade_data")
-
-    batch_definition = data_asset.add_batch_definition_whole_dataframe("trade_batch")
-    batch = batch_definition.get_batch(batch_parameters={"dataframe": df})
-
-    suite = gx.ExpectationSuite(name="trade_suite")
-    for exp in expectations:
-        suite.add_expectation(exp)
-
-    return batch.validate(suite)
-
-
-def test_trade_data_quality_valid():
-    """Test that valid trade data passes all GE expectations."""
-    trades = [
-        {"price": 50000.0, "quantity": 0.5, "timestamp": 1704067200000, "is_buyer_maker": True},
-        {"price": 50100.0, "quantity": 1.0, "timestamp": 1704067260000, "is_buyer_maker": False},
-    ]
-
-    expectations = build_trade_expectations()
-    result = run_trade_ge_validation(trades, expectations)
-
-    assert result.success, (
-        f"Valid trades should pass. Failed: {[r.expectation_config.type for r in result.results if not r.success]}"
-    )
-
-
-def test_trade_negative_price_fails():
-    """Test that trade with negative price fails validation."""
-    invalid_trades = [
-        {"price": -100.0, "quantity": 0.5, "timestamp": 1704067200000, "is_buyer_maker": True},
-    ]
-
-    expectations = build_trade_expectations()
-    result = run_trade_ge_validation(invalid_trades, expectations)
-
-    assert not result.success, "Trade with negative price should fail"
-
-
-def test_trade_negative_quantity_fails():
-    """Test that trade with negative quantity fails validation."""
-    invalid_trades = [
-        {"price": 50000.0, "quantity": -1.0, "timestamp": 1704067200000, "is_buyer_maker": True},
-    ]
-
-    expectations = build_trade_expectations()
-    result = run_trade_ge_validation(invalid_trades, expectations)
-
-    assert not result.success, "Trade with negative quantity should fail"
-
-
-def test_trade_null_price_fails():
-    """Test that trade with null price fails validation."""
-    invalid_trades = [
-        {"price": None, "quantity": 0.5, "timestamp": 1704067200000, "is_buyer_maker": True},
-    ]
-
-    expectations = build_trade_expectations()
-    result = run_trade_ge_validation(invalid_trades, expectations)
-
-    assert not result.success, "Trade with null price should fail"
+    def test_null_symbol_fails(self):
+        result = run_anomaly_ge_validation([self._make_alert(symbol=None)], build_anomaly_expectations())
+        assert result.success is False

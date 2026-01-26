@@ -39,10 +39,12 @@ from util.metric import record_error, record_message_processed
 
 JDBC_URL = f"jdbc:postgresql://{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
-VALIDATION_FILTER_SCHEMA = StructType([
-    StructField("symbol", StringType(), nullable=False),
-    StructField("timestamp", TimestampType(), nullable=False),
-])
+VALIDATION_FILTER_SCHEMA = StructType(
+    [
+        StructField("symbol", StringType(), nullable=False),
+        StructField("timestamp", TimestampType(), nullable=False),
+    ]
+)
 
 shutdown_requested = False
 shutdown_signal = "Unknown"
@@ -81,16 +83,13 @@ class TradeAggregationJob:
             from_avro(expr("substring(value, 6)"), avro_schema).alias("trade"),
             col("timestamp").alias("kafka_timestamp"),
         )
-        return (
-            parsed.select(
-                (col("trade.event_time") / 1000).cast(TimestampType()).alias("event_time"),
-                col("trade.symbol").alias("symbol"),
-                col("trade.price").cast(DoubleType()).alias("price"),
-                col("trade.quantity").cast(DoubleType()).alias("quantity"),
-                col("trade.is_buyer_maker").alias("is_buyer_maker"),
-            )
-            .withWatermark("event_time", "1 minute")
-        )
+        return parsed.select(
+            (col("trade.event_time") / 1000).cast(TimestampType()).alias("event_time"),
+            col("trade.symbol").alias("symbol"),
+            col("trade.price").cast(DoubleType()).alias("price"),
+            col("trade.quantity").cast(DoubleType()).alias("quantity"),
+            col("trade.is_buyer_maker").alias("is_buyer_maker"),
+        ).withWatermark("event_time", "1 minute")
 
     def aggregate_ohlcv(self, trades_df: DataFrame) -> DataFrame:
         """Group trades into 1-minute windows with OHLCV, trade counts, volatility, and derived metrics."""
@@ -223,8 +222,11 @@ class TradeAggregationJob:
             logger.info("Spark session initialized")
 
             self.postgres = Postgres(
-                host=POSTGRES_HOST, port=POSTGRES_PORT,
-                user=POSTGRES_USER, password=POSTGRES_PASSWORD, database=POSTGRES_DB,
+                host=POSTGRES_HOST,
+                port=POSTGRES_PORT,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD,
+                database=POSTGRES_DB,
             )
             self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT)
             logger.info("Storage connections initialized")
@@ -241,8 +243,7 @@ class TradeAggregationJob:
             aggregated_ohlcv = self.aggregate_ohlcv(parsed_trades)
 
             self.query = (
-                aggregated_ohlcv.writeStream
-                .foreachBatch(self.process_batch)
+                aggregated_ohlcv.writeStream.foreachBatch(self.process_batch)
                 .outputMode("update")
                 .trigger(processingTime="60 seconds")
                 .option("checkpointLocation", SPARK_CHECKPOINT)

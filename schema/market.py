@@ -3,8 +3,6 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from util.constant import TICKER_BINANCE_MAP
-
 
 class Kline(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -150,9 +148,93 @@ class Alert(BaseModel):
     def from_redis_dict(cls, data: dict[str, str]) -> Self:
         return cls.model_validate(data)
 
+    @classmethod
+    def db_fields(cls) -> list[str]:
+        return ["timestamp", "symbol", "alert_type", "alert_level", "message", "details", "alert_id", "created_at"]
+
+    @classmethod
+    def from_pg_dict(cls, data: dict[str, Any]) -> Self:
+        return cls.model_validate(data)
+
+
+class Ticker(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    last_price: float = 0.0
+    price_change: float = 0.0
+    price_change_pct: float = 0.0
+    open: float = 0.0
+    high: float = 0.0
+    low: float = 0.0
+    volume: float = 0.0
+    quote_volume: float = 0.0
+    trade_count: int = 0
+    updated_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_binance_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        from util.constant import TICKER_BINANCE_MAP
+
+        result = dict(data)
+        for src, dst in TICKER_BINANCE_MAP.items():
+            if src in result and dst not in result:
+                result[dst] = result.pop(src)
+        return result
+
+    @field_validator(
+        "last_price", "price_change", "price_change_pct", "open", "high", "low", "volume", "quote_volume", mode="before"
+    )
+    @classmethod
+    def parse_float(cls, v: Any) -> float:
+        return float(v) if v is not None else 0.0
+
+    @field_validator("trade_count", mode="before")
+    @classmethod
+    def parse_int(cls, v: Any) -> int:
+        return int(float(v)) if v is not None else 0
+
+    @field_validator("updated_at", mode="before")
+    @classmethod
+    def parse_timestamp(cls, v: Any) -> datetime | None:
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v
+        if isinstance(v, str):
+            return datetime.fromisoformat(v.replace("Z", "").replace("+00:00", ""))
+        if isinstance(v, (int, float)):
+            ts = v / 1000 if v > 1e12 else v
+            return datetime.fromtimestamp(ts)
+        return None
+
     @property
     def is_complete(self) -> bool:
         return self.trade_count > 0 and self.quote_volume > 0
+
+    def to_redis_dict(self) -> dict[str, str]:
+        data = {
+            "symbol": self.symbol,
+            "last_price": str(self.last_price),
+            "price_change": str(self.price_change),
+            "price_change_pct": str(self.price_change_pct),
+            "open": str(self.open),
+            "high": str(self.high),
+            "low": str(self.low),
+            "volume": str(self.volume),
+            "quote_volume": str(self.quote_volume),
+            "trade_count": str(self.trade_count),
+        }
+        if self.updated_at:
+            data["updated_at"] = self.updated_at.isoformat()
+        return data
+
+    @classmethod
+    def from_redis_dict(cls, data: dict[str, str]) -> Self:
+        return cls.model_validate(data)
 
 
 class Trade(BaseModel):

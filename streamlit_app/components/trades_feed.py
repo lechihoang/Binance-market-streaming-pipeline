@@ -85,7 +85,6 @@ def render_trade_stats(trades: list[dict]):
     total_volume = df["quantity"].sum()
     total_value = df["total"].sum()
     buy_trades = len(df[df["side"] == "BUY"])
-    sell_trades = len(df[df["side"] == "SELL"])
 
     col1, col2, col3, col4 = st.columns(4)
 

@@ -2,15 +2,15 @@
 
 import asyncio
 import json
+import sys
 import time
 
 import websockets
+from loguru import logger
 
 from util.constant import BINANCE_WS_URL, DEFAULT_SYMBOL, KAFKA_SERVER, SCHEMA_REGISTRY_URL
 from util.kafka import KafkaProducer
 
-import sys
-from loguru import logger
 
 class BinanceConnector:
     """Stream trades and tickers from Binance WebSocket to Kafka."""

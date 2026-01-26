@@ -41,9 +41,7 @@ class Router:
     # Kline Queries
     # ==========================================
 
-    def get_klines(
-        self, symbol: str, start: datetime, end: datetime, interval: str = "1m"
-    ) -> list[Kline]:
+    def get_klines(self, symbol: str, start: datetime, end: datetime, interval: str = "1m") -> list[Kline]:
         """Get klines with automatic tier selection, returns Kline models."""
         tier = self.select_tier(start)
 
@@ -73,9 +71,7 @@ class Router:
     # Alert Queries
     # ==========================================
 
-    def get_alerts(
-        self, symbol: str, start: datetime, end: datetime
-    ) -> list[Alert]:
+    def get_alerts(self, symbol: str, start: datetime, end: datetime) -> list[Alert]:
         """Get alerts with automatic tier selection, returns Alert models."""
         tier = self.select_tier(start)
 
@@ -83,10 +79,7 @@ class Router:
         if tier == "redis":
             alerts = self.redis.get_alerts()
             # Filter by symbol and time range
-            filtered = [
-                a for a in alerts
-                if a.symbol == symbol and start <= a.timestamp <= end
-            ]
+            filtered = [a for a in alerts if a.symbol == symbol and start <= a.timestamp <= end]
             if filtered:
                 logger.debug(f"Alerts from redis: {symbol}")
                 return filtered
@@ -144,8 +137,7 @@ class Router:
                 return self.redis.get_alert(limit=1000)
             return self.pg.get_alert(symbol, start, end)
 
-        if data_type == self.TRADE:
-            if tier == "redis":
-                return self.redis.get_trade(symbol, limit=1000)
+        if data_type == self.TRADE and tier == "redis":
+            return self.redis.get_trade(symbol, limit=1000)
 
         return []

@@ -1,10 +1,9 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from schema.market import Alert, Kline, Ticker, Trade
-
+from schema.market import Alert, Kline, Ticker
 
 # ==========================================
 # Ticker Responses
@@ -86,6 +85,7 @@ class TopTradingResponse(BaseModel):
     last_price: float
     trade_count: int
     quote_volume: float
+
 
 class RecentTradeResponse(BaseModel):
 

@@ -1,16 +1,17 @@
 """Kafka ticker consumer - reads tickers from Kafka, writes to Redis cache."""
 
 import signal
+import sys
 
 from confluent_kafka import Consumer
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
+from loguru import logger
 
 from storage.redis import Redis
 from util.constant import KAFKA_SERVER, REDIS_HOST, REDIS_PORT, SCHEMA_REGISTRY_URL
-import sys
-from loguru import logger
+
 
 class TickerConsumer:
     """Consume ticker messages from Kafka and cache in Redis."""

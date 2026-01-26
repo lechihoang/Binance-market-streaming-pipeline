@@ -1,4 +1,3 @@
-import json as json_module
 import os
 import sys
 import time
@@ -13,7 +12,9 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from loguru import logger
 from prometheus_fastapi_instrumentator import Instrumentator
+from pydantic import ValidationError
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -37,7 +38,6 @@ from api.schema import (
     VolumeSpikeResponse,
 )
 from schema.market import Alert, Kline, Ticker
-from pydantic import ValidationError
 from storage.postgres import Postgres as PostgresStorage
 from storage.query_router import Router as QueryRouter
 from storage.redis import Redis as RedisStorage
@@ -49,7 +49,6 @@ from util.constant import (
     VALID_INTERVAL,
     VALID_TRADE_COUNT_INTERVAL,
 )
-from loguru import logger
 
 # logger = get_logger(__name__)
 

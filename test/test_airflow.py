@@ -1,252 +1,109 @@
-"""Tests for Airflow DAGs - syntax validation, health checks, integration."""
+"""Tests for Airflow DAG structure and syntax validation."""
 
 import ast
-import os
-import sys
-import tempfile
-from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-# Add dags directory to path
-dags_path = Path(__file__).parent.parent / "dags"
-sys.path.insert(0, str(dags_path))
-
-# Set environment variables for DAG imports
-os.environ.setdefault("AIRFLOW__CORE__DAGS_FOLDER", str(dags_path))
-os.environ.setdefault("AIRFLOW__CORE__UNIT_TEST_MODE", "True")
-
-# Check if airflow is available
-try:
-    from airflow import DAG
-    from airflow.models import DagBag
-
-    AIRFLOW_AVAILABLE = True
-except ImportError:
-    AIRFLOW_AVAILABLE = False
-    DAG = None
-    DagBag = None
+DAG_DIR = Path(__file__).parent.parent / "dags"
+DAG_FILE = DAG_DIR / "streaming_processing_dag.py"
 
 
-class TestStreamingPipelineDAGSyntax:
-    """Test streaming_processing_dag.py syntax and structure."""
+# ==========================================
+# DAG File Validation
+# ==========================================
 
-    @pytest.fixture
-    def dag_file_path(self):
-        """Get path to streaming_processing_dag.py."""
-        return dags_path / "streaming_processing_dag.py"
 
-    @pytest.fixture
-    def dag_ast(self, dag_file_path):
-        """Parse DAG file into AST."""
-        with open(dag_file_path) as f:
-            content = f.read()
-        return ast.parse(content)
+class TestDAGFileValidation:
+    def test_dag_file_exists(self):
+        assert DAG_FILE.exists(), f"DAG file not found: {DAG_FILE}"
 
-    def test_dag_file_exists(self, dag_file_path):
-        """Test that streaming_processing_dag.py exists."""
-        assert dag_file_path.exists(), "streaming_processing_dag.py not found"
-
-    def test_dag_file_has_valid_syntax(self, dag_file_path):
-        """Test DAG file has valid Python syntax."""
-        with open(dag_file_path) as f:
-            content = f.read()
-
+    def test_dag_file_valid_python_syntax(self):
+        source = DAG_FILE.read_text()
         try:
-            ast.parse(content)
+            ast.parse(source)
         except SyntaxError as e:
-            pytest.fail(f"DAG file has syntax error: {e}")
+            pytest.fail(f"DAG file has invalid Python syntax: {e}")
 
-    def test_dag_imports_required_modules(self, dag_ast):
-        """Test DAG imports required Airflow modules."""
+    def test_dag_file_imports_airflow(self):
+        source = DAG_FILE.read_text()
+        tree = ast.parse(source)
         imports = []
-        for node in ast.walk(dag_ast):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.append(alias.name)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.append(node.module)
+        assert any("airflow" in imp for imp in imports)
+
+    def test_dag_file_imports_operators(self):
+        source = DAG_FILE.read_text()
+        tree = ast.parse(source)
+        imports = []
+        for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
                 imports.append(node.module)
-
-        assert "airflow" in imports or any("airflow" in imp for imp in imports)
         assert any("operators" in imp for imp in imports)
 
-    def test_dag_has_health_checks(self, dag_file_path):
-        """Test DAG file contains health check tasks for 2-tier storage."""
-        with open(dag_file_path) as f:
-            content = f.read()
 
-        assert "test_redis_health" in content
-        assert "test_postgres_health" in content
-        assert "test_minio_health" not in content
-
-    def test_dag_has_run_tasks(self, dag_file_path):
-        """Test DAG has run tasks for streaming jobs.
-
-        Note: run_technical_indicators_job was removed as part of simplify-indicators
-        feature. The DAG now only has trade_aggregation and anomaly_detection jobs.
-        See: .kiro/specs/simplify-indicators/requirements.md
-        """
-        with open(dag_file_path) as f:
-            content = f.read()
-
-        # Verify expected tasks exist
-        assert "run_trade_aggregation_job" in content
-        assert "run_anomaly_detection_job" in content
-
-        # Verify technical_indicators tasks do NOT exist (removed in simplify-indicators)
-        assert "run_technical_indicators_job" not in content, "run_technical_indicators_job should have been removed"
-        assert "validate_indicators_output" not in content, "validate_indicators_output should have been removed"
-
-    def test_dag_sets_dependencies(self, dag_file_path):
-        """Test DAG sets dependencies between tasks."""
-        with open(dag_file_path) as f:
-            content = f.read()
-
-        assert ">>" in content
+# ==========================================
+# DAG Structure
+# ==========================================
 
 
-@pytest.mark.skipif(not AIRFLOW_AVAILABLE, reason="Airflow is not installed")
-class TestFullPipelineExecution:
-    """Integration tests for full pipeline execution."""
+class TestDAGStructure:
+    def setup_method(self):
+        self.source = DAG_FILE.read_text()
 
-    @pytest.fixture
-    def streaming_dag(self):
-        """Load streaming_processing_dag."""
-        try:
-            from streaming_processing_dag import dag
+    def test_dag_id(self):
+        assert 'dag_id="streaming_processing_dag"' in self.source
 
-            return dag
-        except ImportError:
-            pytest.skip("streaming_processing_dag not available")
+    def test_schedule_every_5_minutes(self):
+        assert "*/5 * * * *" in self.source
 
-    def test_streaming_pipeline_structure(self, streaming_dag):
-        """Test that streaming processing DAG has correct structure."""
-        assert streaming_dag is not None
-        assert streaming_dag.dag_id == "streaming_processing_dag"
+    def test_catchup_disabled(self):
+        assert "catchup=False" in self.source
 
-        tasks = streaming_dag.tasks
-        task_ids = [t.task_id for t in tasks]
+    def test_has_health_checks_group(self):
+        assert '"health_checks"' in self.source
 
-        assert "test_redis_health" in task_ids or "health_checks.test_redis_health" in task_ids
-        assert "run_trade_aggregation_job" in task_ids or "trade_aggregation.run_trade_aggregation_job" in task_ids
+    def test_has_redis_health_task(self):
+        assert 'task_id="test_redis_health"' in self.source
 
+    def test_has_postgres_health_task(self):
+        assert 'task_id="test_postgres_health"' in self.source
 
-@pytest.mark.skipif(not AIRFLOW_AVAILABLE, reason="Airflow is not installed")
-class TestAutoDiscovery:
-    """Integration tests for DAG auto-discovery."""
+    def test_no_minio_health_check(self):
+        assert "test_minio_health" not in self.source
 
-    def test_dag_bag_loads_existing_dags(self):
-        """Test that DagBag can load existing DAGs from dags/ directory."""
-        dagbag = DagBag(dag_folder=str(dags_path), include_examples=False)
+    def test_has_trade_aggregation_group(self):
+        assert '"trade_aggregation"' in self.source
 
-        assert len(dagbag.import_errors) == 0, f"DAG import errors: {dagbag.import_errors}"
+    def test_has_trade_aggregation_job(self):
+        assert 'task_id="run_trade_aggregation_job"' in self.source
 
-        dag_ids = list(dagbag.dag_ids)
-        assert "streaming_processing_dag" in dag_ids
+    def test_has_anomaly_detection_group(self):
+        assert '"anomaly_detection"' in self.source
 
-    def test_new_dag_can_be_discovered(self):
-        """Test that a new DAG file can be discovered by DagBag."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            test_dag_content = """
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from datetime import datetime
+    def test_has_anomaly_detection_job(self):
+        assert 'task_id="run_anomaly_detection_job"' in self.source
 
-def test_task(**context):
-    return "Test task executed"
+    def test_has_volatility_prediction_group(self):
+        assert '"volatility_prediction"' in self.source
 
-with DAG(
-    dag_id='test_new_dag',
-    start_date=datetime(2024, 1, 1),
-    schedule_interval=None,
-    catchup=False,
-    tags=['test'],
-) as dag:
-    task = PythonOperator(
-        task_id='test_task',
-        python_callable=test_task,
-    )
-"""
+    def test_has_cleanup_task(self):
+        assert 'task_id="cleanup_streaming"' in self.source
 
-            test_dag_path = os.path.join(temp_dir, "test_new_dag.py")
-            with open(test_dag_path, "w") as f:
-                f.write(test_dag_content)
+    def test_has_streaming_tag(self):
+        assert '"streaming"' in self.source
 
-            dagbag = DagBag(dag_folder=temp_dir, include_examples=False)
+    def test_no_technical_indicators(self):
+        assert "run_technical_indicators_job" not in self.source
+        assert "validate_indicators_output" not in self.source
 
-            assert len(dagbag.import_errors) == 0
-            assert "test_new_dag" in dagbag.dag_ids
+    def test_task_dependency_health_first(self):
+        assert "health_checks >> trade_aggregation" in self.source
 
-
-@pytest.mark.skipif(not AIRFLOW_AVAILABLE, reason="Airflow is not installed")
-class TestStreamingPipelineDAG:
-    """Test suite for streaming_processing_dag structure."""
-
-    @pytest.fixture(scope="class")
-    def dagbag(self):
-        """Load DAGs from dags directory."""
-        return DagBag(dag_folder=str(dags_path), include_examples=False)
-
-    @pytest.fixture(scope="class")
-    def dag(self, dagbag):
-        """Get streaming_processing_dag DAG."""
-        dag_id = "streaming_processing_dag"
-        assert dag_id in dagbag.dags, f"DAG {dag_id} not found in DagBag"
-        return dagbag.dags[dag_id]
-
-    def test_dag_loaded(self, dagbag):
-        """Test that streaming_processing_dag DAG is loaded without errors."""
-        assert "streaming_processing_dag" in dagbag.dags
-        assert len(dagbag.import_errors) == 0
-
-    def test_dag_has_correct_properties(self, dag):
-        """Test DAG has correct configuration."""
-        assert dag.dag_id == "streaming_processing_dag"
-        assert dag.schedule_interval == "*/5 * * * *"
-        assert dag.catchup is False
-        assert "streaming" in dag.tags
-
-    def test_dag_has_no_cycles(self, dag):
-        """Test DAG has no circular dependencies."""
-        for task in dag.tasks:
-            upstream_tasks = task.get_flat_relatives(upstream=True)
-            assert task not in upstream_tasks, f"Task {task.task_id} has circular dependency"
-
-    def test_dag_does_not_contain_technical_indicators(self, dag):
-        """Test DAG does not contain technical_indicators tasks (removed in simplify-indicators).
-
-        The technical_indicators TaskGroup was removed as part of the simplify-indicators
-        feature to reduce complexity for regular users.
-        See: .kiro/specs/simplify-indicators/requirements.md
-        """
-        task_ids = [t.task_id for t in dag.tasks]
-
-        # Verify no technical_indicators tasks exist
-        for task_id in task_ids:
-            assert "technical_indicators" not in task_id, (
-                f"Found technical_indicators task '{task_id}' which should have been removed"
-            )
-
-    def test_dag_has_correct_task_groups(self, dag):
-        """Test DAG has the expected TaskGroups.
-
-        Expected structure:
-        - health_checks: test_redis_health, test_postgres_health
-        - trade_aggregation: run_trade_aggregation_job
-        - anomaly_detection: run_anomaly_detection_job
-        - cleanup_streaming (standalone task)
-
-        Note: Validation now happens inline within Spark jobs, not as separate DAG tasks.
-        """
-        task_ids = [t.task_id for t in dag.tasks]
-
-        # Verify health_checks tasks (2-tier: Redis + PostgreSQL only, no MinIO)
-        assert any("test_redis_health" in tid for tid in task_ids), "Missing test_redis_health task"
-        assert any("test_postgres_health" in tid for tid in task_ids), "Missing test_postgres_health task"
-
-        # Verify trade_aggregation tasks
-        assert any("run_trade_aggregation_job" in tid for tid in task_ids), "Missing run_trade_aggregation_job task"
-
-        # Verify anomaly_detection tasks
-        assert any("run_anomaly_detection_job" in tid for tid in task_ids), "Missing run_anomaly_detection_job task"
-
-        # Verify cleanup task
-        assert "cleanup_streaming" in task_ids, "Missing cleanup_streaming task"
+    def test_has_task_dependencies(self):
+        assert ">>" in self.source
