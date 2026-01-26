@@ -112,6 +112,9 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Install service tools
+        run: sudo apt-get install -y redis-tools postgresql-client
+
       - name: Wait for services
         run: |
           sleep 5
