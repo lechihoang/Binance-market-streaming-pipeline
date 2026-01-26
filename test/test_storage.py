@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, Mock, patch
 
 import great_expectations as gx
@@ -183,7 +183,7 @@ class TestQueryRoutingCorrectness:
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_redis_tier_selection_for_recent_queries(self, query_router, offset_minutes):
         """For any query within last 1 hour, the router should select Redis tier."""
-        now = datetime.now(UTC)
+        now = datetime.now()
         start = now - timedelta(minutes=offset_minutes)
 
         selected_tier = query_router.select_tier(start)
@@ -194,7 +194,7 @@ class TestQueryRoutingCorrectness:
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_postgres_tier_selection_for_historical_queries(self, query_router, offset_hours):
         """For any query > 1 hour, the router should select PostgreSQL tier."""
-        now = datetime.now(UTC)
+        now = datetime.now()
         start = now - timedelta(hours=offset_hours)
 
         selected_tier = query_router.select_tier(start)
@@ -205,7 +205,7 @@ class TestQueryRoutingCorrectness:
 
     def test_boundary_exactly_1_hour(self, query_router):
         """Test boundary: exactly 1 hour ago uses PostgreSQL (start <= now - 1h)."""
-        now = datetime.now(UTC)
+        now = datetime.now()
         start = now - timedelta(hours=1)
 
         selected_tier = query_router.select_tier(start)
@@ -214,7 +214,7 @@ class TestQueryRoutingCorrectness:
 
     def test_boundary_just_under_1_hour(self, query_router):
         """Test boundary: just under 1 hour ago uses Redis (start > now - 1h)."""
-        now = datetime.now(UTC)
+        now = datetime.now()
         start = now - timedelta(minutes=59)
 
         selected_tier = query_router.select_tier(start)
@@ -343,7 +343,7 @@ def test_alert_data_quality_valid():
             "symbol": "BTCUSDT",
             "alert_type": "VOLUME_SPIKE",
             "alert_level": "HIGH",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now().isoformat(),
         },
         {
             "alert_id": str(uuid.uuid4()),
@@ -351,7 +351,7 @@ def test_alert_data_quality_valid():
             "symbol": "ETHUSDT",
             "alert_type": "PRICE_SPIKE",
             "alert_level": "MEDIUM",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now().isoformat(),
         },
     ]
 
@@ -375,7 +375,7 @@ def test_alert_invalid_type_fails():
             "symbol": "BTCUSDT",
             "alert_type": "UNKNOWN_TYPE",  # Not in VALID_ALERT_TYPES
             "alert_level": "HIGH",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now().isoformat(),
         },
     ]
 
@@ -397,7 +397,7 @@ def test_alert_invalid_level_fails():
             "symbol": "BTCUSDT",
             "alert_type": "VOLUME_SPIKE",
             "alert_level": "CRITICAL",  # Not in VALID_ALERT_LEVELS (should be HIGH/MEDIUM/LOW)
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now().isoformat(),
         },
     ]
 
@@ -419,7 +419,7 @@ def test_alert_null_symbol_fails():
             "symbol": None,  # Null symbol
             "alert_type": "VOLUME_SPIKE",
             "alert_level": "HIGH",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now().isoformat(),
         },
     ]
 

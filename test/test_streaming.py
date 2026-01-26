@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import UTC, datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import MagicMock, Mock, patch
@@ -88,7 +88,7 @@ def create_alert(
         "alert_type": alert_type,
         "alert_level": alert_level,
         "details": details,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now().isoformat(),
     }
 
 
@@ -334,7 +334,7 @@ def test_alert_missing_required_fields_fails():
             # "symbol": "BTCUSDT",  # Missing!
             "alert_type": "VOLUME_SPIKE",
             "alert_level": "HIGH",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now().isoformat(),
         }
     ]
 
@@ -353,7 +353,7 @@ def test_alert_invalid_alert_type_fails():
             "symbol": "BTCUSDT",
             "alert_type": "INVALID_TYPE",  # Not in VALID_ALERT_TYPES
             "alert_level": "HIGH",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now().isoformat(),
         }
     ]
 
@@ -375,7 +375,7 @@ def test_alert_invalid_alert_level_fails():
             "symbol": "BTCUSDT",
             "alert_type": "VOLUME_SPIKE",
             "alert_level": "CRITICAL",  # Not in VALID_ALERT_LEVELS (should be HIGH/MEDIUM/LOW)
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now().isoformat(),
         }
     ]
 
