@@ -20,7 +20,7 @@ CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 -- trades_1m: 1-minute OHLCV kline aggregation from raw trades
 -- OHLCV = Open, High, Low, Close, Volume (standard price/volume format)
 CREATE TABLE IF NOT EXISTS trades_1m (
-    timestamp TIMESTAMPTZ NOT NULL,
+    timestamp TIMESTAMP NOT NULL,
     symbol VARCHAR(20) NOT NULL,
     -- OHLCV core fields
     open DOUBLE PRECISION,           -- Opening price (first trade in interval)
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS trades_1m (
 
 -- staging_trades_1m: Temporary staging table for merging into trades_1m
 CREATE TABLE IF NOT EXISTS staging_trades_1m (
-    timestamp TIMESTAMPTZ NOT NULL,
+    timestamp TIMESTAMP NOT NULL,
     symbol VARCHAR(20) NOT NULL,
     open DOUBLE PRECISION,
     high DOUBLE PRECISION,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS staging_trades_1m (
 -- ml_features: Feature engineering table for volatility prediction ML model
 -- Contains time-series features computed from OHLCV kline data
 CREATE TABLE IF NOT EXISTS ml_features (
-    timestamp TIMESTAMPTZ NOT NULL,
+    timestamp TIMESTAMP NOT NULL,
     symbol VARCHAR(20) NOT NULL,
     close DOUBLE PRECISION,
     volume DOUBLE PRECISION,
@@ -100,18 +100,54 @@ CREATE TABLE IF NOT EXISTS ml_features (
     symbol_encoded INTEGER,            -- Encoded symbol identifier
     -- Target variable (for supervised learning)
     volatility_next_5m DOUBLE PRECISION, -- Future 5-minute volatility (label)
-    computed_at TIMESTAMPTZ DEFAULT NOW(),
+    computed_at TIMESTAMP DEFAULT NOW(),
     PRIMARY KEY (symbol, timestamp)
+);
+
+-- staging_ml_features: Temporary staging table for merging into ml_features
+CREATE TABLE IF NOT EXISTS staging_ml_features (
+    timestamp TIMESTAMP NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    close DOUBLE PRECISION,
+    volume DOUBLE PRECISION,
+    quote_volume DOUBLE PRECISION,
+    trade_count INTEGER,
+    return_1m DOUBLE PRECISION,
+    return_5m DOUBLE PRECISION,
+    return_15m DOUBLE PRECISION,
+    volatility_5m DOUBLE PRECISION,
+    volatility_15m DOUBLE PRECISION,
+    volatility_30m DOUBLE PRECISION,
+    volatility_60m DOUBLE PRECISION,
+    volatility_ratio DOUBLE PRECISION,
+    price_range_pct DOUBLE PRECISION,
+    price_body_pct DOUBLE PRECISION,
+    volume_ratio_15m DOUBLE PRECISION,
+    volume_ratio_60m DOUBLE PRECISION,
+    buy_ratio DOUBLE PRECISION,
+    buy_sell_imbalance DOUBLE PRECISION,
+    price_vs_ma_15m DOUBLE PRECISION,
+    price_vs_ma_60m DOUBLE PRECISION,
+    hour INTEGER,
+    symbol_encoded INTEGER
 );
 
 -- volatility_predictions: ML model predictions for future volatility
 CREATE TABLE IF NOT EXISTS volatility_predictions (
-    timestamp TIMESTAMPTZ NOT NULL,
+    timestamp TIMESTAMP NOT NULL,
     symbol VARCHAR(20) NOT NULL,
     current_volatility DOUBLE PRECISION,       -- Current observed volatility
     predicted_volatility_5m DOUBLE PRECISION,  -- Predicted 5-minute ahead volatility
-    computed_at TIMESTAMPTZ DEFAULT NOW(),
+    computed_at TIMESTAMP DEFAULT NOW(),
     PRIMARY KEY (symbol, timestamp)
+);
+
+-- staging_volatility_predictions: Temporary staging table for merging into volatility_predictions
+CREATE TABLE IF NOT EXISTS staging_volatility_predictions (
+    timestamp TIMESTAMP NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    current_volatility DOUBLE PRECISION,
+    predicted_volatility_5m DOUBLE PRECISION
 );
 
 -- =============================================================================
@@ -152,9 +188,9 @@ CREATE TABLE IF NOT EXISTS validation_errors (
 
 CREATE TABLE IF NOT EXISTS job_checkpoints (
     job_name VARCHAR(100) PRIMARY KEY,
-    last_processed_timestamp TIMESTAMPTZ NOT NULL,
+    last_processed_timestamp TIMESTAMP NOT NULL,
     records_processed BIGINT DEFAULT 0,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMP DEFAULT NOW()
 );
 
 -- =============================================================================
