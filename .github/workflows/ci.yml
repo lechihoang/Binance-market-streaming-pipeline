@@ -153,11 +153,11 @@ jobs:
       matrix:
         image:
           - name: api
-            dockerfile: docker/api/Dockerfile
+            dockerfile: docker/Dockerfile.api
           - name: consumer
-            dockerfile: docker/consumer/Dockerfile
+            dockerfile: docker/Dockerfile.consumer
           - name: streamlit
-            dockerfile: docker/streamlit/Dockerfile
+            dockerfile: docker/Dockerfile.streamlit
 
     steps:
       - uses: actions/checkout@v4
