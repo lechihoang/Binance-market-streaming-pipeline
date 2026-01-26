@@ -1,5 +1,5 @@
 # Development and testing dependencies
-# Install with: pip install -r requirements-dev.txt
+# Install with: pip install -r requirements.txt
 
 # ============================================
 # Core dependencies (from docker requirements)
