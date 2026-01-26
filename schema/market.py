@@ -9,6 +9,8 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from util.constant import TICKER_BINANCE_MAP
+
 
 class Kline(BaseModel):
     """1-minute OHLCV candlestick data (aggregated from trades)."""
@@ -38,11 +40,10 @@ class Kline(BaseModel):
     @classmethod
     def parse_timestamp(cls, v: Any) -> datetime:
         if isinstance(v, datetime):
-            return v.replace(tzinfo=None) if v.tzinfo else v
+            return v
         if isinstance(v, str):
-            return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None)
+            return datetime.fromisoformat(v.replace("Z", "").replace("+00:00", ""))
         if isinstance(v, (int, float)):
-            # Assume epoch seconds if < 1e12, else milliseconds
             ts = v / 1000 if v > 1e12 else v
             return datetime.fromtimestamp(ts)
         raise ValueError(f"Cannot parse timestamp: {v}")
@@ -76,10 +77,22 @@ class Kline(BaseModel):
     def db_fields(cls) -> list[str]:
         """Fields for database operations."""
         return [
-            "timestamp", "symbol", "open", "high", "low", "close",
-            "volume", "quote_volume", "trade_count", "buy_count", "sell_count",
-            "volume_weighted_avg_price", "price_change_percent", "buy_sell_ratio",
-            "average_price", "price_volatility",
+            "timestamp",
+            "symbol",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_volume",
+            "trade_count",
+            "buy_count",
+            "sell_count",
+            "volume_weighted_avg_price",
+            "price_change_percent",
+            "buy_sell_ratio",
+            "average_price",
+            "price_volatility",
         ]
 
 
@@ -104,9 +117,9 @@ class Alert(BaseModel):
         if v is None:
             return None
         if isinstance(v, datetime):
-            return v.replace(tzinfo=None) if v.tzinfo else v
+            return v
         if isinstance(v, str):
-            return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None)
+            return datetime.fromisoformat(v.replace("Z", "").replace("+00:00", ""))
         if isinstance(v, (int, float)):
             ts = v / 1000 if v > 1e12 else v
             return datetime.fromtimestamp(ts)
@@ -119,6 +132,7 @@ class Alert(BaseModel):
             return v
         if isinstance(v, str):
             import json
+
             try:
                 return json.loads(v)
             except json.JSONDecodeError:
@@ -136,6 +150,7 @@ class Alert(BaseModel):
     def to_redis_dict(self) -> dict[str, str]:
         """Serialize to Redis (all string values, details as JSON)."""
         import json
+
         data = {
             "timestamp": self.timestamp.isoformat(),
             "symbol": self.symbol,
@@ -156,6 +171,7 @@ class Alert(BaseModel):
     def to_pg_dict(self) -> dict[str, Any]:
         """Serialize for Postgres."""
         import json
+
         return {
             "timestamp": self.timestamp,
             "symbol": self.symbol,
@@ -168,19 +184,24 @@ class Alert(BaseModel):
     @classmethod
     def from_pg_dict(cls, data: dict[str, Any]) -> Self:
         """Deserialize from Postgres row."""
-        return cls.model_validate({
-            "timestamp": data["timestamp"],
-            "symbol": data["symbol"],
-            "alert_type": data["alert_type"],
-            "alert_level": data.get("severity", data.get("alert_level", "MEDIUM")),
-            "message": data.get("message", ""),
-            "details": data.get("metadata", data.get("details", {})),
-        })
+        return cls.model_validate(
+            {
+                "timestamp": data["timestamp"],
+                "symbol": data["symbol"],
+                "alert_type": data["alert_type"],
+                "alert_level": data.get("severity", data.get("alert_level", "MEDIUM")),
+                "message": data.get("message", ""),
+                "details": data.get("metadata", data.get("details", {})),
+            }
+        )
 
     @classmethod
     def db_fields(cls) -> list[str]:
         """Fields for database operations (Postgres column names)."""
         return ["timestamp", "symbol", "alert_type", "severity", "message", "metadata"]
+
+
+# TICKER_BINANCE_MAP is imported from util/constant.py (single source of truth)
 
 
 class Ticker(BaseModel):
@@ -200,20 +221,6 @@ class Ticker(BaseModel):
     trade_count: int
     updated_at: datetime
 
-    # Binance short names -> our field names
-    _BINANCE_MAP = {
-        "c": "last_price",
-        "p": "price_change",
-        "P": "price_change_pct",
-        "o": "open",
-        "h": "high",
-        "l": "low",
-        "v": "volume",
-        "q": "quote_volume",
-        "n": "trade_count",
-        "E": "updated_at",
-    }
-
     @model_validator(mode="before")
     @classmethod
     def normalize_binance_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -223,7 +230,7 @@ class Ticker(BaseModel):
         result = {}
         for key, value in data.items():
             # Map short name to long name if exists
-            new_key = cls._BINANCE_MAP.get(key, key)
+            new_key = TICKER_BINANCE_MAP.get(key, key)
             # Don't overwrite if long name already set
             if new_key not in result:
                 result[new_key] = value
@@ -233,12 +240,11 @@ class Ticker(BaseModel):
     @classmethod
     def parse_timestamp(cls, v: Any) -> datetime:
         if isinstance(v, datetime):
-            return v.replace(tzinfo=None) if v.tzinfo else v
+            return v
         if isinstance(v, str):
             try:
-                return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None)
+                return datetime.fromisoformat(v.replace("Z", "").replace("+00:00", ""))
             except ValueError:
-                # Try parsing as epoch
                 return datetime.fromtimestamp(float(v) / 1000 if float(v) > 1e12 else float(v))
         if isinstance(v, (int, float)):
             ts = v / 1000 if v > 1e12 else v
@@ -246,9 +252,7 @@ class Ticker(BaseModel):
         raise ValueError(f"Cannot parse timestamp: {v}")
 
     @field_validator(
-        "last_price", "price_change", "price_change_pct",
-        "open", "high", "low", "volume", "quote_volume",
-        mode="before"
+        "last_price", "price_change", "price_change_pct", "open", "high", "low", "volume", "quote_volume", mode="before"
     )
     @classmethod
     def parse_float(cls, v: Any) -> float:
@@ -317,9 +321,9 @@ class Trade(BaseModel):
     @classmethod
     def parse_timestamp(cls, v: Any) -> datetime:
         if isinstance(v, datetime):
-            return v.replace(tzinfo=None) if v.tzinfo else v
+            return v
         if isinstance(v, str):
-            return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None)
+            return datetime.fromisoformat(v.replace("Z", "").replace("+00:00", ""))
         if isinstance(v, (int, float)):
             ts = v / 1000 if v > 1e12 else v
             return datetime.fromtimestamp(ts)
